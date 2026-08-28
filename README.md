@@ -5,6 +5,11 @@
 DO/CHECK 状态机工作流引擎的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 原生插件。插件名 **ralphflow**，命令与工具命名和 opencode 版完全一致。
 
 <img width="3839" height="2160" alt="Screenshot from 2026-08-28 21-45-14" src="https://github.com/user-attachments/assets/760187b8-2a74-4a3e-b230-cb0a778f7633" />
+可视化验证器：在浏览器里，右键每张图 → 另存为，存到这个路径
+<img width="3831" height="2152" alt="Screenshot from 2026-08-28 21-45-29" src="https://github.com/user-attachments/assets/792225ef-268a-446f-9d30-b46989f35575" />
+状态机可视化
+
+
 
 
 ## 什么是 Ralph Flow
