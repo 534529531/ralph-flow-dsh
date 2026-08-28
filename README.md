@@ -7,12 +7,26 @@
 
 ## 这是什么
 
-dsh 版的 ralphflow：同一个 DO → CHECK → 人工门 → 验证 → 报告 状态机，但 UI 全部是 dsh 原生形态（对话内嵌卡 + 页头入口），不引入独立大页面（无 Studio/Dashboard/Runs 表格页）。
+dsh 版的 ralphflow：同一个 DO → CHECK → 人工门 → 验证 → 报告 状态机，但 UI 全部是 dsh 原生形态（页头任务列表 + 对话内嵌命令卡），不引入独立大页面（无 Studio/Dashboard/Runs 表格页）。
+
+![Ralph Flow 在 dsh web 中运行：页头入口实时显示进度与待审查徽标](docs/screenshots/overview.png)
 
 - 插件名：`ralphflow`
 - slash 命令：`/ralphflow-start` `/ralphflow-continue` `/ralphflow-status` `/ralphflow-list` `/ralphflow-cancel` `/ralphflow-rewind` `/ralphflow-reset` `/ralphflow-doctor` `/ralphflow-unbrick`
 - 工具：`ralphflow_start` `ralphflow_continue` `ralphflow_status` `ralphflow_list` `ralphflow_cancel` `ralphflow_rewind` `ralphflow_reset` `ralphflow_doctor` `ralphflow_create` `ralphflow_unbrick`（10 个，除 create/unbrick 外与 opencode 同名同参）
 - 工作流快捷命令：`/loop` `/spec` 等（按工作流目录动态注册）
+
+### 页头抽屉（控制中心）
+
+点击页头右侧 **Ralph Flow** 入口展开任务列表：实时进度、超时进度条、验证票状态、一键通过/打回/取消，所有操作直连 host（POST 动作端点），不再依赖输入框填命令。
+
+![页头抽屉：任务列表、超时进度条、验证票飞行时长、审批/取消按钮](docs/screenshots/drawer.png)
+
+### 验证者视角
+
+每个验证者是独立的 dsh 子代理，只读工具白名单 + 对抗性 system prompt 保障对抗检查的独立性。抽屉实时显示每票状态（排队→运行中→判定）与飞行时长。
+
+![验证者子代理详情：读代码、跑测试、独立判定](docs/screenshots/verifier.png)
 
 ## 安装
 

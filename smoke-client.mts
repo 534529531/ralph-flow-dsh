@@ -8,6 +8,9 @@
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
+const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
+const id = pkg.name as string;
+
 const code = readFileSync(new URL("./lib/client.js", import.meta.url), "utf8");
 
 const seed = {
@@ -38,7 +41,6 @@ const sandbox = {
 vm.createContext(sandbox);
 vm.runInContext(code, sandbox);
 
-const id = "ralphflow";
 if (!factories[id]) {
   console.error("CLIENT SMOKE FAIL — bundle did not register factory", id);
   process.exit(1);

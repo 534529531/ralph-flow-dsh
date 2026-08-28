@@ -8,12 +8,18 @@
  * 产物写入 lib/client.js（与官方 packages/client/ui-workflow-run/lib/client.js 同构）。
  */
 import { build } from "esbuild";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const outfile = join(root, "lib", "client.js");
+
+// dsh client bundle 的 id 必须与插件名一致（= package.json 的 name），
+// 否则 client-modules 的 arrive() 会把 bundle 视为「未注册该插件 id」
+// 而报 loaded without registering "<id>"。官方产物正是用完整包名做 id。
+const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const bundleId = pkg.name;
 
 const entryPoints = [join(root, "src", "client", "client.ts")];
 
@@ -38,7 +44,7 @@ mkdirSync(dirname(outfile), { recursive: true });
 // dsh client bundle 外壳：window.__ModuleLoader__.load({ id, factory })
 // factory 形参 require 即 dsh 运行时模块解析器（seed/static/registered factory）。
 const wrapper = `window.__ModuleLoader__.load({
-	id: "ralphflow",
+	id: ${JSON.stringify(bundleId)},
 	factory: (require) => {
 		var module = { exports: {} };
 		var exports = module.exports;
