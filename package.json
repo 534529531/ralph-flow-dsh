@@ -1,6 +1,6 @@
 {
   "name": "ralphflow-dsh",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Ralph Flow for DeepSeek Harness — opencode 同名的 DO/CHECK 状态机工作流引擎，作为原生 dsh 插件",
   "type": "module",
   "main": "lib/index.js",
