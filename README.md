@@ -8,6 +8,7 @@ DO/CHECK 状态机工作流引擎的 [DeepSeek Harness](https://github.com/deeps
 可视化验证器：在浏览器里，右键每张图 → 另存为，存到这个路径
 <img width="3831" height="2152" alt="Screenshot from 2026-08-28 21-45-29" src="https://github.com/user-attachments/assets/792225ef-268a-446f-9d30-b46989f35575" />
 状态机可视化
+<img width="3840" height="2136" alt="Screenshot from 2026-08-28 21-45-55" src="https://github.com/user-attachments/assets/a6307ad7-7535-4ab7-ba72-89baf24485d4" />
 
 
 
