@@ -4,6 +4,9 @@
 
 DO/CHECK 状态机工作流引擎的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 原生插件。插件名 **ralphflow**，命令与工具命名和 opencode 版完全一致。
 
+<img width="3839" height="2160" alt="Screenshot from 2026-08-28 21-45-14" src="https://github.com/user-attachments/assets/760187b8-2a74-4a3e-b230-cb0a778f7633" />
+
+
 ## 什么是 Ralph Flow
 
 模型执行任务（DO），独立验证者对抗检查（CHECK），失败自动返工，关键步骤停下等你审查。全程状态机驱动，你只需要等待和关键时刻点一下。
