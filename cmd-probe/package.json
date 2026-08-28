@@ -1,0 +1,6 @@
+{
+  "name": "cmd-probe",
+  "private": true,
+  "type": "module",
+  "dsh": { "kind": "plugin" }
+}

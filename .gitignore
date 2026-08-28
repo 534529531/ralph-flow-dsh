@@ -1,0 +1,24 @@
+# ── 依赖与构建产物 ──────────────────────────────────────────────────────────
+node_modules/
+lib/
+
+# ── 运行时数据（实例/报告/历史/日志——每个工作区各自生成，不入库） ──────
+ralph-flow/
+.dsh-home/
+
+# ── 验证产物（e2e 浏览器截图/结果 JSON/archived/txt 正文快照） ──────────
+e2e-harness/*.png
+e2e-harness/*.json
+e2e-harness/*.txt
+e2e-harness/archived-e2e/
+cmd-probe/result.json
+stub-subagent-probe.txt
+
+# ── 早期无关原型与探针（非插件本体） ──────────────────────────────────
+ui/
+.opencode/
+
+# ── 常规 ────────────────────────────────────────────────────────────────────
+*.tgz
+*.log
+.DS_Store

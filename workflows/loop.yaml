@@ -1,0 +1,27 @@
+description: 单步对抗验证循环：实现与验证在同一环节内迭代，直到通过
+
+adversarial_check:
+  # model: anthropic/claude-sonnet-4-5  # 可选：验证模型（"provider/model" 或 {providerID, modelID}）；不填则用 ralph-check agent 默认模型
+  timeout_ms: 3600000  # 60 分钟（上限）
+
+steps:
+  - id: loop
+    desc: 迭代执行任务直到通过对抗验证
+    reset: true
+    do: |
+      完成用户任务。
+
+      每轮结束前，把执行摘要追加到 summary.md（多轮累积，每轮一节，保持精简）：
+      - 完成事项（对照任务）
+      - 变更文件
+      - 验证结果
+      - 未完成部分与下一步打算
+    input: 用户任务描述
+    output: 实现的代码/文件 + summary.md（执行摘要）
+    check_voting:
+      - check: 用户任务的每一条要求都已落实
+      - check: 实现的行为符合预期，真实可用
+      - check: 没有遗漏的需求，边界情况已覆盖
+    on_pass: done
+    on_fail: loop
+    max_fail_count: 100
