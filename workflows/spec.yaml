@@ -3,6 +3,7 @@
 description: 完整的需求分析、规格定义、技术设计、代码实现工作流
 
 manual_step:
+  - propose  # 审查门：propose 通过独立验证后停下等你放行
 
 adversarial_check:
 

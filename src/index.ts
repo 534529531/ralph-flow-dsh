@@ -56,13 +56,17 @@ export function apply(ctx: Context): void {
 
   const deliver = (sessionId: string, text: string): boolean => {
     try {
-      const agent = agentOf(sessionId) as { followup?: (msg: unknown) => unknown } | undefined;
-      if (!agent || typeof agent.followup !== "function") return false;
-      agent.followup(createUserMessage({
+      const agent = agentOf(sessionId) as { steer?: (m: unknown) => unknown; followup?: (m: unknown) => unknown } | undefined;
+      if (!agent) return false;
+      const msg = createUserMessage({
         content: [{ type: "text", text }],
         source: { kind: "plugin", plugin: "ralphflow" },
-      }));
-      return true;
+      });
+      // steer：提交给最近一步，空闲驱动器会开新一轮（0.1.x 官方机制）；
+      // followup：旧版本兼容兜底。
+      if (typeof agent.steer === "function") { agent.steer(msg); return true; }
+      if (typeof agent.followup === "function") { agent.followup(msg); return true; }
+      return false;
     } catch (e) {
       log("warn", "deliver_failed", { sessionId, error: e instanceof Error ? e.message : String(e) });
       return false;
