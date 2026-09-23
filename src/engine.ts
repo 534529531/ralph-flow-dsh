@@ -436,6 +436,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     pushHistory(state, "verify_start", `check_index=${checkIndex}`, step.id);
     writeState(state, instId);
     log("info", "verify_start", { instId, step: step.id, checkIndex });
+    // 阶段播报：验证开始即告知（opencode 同款「🔍 CHECK 阶段已开始」体验）
+    notify(state, `🔍 步骤 \`${step.id}\` 已交卷，独立验证者（独立会话）正在取证判定…`);
 
     let verdict: Verdict;
     try {
@@ -642,7 +644,17 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       writeState(target.state, target.id);
       info = target;
     }
-    if (!info) return { ok: false, text: "当前会话没有活跃实例。用 `/ralphflow-list` 查看全部实例；要接管其它实例：`/ralphflow-continue <实例ID>`。" };
+    if (!info) {
+      // 本会话无活跃实例：列出全部活跃实例供接管（opencode 同款体验，不再给裸错误）
+      const others = listInstances().filter((i) => i.state.active);
+      if (others.length === 0) {
+        return { ok: false, text: "当前会话没有活跃实例，也没有其它活跃实例可接管。用 `/ralphflow-start <工作流> <任务>` 启动一个。" };
+      }
+      return {
+        ok: false,
+        text: `当前会话没有活跃实例，但存在以下活跃实例：\n${others.map((i) => `- \`${i.id}\` — ${i.state.workflow_name} · ${i.state.current_step} · ${i.state.owner_session ? "有属主" : "无属主"}`).join("\n")}\n\n要接管哪个？用 \`/ralphflow-continue <实例ID>\` 指定。`,
+      };
+    }
     const { id: instId, state } = info;
     const { def: wf, problems } = loadWorkflow(state.workflow_name);
     if (!wf) return { ok: false, text: `工作流 \`${state.workflow_name}\` 已无法加载：\n${problems.map((p) => `- ${p}`).join("\n")}` };

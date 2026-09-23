@@ -11,6 +11,35 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { Engine } from "./engine.js";
 import { CREATE_GUIDE } from "./create.js";
 
+/**
+ * 工作流机制说明（/ralphflow-start 与 /loop、/spec 等快捷命令共享，opencode 版 SHARED_MECHANISM 的 v0 裁剪版）。
+ * 让模型知道：两阶段协议、自动验证、手动审查的放行语义、暂停恢复、以及**阶段播报**（AI 交互友好的来源）。
+ */
+const SHARED_MECHANISM = `## 工作流机制（每次启动都会生效）
+
+每个工作流步骤有两个阶段：
+
+**DO 阶段（执行）**：
+- 按收到的提示执行当前步骤的任务，完成实际工作（写代码、创建文件、运行命令）。
+- 所有任务要求满足后，在回复的**最后一行**输出 \`<promise>done</promise>\`。
+- 普通步骤到此为止——你空闲时系统会**自动**运行独立 CHECK，**不需要**调用任何工具。
+
+**CHECK 阶段（自动进行）**：
+- 你输出 done 后，一个**独立验证者会话**（全新上下文，看不到本对话）依据该步骤的检查依据取证判定。你会收到「🔍 验证中」与验证结果消息。
+- **通过** → 工作流自动推进到下一步并注入下一条 DO 提示。
+- **未通过** → 你收到失败原因并重做该步（自动重试，不会反复打扰用户）。
+
+**手动步骤**（工作流 \`manual_step\` 列出的步骤）：CHECK **通过后**系统停下等**用户**审查（会收到 🙋 消息）。用户的 \`/ralphflow-continue\` 是**放行**——直接进入下一步，不重复验证。用户要求修改时，你改完重新输出 \`<promise>done</promise>\`，会再次自动验证，通过后再停下。
+
+**暂停与恢复**：某步验证失败达到 \`max_fail_count\` 时工作流暂停。用 \`/ralphflow-status\` 看失败原因，修复后 \`/ralphflow-continue\` 恢复（重置失败计数并重试）。
+
+**重要**：\`ralphflow_continue\` 只用于 ① 批准手动审查 ② 恢复暂停 ③ 接管中断实例。普通步骤**不要**调用它——验证是自动的。
+
+**阶段播报**：收到系统阶段通知时，简短地确认一下，让用户随时了解进度（这是良好体验的一部分）：
+- DO 阶段：「已启动步骤 [X]，正在处理 [任务]」
+- CHECK 阶段：「🔍 已交卷，独立验证者正在取证判定」
+- 完成：「✅ 所有步骤完成，工作流结束」`;
+
 export interface ToolContext {
   ctx: Context;
   engine: Engine;
@@ -185,7 +214,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
         const task = parts.slice(1).join(" ");
         return {
           kind: "directive",
-          text: `用户通过 /ralphflow-start 启动了 ralphflow 工作流。请调用 \`ralphflow_start\` 工具：workflow = \`${workflow}\`，task = \`${task}\`。\n\n工具返回后严格按其中的指示行动（工具文本里已包含本步任务与交卷协议）；若工具报错，如实向用户转达错误和用法。`,
+          text: `用户通过 /ralphflow-start 启动了 ralphflow 工作流。请调用 \`ralphflow_start\` 工具：workflow = \`${workflow}\`，task = \`${task}\`。若工具报错，如实转达；若成功，按它返回的指示执行并遵循下面的机制。\n\n${SHARED_MECHANISM}`,
         };
       },
     },
@@ -198,7 +227,9 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
         const instance = parts[0] ? `，instance = \`${parts[0]}\`` : "";
         return {
           kind: "directive",
-          text: `用户执行了 /ralphflow-continue，要推进当前工作流（放行审查门 / 解除暂停 / 接管实例）。请调用 \`ralphflow_continue\` 工具${instance}。\n\n按工具返回结果行动：已推进就简短确认下一步；被拒绝（判定未通过/未交卷）就如实转达原因。`,
+          text: `用户执行了 /ralphflow-continue。\`ralphflow_continue\` 只用于三种情况：**批准手动审查**（🙋 步骤已通过自动验证，放行进入下一步，不重复验证）、**恢复暂停**（先看 \`/ralphflow-status\` 的失败原因，修复后调用，重置失败计数并重试）、**接管中断/他人实例**。普通步骤的推进是自动的，不要调用它。
+
+请调用 \`ralphflow_continue\` 工具${instance}。若不带实例 id 且本会话没有活跃实例，工具会列出可选实例：把它展示给用户并询问接管哪个，再带 \`instance\` 调用。按工具结果行动：进入 DO 就执行该步任务；验证中就简短说明；完成就说「工作流结束」；暂停就说明原因与下一步。`,
         };
       },
     },
@@ -211,7 +242,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
         const instance = parts[0] ? `，instance = \`${parts[0]}\`` : "";
         return {
           kind: "directive",
-          text: `用户执行了 /ralphflow-status，想了解工作流进度。请调用 \`ralphflow_status\` 工具${instance}，然后向用户清晰说明当前实例的状态（进行到哪一步、有无判定、是否暂停等）。`,
+          text: `用户执行了 /ralphflow-status，想了解工作流进度。请调用 \`ralphflow_status\` 工具${instance}（不带参数时若本会话无实例，应显示项目里所有活跃实例的概览）。然后向用户清晰说明：工作流与当前步骤、状态（执行中/验证中/待放行/暂停及原因）、失败次数，以及**属主会话**——属于其他或已关闭会话的实例可通过 \`/ralphflow-continue <实例ID>\` 接管。`,
         };
       },
     },
@@ -220,7 +251,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       description: "列出全部实例与可用工作流。示例：/ralphflow-list",
       shim: () => ({
         kind: "directive",
-        text: "用户执行了 /ralphflow-list。请调用 `ralphflow_list` 工具获取数据，然后把「可用工作流」整理成**表格**（列：工作流 | 用途描述），把「工作流实例」按工具返回的字段简要列给用户（实例 id、工作流、任务、步骤、状态、属主）。数据以工具返回为准，不要编造；没有实例就直说。",
+        text: "用户执行了 /ralphflow-list。请调用 `ralphflow_list` 工具获取数据，然后把「可用工作流」整理成**表格**（列：工作流 | 用途描述），把「工作流实例」按工具返回的字段简要列给用户（实例 id、工作流、任务、步骤、状态、属主）。数据以工具返回为准，不要编造；没有实例就直说。工作流解析顺序：项目/工作区自定义 > 全局 `~/.dsh/ralph-flow/workflows` > 插件内置。",
       }),
     },
     {
@@ -233,7 +264,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
         const reason = parts.length > 1 ? `，reason = \`${parts.slice(1).join(" ")}\`` : "";
         return {
           kind: "directive",
-          text: `用户执行了 /ralphflow-cancel，要取消当前工作流实例${instance}${reason}。请调用 \`ralphflow_cancel\` 工具，然后向用户确认已取消（或转达错误）。`,
+          text: `用户执行了 /ralphflow-cancel，要取消工作流实例${instance}。请调用 \`ralphflow_cancel\` 工具${reason}——它会中止任何在飞的独立验证会话、把最终报告归档到 \`ralph-flow/reports/\`。然后向用户简短确认已取消（或转达错误）。`,
         };
       },
     },
@@ -314,7 +345,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
               }
               const sid = messageSessionId(inv.agent);
               if (sid) {
-                deps.deliver(sid, `[ralphflow] 用户通过 /${slug} 启动了 \`${wf.name}\` 工作流。请调用 \`ralphflow_start\` 工具：workflow = \`${wf.name}\`，task = \`${task}\`。按工具返回结果行动（含 DO 任务与交卷协议）；若报错，如实转达。`);
+                deps.deliver(sid, `[ralphflow] 用户通过 /${slug} 启动了 \`${wf.name}\` 工作流。请调用 \`ralphflow_start\` 工具：workflow = \`${wf.name}\`，task = \`${task}\`。若工具报错，如实转达；若成功，按它返回的指示执行并遵循下面的机制。\n\n${SHARED_MECHANISM}`);
               }
               return { kind: "success" };
             } catch (err) {
