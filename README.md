@@ -1,30 +1,16 @@
 # Ralph Flow for DeepSeek Harness (dsh)
 
-> **npm:** [`ralphflow-dsh`](https://www.npmjs.com/package/ralphflow-dsh) · **源码:** [github.com/534529531/ralph-flow-dsh](https://github.com/534529531/ralph-flow-dsh) · 上游: [ralph-flow](https://github.com/534529531/ralph-flow)
+> **npm:** [`ralphflow-dsh`](https://www.npmjs.com/package/ralphflow-dsh) · **源码:** [github.com/534529531/ralph-flow-dsh](https://github.com/534529531/ralph-flow-dsh)
 
-DO/CHECK 状态机工作流引擎的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 原生插件。插件名 **ralphflow**，命令与工具命名和 opencode 版完全一致。
-
-## 什么是 Ralph Flow
-
-模型执行任务（DO），独立验证者对抗检查（CHECK），失败自动返工，关键步骤停下等你审查。全程状态机驱动，你只需要等待和关键时刻点一下。
-
-### 页头任务列表
-
-点击页面右上角 **Ralph Flow** 入口展开抽屉：实时进度、超时进度条、验证票状态、一键通过/打回/取消。
-
-### 对话内命令卡
-
-`/ralphflow-start`、`/ralphflow-continue` 等命令的结果以显眼卡片渲染在对话流里，不只是一行灰色工具行。
+**执行者/验证者模式的具象化**：主会话执行任务，独立验证者（全新会话，不可见主会话自辩）取证判定，失败自动返工；**是否推进只由机械程序决定**（裁判权定理，见 [docs/v2/design.md](docs/v2/design.md)）。这是 v2 原生重做版（旧版在 `archive/v1` 分支）。
 
 ## 安装
 
-### npm 安装
-
 ```bash
-dsh plugin --profile web add ralphflow-dsh
+dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plugin --profile web add /path/to/ralph-flow-dsh
 ```
 
-然后在 `~/.dsh/profiles/web/cordis.patch.yml` 追加：
+然后在 `~/.dsh/profiles/web/cordis.patch.yml` 追加并重启：
 
 ```yaml
 - insert:
@@ -32,98 +18,44 @@ dsh plugin --profile web add ralphflow-dsh
       name: ralphflow-dsh
 ```
 
-重启 dsh。
-
-### 本地源码安装
-
-```bash
-git clone https://github.com/534529531/ralph-flow-dsh.git
-cd ralph-flow-dsh
-npm install
-npm run build
-dsh plugin --profile web add .
-```
-
 ## 使用
 
-### 基本命令
+| 命令 | 工具 | 用途 |
+|---|---|---|
+| `/ralphflow-start` | `ralphflow_start` | 启动工作流（模型执行 → 独立验证 → 失败自动返工） |
+| `/ralphflow-continue` | `ralphflow_continue` | 放行审查门 / 解除暂停 / 接管实例 |
+| `/ralphflow-status` | `ralphflow_status` | 查看实例状态与判定 |
+| `/ralphflow-list` | `ralphflow_list` | 列出实例与工作流（表格） |
+| `/ralphflow-cancel` | `ralphflow_cancel` | 取消并归档报告 |
 
-| 命令 | 用途 |
-|---|---|
-| `/ralphflow-start <工作流> <任务>` | 启动工作流 |
-| `/ralphflow-continue` | 批准审查 / 恢复暂停 / 接管实例 |
-| `/ralphflow-status` | 查看进度 |
-| `/ralphflow-list` | 列出工作流与实例 |
-| `/ralphflow-cancel` | 取消并归档报告 |
-| `/ralphflow-rewind <步骤> <原因>` | 回退到上游步骤 |
-| `/ralphflow-reset [原因]` | 重做当前步 |
-| `/ralphflow-doctor` | 诊断定义与实例状态 |
-| `/ralphflow-unbrick` | 修复会话日志中的历史遗留帧 |
-| `/ralphflow-create [想法]` | 交互式创建新工作流 |
+`create / doctor / reset / rewind` 已声明未实现（会返回说明）。命令语义 = **触发词**：注入指令给模型，由模型调用同名工具并**自然语言回复**（与 claude code/opencode 一致）。
 
-### 快捷命令
+内置工作流：`loop`（单步对抗验证循环）、`spec`（需求→规格→设计→任务→实现→验收→归档，propose 步带审查门）。自定义工作流按同一方言放到 `<workspace>/ralph-flow/workflows/`。
 
-```bash
-/loop 写一个贪吃蛇游戏       # 等同于 /ralphflow-start loop ...
-/spec 修复登录模块的空指针    # 等同于 /ralphflow-start spec ...
-```
+## 工作区结构
 
-### 工作区结构
+实例与资产沉淀在**发起会话的工作区**：
 
 ```
 <workspace>/ralph-flow/
-├── workflows/        # 自定义工作流 YAML（loop/spec 为内置）
-├── instances/        # 活跃实例状态
-├── reports/          # 完成后的报告
-└── artifacts/        # 任务产物
+├── workflows/     # 自定义工作流 YAML（内置 loop/spec 会先复制进来，可编辑）
+├── instances/     # 活跃/已结束实例状态（每实例一个目录）
+└── reports/       # 完成/取消后的报告归档
 ```
 
-## 工作流
+多工作区各自独立；实例索引在 `~/.dsh/ralphflow-instances-index.json`。
 
-每个工作流是一个 YAML 文件，定义步骤序列、检查依据、失败策略。内置两个：
+## 设计
 
-### loop（迭代验证）
+- **裁判权定理**：判定只可能产生于独立会话（T1）；推进只由机械程序决定（T2）。
+- 状态模型：无相位字段，全部阶段由原始事实派生（交卷了吗 / 判定落地了吗 / 有在飞委派吗 / 暂停了吗）。
+- 验证者：全新独立会话，只见任务 + 检查依据 + 交卷摘要，只读工具白名单，结构化判定 + 文本兜底，fail-closed。
+- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；引擎验证测试见 `scripts/engine-test.mjs`（21 项，含显式工作区放置）。
 
-```
-DO: 完成用户任务
-CHECK: 独立验证者投票（3 票）
-  通过 → 完成
-  失败 → 重做（最多 100 轮）
-```
+## v0 范围（诚实声明）
 
-### spec（规范驱动）
-
-```
-explore → propose → implement → archive
-每步都有独立验证，propose 步骤需要人工审查
-```
-
-自定义工作流放到 `<workspace>/ralph-flow/workflows/` 即可被识别。
-
-## 与 opencode 版对比
-
-| | opencode 版 | dsh 版 |
-|---|---|---|
-| 命令/工具 | `/ralphflow-*` + `ralphflow_*` | 完全一致 |
-| 状态机 | 引擎驱动 | 引擎移植，驱动换 dsh jobs |
-| 验证者 | opencode 会话 | dsh 子代理 |
-| 审查门 | 卡片 + 命令 | 页头抽屉一键操作 |
-| UI | TUI + 自绘 | dsh 原生插槽 |
-| 主题 | 自绘 | dsh 官方 token |
-
-## 技术特性
-
-- **零会话污染**：不向会话日志写任何自定义事件帧，通过折叠宿主官方 `command/run` + `command/done` 渲染命令卡——第三方自定义帧会让整个会话无法加载
-- **全局通知**：审查门/暂停/完成到达时弹系统通知，任意页面都提醒，跨标签页去重
-- **动作直连**：抽屉按钮通过 HTTP POST 直连 host 执行，不走命令注入输入框
-- **超时进度条**：CHECK 阶段显示剩余时间，验证票实时显示飞行时长
-- **会话卫生**：`/ralphflow-doctor` 检测工作流/资源/会话三维度；`/ralphflow-unbrick` 一键修复历史遗留问题
-- **崩溃恢复**：进程重启后自动扫描实例目录恢复任务视图
-
-## 依赖
-
-- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) `>=0.1.0-rc.7`
-- [ralph-flow](https://github.com/534529531/ralph-flow)（上游状态机引擎）
+有：YAML 引擎、loop + spec、审查门、续跑/接管、失败重试、多工作区、崩溃 fail-safe、报告归档。
+无：多验证者投票（`check_voting` 键会警告忽略）、reset/rewind、客户端 UI、系统通知、验证者沙箱、create/doctor 实现。每项的准入触发条件见设计文档 §11。
 
 ## 许可
 
