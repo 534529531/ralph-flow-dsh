@@ -476,12 +476,11 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         notify(fresh, `⏸ 步骤 \`${step.id}\` 连续 ${fresh.fail_count} 轮未通过（上限 ${max}），已暂停等你定夺。\n\n验证者的意见：\n${verdict.reason}\n\n处理后可运行 \`/ralphflow-continue\` 重新验证，或 \`/ralphflow-cancel\` 结束。`);
         return;
       }
-      // 返工：同一回合直接把原因交回主会话
+      // 返工：同一回合把原因交回主会话（rework DO prompt 已含原因，不再重复通知）
       fresh.do_submitted = false;
       fresh.verdicts = [];
       writeState(fresh, instId);
       deliver(fresh, doPrompt(wf, fresh, step, verdict.reason));
-      notify(fresh, `🔁 验证未通过（第 ${fresh.fail_count}/${max} 轮），已把问题交回模型返工。\n\n${verdict.reason}`);
       return;
     }
     // 全 passed
@@ -526,7 +525,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     state.do_submitted = false;
     writeState(state, instId);
     archiveReport(instId, state, wf, "done");
-    notify(state, `✅ 工作流 \`${wf.name}\` 完成，报告已归档到 \`${path.relative(projectDir, reportsDir)}/\`。`);
+    notify(state, `✅ 工作流 \`${wf.name}\` 完成，报告已归档到工作区的 \`ralph-flow/reports/\`。`);
   }
 
   function deliver(state: InstanceState, text: string): void {
@@ -543,7 +542,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   function archiveReport(instId: string, state: InstanceState, wf: WorkflowDef, status: "done" | "cancelled"): void {
     try {
-      fs.mkdirSync(reportsDir, { recursive: true });
+      // 报告与实例同属一个工作区（实例目录在哪，报告就归档到哪）
+      const target = dirsOf(workspaceOf(instId)).reportsDir;
+      fs.mkdirSync(target, { recursive: true });
       const lines = [
         `# ralphflow 报告 · ${wf.name}`,
         "",
@@ -564,7 +565,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           ? state.verdicts.map((v) => `- [${v.status}] ${v.step_id}: ${v.reason}`)
           : ["- （无判定记录）"]),
       ];
-      fs.writeFileSync(path.join(reportsDir, `${instId}.md`), lines.join("\n"), "utf-8");
+      fs.writeFileSync(path.join(target, `${instId}.md`), lines.join("\n"), "utf-8");
     } catch (e) {
       log("warn", "report_write_failed", { instId, error: msg(e) });
     }

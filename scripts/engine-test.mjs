@@ -152,7 +152,7 @@ const S = () => `session-${++n}`;
   check("孤儿委派 → fail-safe 暂停 check_infra", after.paused && after.pause_reason === "check_infra" && after.delegations.length === 0);
 }
 
-// ── 8) 显式工作区放置：实例落在发起会话的工作区 ──────────────────────────────
+// ── 8) 显式工作区放置：实例与报告都落在发起会话的工作区 ──────────────────────
 {
   const s = S();
   const ws = path.join(dir, "ws-b");
@@ -163,6 +163,13 @@ const S = () => `session-${++n}`;
   check("实例目录落在指定工作区", engine.instanceDir(id).startsWith(path.join(ws, "ralph-flow", "instances")), engine.instanceDir(id));
   check("索引可发现（listInstances 可见）", engine.listInstances().some((i) => i.id === id));
   check("内置工作流已复制到该工作区", fs.existsSync(path.join(ws, "ralph-flow", "workflows", "loop.yaml")));
+  // 完整一轮 + 报告归档位置跟随工作区
+  scripted.push({ status: "passed", reason: "报告位置验证" });
+  submit(id, "完成。\n<promise>done</promise>", s);
+  await settle();
+  const st = engine.readState(id);
+  check("跨工作区实例通过并完成", st && !st.active);
+  check("报告归档在相同工作区", fs.existsSync(path.join(ws, "ralph-flow", "reports", `${id}.md`)), `${ws}/ralph-flow/reports/${id}.md`);
 }
 
 // ── 清理（含索引里由本次测试写入的条目）──────────────────────────────────────
