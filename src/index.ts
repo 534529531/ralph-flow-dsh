@@ -58,10 +58,25 @@ export function apply(ctx: Context): void {
     try { return (ctx.agents as unknown as { get(id: string): unknown }).get(sessionId) as unknown; } catch { return undefined; }
   };
 
+  /** 同一段文本的重复投递护栏：命令被连按/重试时只处理一次（窗口内去重） */
+  const recentDeliveries = new Map<string, number>();
+  const DEDUPE_WINDOW_MS = 5000;
+
   const deliver = (sessionId: string, text: string): boolean => {
     try {
       const agent = agentOf(sessionId) as { steer?: (m: unknown) => unknown; followup?: (m: unknown) => unknown } | undefined;
       if (!agent) return false;
+      // 去重：同会话 + 同文本，5 秒内只投一次（避免用户连按命令造成指令堆叠）
+      const key = `${sessionId}:${text.length}:${text.slice(0, 120)}`;
+      const now = Date.now();
+      const last = recentDeliveries.get(key);
+      if (last !== undefined && now - last < DEDUPE_WINDOW_MS) return true;
+      recentDeliveries.set(key, now);
+      if (recentDeliveries.size > 200) {
+        for (const [k, ts] of recentDeliveries) {
+          if (now - ts > DEDUPE_WINDOW_MS) recentDeliveries.delete(k);
+        }
+      }
       const msg = createUserMessage({
         content: [{ type: "text", text }],
         source: { kind: "plugin", plugin: "ralphflow" },
