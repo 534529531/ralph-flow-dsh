@@ -111,16 +111,16 @@
 
 ## 8. 命令面与 v0 范围
 
-**命令/工具（与 claude/opencode 同名，心智通用）**：
+**命令/工具（与 claude/opencode 同名，心智通用）。命令语义＝「触发词，回复＝大模型」**（迭代 1 实测定案）：`/ralphflow-*` 不直接渲染工具返回值，而是给模型注入一条指令（`source: plugin`），由模型调用同名工具、自然回复——与 claude code/opencode 一致。用法错误与未实现命令仍走命令卡快速反馈（这类本来就该是机械的）。工具侧不变：模型可随时直接调用 `ralphflow_*`。
 
 | 命令 | 工具 | v0 形态 |
 |---|---|---|
-| `/ralphflow-start` | `ralphflow_start` | 实现 |
-| `/ralphflow-list` | `ralphflow_list` | 实现 |
-| `/ralphflow-status` | `ralphflow_status` | 实现 |
-| `/ralphflow-continue` | `ralphflow_continue` | 实现 |
-| `/ralphflow-cancel` | `ralphflow_cancel` | 实现 |
-| `/ralphflow-create` `ralphflow_create` | 只声明不实现（返回"v0 未实现"） |
+| `/ralphflow-start` | `ralphflow_start` | 实现（命令=触发词 → 模型调工具） |
+| `/ralphflow-list` | `ralphflow_list` | 实现（同上） |
+| `/ralphflow-status` | `ralphflow_status` | 实现（同上） |
+| `/ralphflow-continue` | `ralphflow_continue` | 实现（同上） |
+| `/ralphflow-cancel` | `ralphflow_cancel` | 实现（同上） |
+| `/ralphflow-create` `ralphflow_create` | 只声明不实现（返回"v0 未实现"卡） |
 | `/ralphflow-doctor` `ralphflow_doctor` | 只声明不实现 |
 | `/ralphflow-reset` `/ralphflow-rewind` | 只声明不实现 |
 
@@ -158,7 +158,7 @@
 |---|---|---|
 | **v0** | 本文所定义的一切 | — |
 | 迭代 1 | 真实使用反馈修复（明天开跑） | 作者日常使用中炸了/别扭了 |
-| 迭代 1 记录 | **平台行为（非插件缺陷）**：dsh web 新会话的第一条消息若为斜杠命令，宿主会执行并落日志，但界面要到会话出现第一条普通消息后才渲染该命令结果——内置命令（/compact 等）同样如此。**工作区**：新会话先发一句普通消息，之后 `/ralphflow-*` 全部正常。若要在新会话首条命令就能看到结果，属宿主 UI 渲染问题（可向上游 deepseek-harness 报 issue），或等 v0.4 UI 台阶补客户端命令卡 | 已复现 |
+| 迭代 1 记录 | **已解决（重构定案）**：① 命令返回"工具原始文本"不像大模型回复 → 命令改为**触发词**（注入指令给模型，模型调同名工具并自然回复）；② 该重构顺带根治了「dsh web 新会话首条斜杠命令结果不渲染」——命令现在走普通消息路径，平台命令卡渲染缺陷不再影响（无需上游 issue，v0.4 命令卡作 UI 润色而非必需） | 已复现并解决 |
 | v0.2 | 多验证者投票（`check_voting` 激活） | 单验证者 ≥3 次误放/误烧的证据 |
 | v0.3 | `create` 交互式、`doctor` 薄版（fail-fast 的人话出口） | 手写 YAML 开始成为摩擦 |
 | v0.4 | UI（页头/抽屉，复用 v1 配方） | loop+spec 在 ≥20 个真实任务上跑过；命令卡渲染作为本次实测问题的补药 |

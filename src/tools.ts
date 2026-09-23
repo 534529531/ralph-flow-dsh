@@ -136,62 +136,100 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
     };
   }).commands;
 
-  const MODEL_FACING = new Set(["ralphflow-start", "ralphflow-continue"]);
-
+  /** 每条命令 = 触发词：不直接渲染工具返回值，而是给模型一条指令，由模型调用工具并自然回复（claude/opencode 语义）。 */
   const defs: Array<{
     name: string;
     description: string;
     input?: { hint: string };
-    run(args: Record<string, unknown>, agent: Agent | undefined): string | Promise<string>;
+    /** 参数合法时返回给模型的指令；否则返回渲染给用户的卡片（用法错误/未实现） */
+    shim(inv: { rawInput: string; agent: Agent; signal: AbortSignal }):
+      | { kind: "directive"; text: string }
+      | { kind: "card"; text: string };
   }> = [
     {
       name: "ralphflow-start",
       description: "启动工作流：模型执行 → 独立验证 → 失败自动返工。示例：/ralphflow-start loop 修复登录模块的空指针",
       input: { hint: "<工作流> <任务描述>" },
-      run: (args, agent) => deps.handlers.get("ralphflow_start")!(args, agent),
+      shim: (inv) => {
+        const parts = inv.rawInput.trim().split(/\s+/).filter(Boolean);
+        if (parts.length < 2) {
+          return { kind: "card", text: "用法：`/ralphflow-start <工作流> <任务描述>`\n\n示例：`/ralphflow-start loop 修复登录模块的空指针`" };
+        }
+        const workflow = parts[0]!;
+        const task = parts.slice(1).join(" ");
+        return {
+          kind: "directive",
+          text: `用户通过 /ralphflow-start 启动了 ralphflow 工作流。请调用 \`ralphflow_start\` 工具：workflow = \`${workflow}\`，task = \`${task}\`。\n\n工具返回后严格按其中的指示行动（工具文本里已包含本步任务与交卷协议）；若工具报错，如实向用户转达错误和用法。`,
+        };
+      },
     },
     {
       name: "ralphflow-continue",
       description: "推进工作流：放行审查门 / 解除暂停 / 接管实例。示例：/ralphflow-continue <实例ID>",
       input: { hint: "[实例ID]" },
-      run: (args, agent) => deps.handlers.get("ralphflow_continue")!(args, agent),
+      shim: (inv) => {
+        const parts = inv.rawInput.trim().split(/\s+/).filter(Boolean);
+        const instance = parts[0] ? `，instance = \`${parts[0]}\`` : "";
+        return {
+          kind: "directive",
+          text: `用户执行了 /ralphflow-continue，要推进当前工作流（放行审查门 / 解除暂停 / 接管实例）。请调用 \`ralphflow_continue\` 工具${instance}。\n\n按工具返回结果行动：已推进就简短确认下一步；被拒绝（判定未通过/未交卷）就如实转达原因。`,
+        };
+      },
     },
     {
       name: "ralphflow-status",
       description: "查看实例状态与判定的命令。示例：/ralphflow-status",
       input: { hint: "[实例ID]" },
-      run: (args, agent) => deps.handlers.get("ralphflow_status")!(args, agent),
+      shim: (inv) => {
+        const parts = inv.rawInput.trim().split(/\s+/).filter(Boolean);
+        const instance = parts[0] ? `，instance = \`${parts[0]}\`` : "";
+        return {
+          kind: "directive",
+          text: `用户执行了 /ralphflow-status，想了解工作流进度。请调用 \`ralphflow_status\` 工具${instance}，然后向用户清晰说明当前实例的状态（进行到哪一步、有无判定、是否暂停等）。`,
+        };
+      },
     },
     {
       name: "ralphflow-list",
       description: "列出全部实例与可用工作流。示例：/ralphflow-list",
-      run: () => deps.handlers.get("ralphflow_list")!({}, undefined),
+      shim: () => ({
+        kind: "directive",
+        text: "用户执行了 /ralphflow-list。请调用 `ralphflow_list` 工具，然后用一句话向用户概述有哪些实例（含状态）和可用工作流。工具返回空则说明还没有任何实例。",
+      }),
     },
     {
       name: "ralphflow-cancel",
       description: "取消活跃实例并归档报告。示例：/ralphflow-cancel",
       input: { hint: "[实例ID] [原因]" },
-      run: (args, agent) => deps.handlers.get("ralphflow_cancel")!(args, agent),
+      shim: (inv) => {
+        const parts = inv.rawInput.trim().split(/\s+/).filter(Boolean);
+        const instance = parts[0] ? `，instance = \`${parts[0]}\`` : "";
+        const reason = parts.length > 1 ? `，reason = \`${parts.slice(1).join(" ")}\`` : "";
+        return {
+          kind: "directive",
+          text: `用户执行了 /ralphflow-cancel，要取消当前工作流实例${instance}${reason}。请调用 \`ralphflow_cancel\` 工具，然后向用户确认已取消（或转达错误）。`,
+        };
+      },
     },
     {
       name: "ralphflow-create",
       description: "（本版本未实现）交互式创建自定义工作流。",
-      run: () => deps.handlers.get("ralphflow_create")!({}, undefined),
+      shim: () => ({ kind: "card", text: "本版本（v0）尚未实现该命令。已实现：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`。" }),
     },
     {
       name: "ralphflow-doctor",
       description: "（本版本未实现）诊断工作流/实例/状态。",
-      run: () => deps.handlers.get("ralphflow_doctor")!({}, undefined),
+      shim: () => ({ kind: "card", text: "本版本（v0）尚未实现该命令。已实现：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`。" }),
     },
     {
       name: "ralphflow-reset",
       description: "（本版本未实现）重做当前步。",
-      run: () => deps.handlers.get("ralphflow_reset")!({}, undefined),
+      shim: () => ({ kind: "card", text: "本版本（v0）尚未实现该命令。已实现：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`。" }),
     },
     {
       name: "ralphflow-rewind",
       description: "（本版本未实现）回退到上游步骤。",
-      run: () => deps.handlers.get("ralphflow_rewind")!({}, undefined),
+      shim: () => ({ kind: "card", text: "本版本（v0）尚未实现该命令。已实现：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`。" }),
     },
   ];
 
@@ -203,12 +241,14 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
         ...(def.input ? { input: { hint: def.input.hint } } : {}),
         handler: async (inv: { rawInput: string; agent: Agent; signal: AbortSignal }) => {
           try {
-            const args = mapArgs(def.name, inv.rawInput);
-            const text = await def.run(args, inv.agent);
-            if (MODEL_FACING.has(def.name)) {
-              deps.deliver(messageSessionId(inv.agent), text);
+            const out = def.shim({ rawInput: inv.rawInput, agent: inv.agent, signal: inv.signal });
+            if (out.kind === "directive") {
+              const sid = messageSessionId(inv.agent);
+              if (sid) deps.deliver(sid, `[ralphflow] ${out.text}`);
+              // 回复留给模型，这里不渲染命令卡文本（claude/opencode 语义）
+              return { kind: "success" };
             }
-            return { kind: "success", text };
+            return { kind: "success", text: out.text };
           } catch (err) {
             return { kind: "error", text: err instanceof Error ? err.message : String(err) };
           }
@@ -222,27 +262,4 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
 
 function messageSessionId(agent: Agent | undefined): string {
   return (agent as { session?: { id?: string } } | undefined)?.session?.id ?? "";
-}
-
-/** 把命令的 rawInput 映射成工具参数（与 opencode 版参数语义一致） */
-function mapArgs(name: string, raw: string): Record<string, unknown> {
-  const parts = raw.trim().split(/\s+/).filter(Boolean);
-  switch (name) {
-    case "ralphflow-start":
-      if (parts.length < 2) {
-        throw new Error("用法：/ralphflow-start <工作流> <任务描述>\n\n示例：/ralphflow-start loop 修复登录模块的空指针");
-      }
-      return { workflow: parts[0], task: parts.slice(1).join(" ") };
-    case "ralphflow-continue":
-    case "ralphflow-status":
-      return parts.length > 0 ? { instance: parts[0] } : {};
-    case "ralphflow-cancel": {
-      const args: Record<string, unknown> = {};
-      if (parts[0]) args.instance = parts[0];
-      if (parts.length > 1) args.reason = parts.slice(1).join(" ");
-      return args;
-    }
-    default:
-      return {};
-  }
 }
