@@ -792,6 +792,40 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return { ok: true, text: head.concat(body).join("\n") };
   }
 
+  /** 诊断（ralphflow_doctor）：工作流定义 + 实例状态，坏文件 fail-fast 说人话 */
+  function diagnose(): ToolResult {
+    const wfs = listWorkflows();
+    const lines = ["## 工作流诊断", ""];
+    if (wfs.length === 0) lines.push("（没有工作流）");
+    for (const w of wfs) {
+      if (w.invalid) {
+        lines.push(`- ❌ **${w.name}**：定义无效`);
+        for (const p of w.problems) lines.push(`  - ${p}`);
+      } else {
+        lines.push(`- ✅ **${w.name}**: ${w.desc || "(无描述)"}`);
+        for (const wn of w.warnings) lines.push(`  - ⚠️ ${wn}`);
+      }
+      lines.push("");
+    }
+    lines.push("## 实例诊断", "");
+    const insts = listInstances();
+    if (insts.length === 0) lines.push("（暂无实例）");
+    for (const i of insts) {
+      const s = i.state;
+      const flags: string[] = [];
+      if (!s.active) flags.push("已结束");
+      else if (s.paused) flags.push(`暂停(${s.pause_reason})`);
+      else if (s.delegations.length > 0) flags.push("验证中");
+      else if (s.do_submitted) flags.push("待放行");
+      else flags.push("执行中");
+      if (!s.owner_session) flags.push("无属主");
+      if (s.delegations.length > 0) flags.push(`${s.delegations.length} 笔在飞委派`);
+      lines.push(`- \`${i.id}\` — ${s.workflow_name} · ${flags.join(" · ")}`);
+    }
+    lines.push("", "结论：所有 ❌ 项即阻塞项，修复后重跑本命令直至全部 ✅。");
+    return { ok: true, text: lines.join("\n") };
+  }
+
   /** 插件加载/进程重启：孤儿委派 fail-safe（不隐式继续、不隐式通过） */
   function restore(): void {
     for (const { id, state } of listInstances()) {
@@ -811,7 +845,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     root, instancesDir, workflowsDir, reportsDir, projectDir,
     ensureLayout, listWorkflows, loadWorkflow,
     readState, listInstances, instanceDir, workspaceOf, indexPath,
-    start, onAssistantMessage, continueInstance, cancelInstance, statusOf, listAll, restore,
+    start, onAssistantMessage, continueInstance, cancelInstance, statusOf, listAll, restore, diagnose,
     activeInstanceOfSession,
   };
 }

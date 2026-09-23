@@ -120,11 +120,12 @@
 | `/ralphflow-status` | `ralphflow_status` | 实现（同上） |
 | `/ralphflow-continue` | `ralphflow_continue` | 实现（同上） |
 | `/ralphflow-cancel` | `ralphflow_cancel` | 实现（同上） |
-| `/ralphflow-create` `ralphflow_create` | 只声明不实现（返回"v0 未实现"卡） |
-| `/ralphflow-doctor` `ralphflow_doctor` | 只声明不实现 |
-| `/ralphflow-reset` `/ralphflow-rewind` | 只声明不实现 |
+| `/ralphflow-create` | `ralphflow_create` | 实现（引导式设计指引 → doctor 校验到可启动） |
+| `/ralphflow-doctor` | `ralphflow_doctor` | 实现（工作流/实例诊断，坏文件说人话） |
+| `/loop`、`/spec`、`/<自定义>` | — | 动态注册的工作流快捷命令（与 opencode 一致） |
+| `/ralphflow-reset` `/ralphflow-rewind` | 只声明不实现（涉及上下文管理，作者定案暂缓） |
 
-**v0 没有**：多验证者投票、reset、rewind、客户端 UI、HTTP 通道、通知、沙箱、create/doctor 实现。
+**v0 没有**：多验证者投票、reset、rewind、客户端 UI、HTTP 通道、通知、沙箱。
 
 **v0 有**：YAML 引擎、内置 `loop` + `spec`、审查门、续跑、落盘、失败重试、多实例、报告归档、崩溃 fail-safe。
 

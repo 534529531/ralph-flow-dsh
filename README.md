@@ -27,8 +27,11 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 | `/ralphflow-status` | `ralphflow_status` | 查看实例状态与判定 |
 | `/ralphflow-list` | `ralphflow_list` | 列出实例与工作流（表格） |
 | `/ralphflow-cancel` | `ralphflow_cancel` | 取消并归档报告 |
+| `/ralphflow-create` | `ralphflow_create` | 交互式创建自定义工作流 |
+| `/ralphflow-doctor` | `ralphflow_doctor` | 诊断工作流定义与实例状态 |
+| `/loop`、`/spec`、`/<自定义>` | — | 工作流快捷命令（等同 `/ralphflow-start`） |
 
-`create / doctor / reset / rewind` 已声明未实现（会返回说明）。命令语义 = **触发词**：注入指令给模型，由模型调用同名工具并**自然语言回复**（与 claude code/opencode 一致）。
+`reset / rewind` 已声明未实现（涉及上下文管理，暂缓）；其余命令与 opencode 版功能看齐。命令语义 = **触发词**：注入指令给模型，由模型调用同名工具并**自然语言回复**（与 claude code/opencode 一致）。
 
 内置工作流：`loop`（单步对抗验证循环）、`spec`（需求→规格→设计→任务→实现→验收→归档，propose 步带审查门）。自定义工作流按同一方言放到 `<workspace>/ralph-flow/workflows/`。
 

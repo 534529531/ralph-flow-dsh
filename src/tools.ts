@@ -1,13 +1,15 @@
 /**
  * Ralph Flow for dsh v2 — 工具 + 命令（命名与 opencode/claude 版一致）
  *
- * v0 命令面：start / list / status / continue / cancel 五个实现；
- * create / doctor / reset / rewind 只注册声明（返回"本版本未实现"），保持迁移无落差。
+ * 命令语义 = 触发词：/ralphflow-* 注入指令给模型，由模型调用同名工具并自然回复。
+ * 已实现：start / list / status / continue / cancel / create / doctor + 工作流快捷命令（/loop /spec …）；
+ * reset / rewind 只声明（涉及上下文管理，暂缓）。
  */
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { Engine } from "./engine.js";
+import { CREATE_GUIDE } from "./create.js";
 
 export interface ToolContext {
   ctx: Context;
@@ -57,7 +59,14 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     return engine.cancelInstance(sessionId, args?.instance ? String(args.instance) : undefined, args?.reason ? String(args.reason) : undefined).text;
   };
 
-  const unimplHandler: ToolHandler = (_, __) => "本版本（v0）尚未实现该命令。已实现：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`。";
+  const createHandler: ToolHandler = (args) => {
+    const idea = args?.idea ? String(args.idea).trim() : "";
+    return idea ? `你要创建的工作流：**${idea}**\n\n---\n\n${CREATE_GUIDE}` : CREATE_GUIDE;
+  };
+
+  const doctorHandler: ToolHandler = () => engine.diagnose().text;
+
+  const unimplHandler: ToolHandler = () => "本版本未实现（涉及上下文管理，暂缓）。已可用：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`。";
 
   const toolDefs: Array<{ name: string; description: string; params: Record<string, any>; handler: ToolHandler }> = [
     {
@@ -100,8 +109,22 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
       },
       handler: cancelHandler,
     },
-    // 声明不实现：与其它版本同名，防止迁移落差（返回明确解释）
-    ...["create", "doctor", "reset", "rewind"].map((n) => ({
+    {
+      name: "ralphflow_create",
+      description: "获取自定义工作流的交互式设计指引（模型与用户一轮问清流程 → 呈现步骤图 → 写 YAML → doctor 校验到可启动）。",
+      params: {
+        idea: { type: "string", description: "用户想自动化的流程想法（可选，有则附在指引前）。" },
+      },
+      handler: createHandler,
+    },
+    {
+      name: "ralphflow_doctor",
+      description: "诊断工作流定义与实例状态：坏文件说人话、列出阻塞项，修完重跑直到全部 ✅。",
+      params: {},
+      handler: doctorHandler,
+    },
+    // 声明不实现：reset/rewind 涉及上下文管理，本版本暂缓（返回明确解释）
+    ...["reset", "rewind"].map((n) => ({
       name: `ralphflow_${n}`,
       description: `（本版本未实现，仅为命令面占位）与 opencode/claude 版同名的 ralphflow_${n} 工具。`,
       params: {},
@@ -127,7 +150,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
 // ─── 命令注册 ────────────────────────────────────────────────────────────────
 
 export function registerCommands(deps: ToolContext & { handlers: Map<string, ToolHandler> }): void {
-  const { ctx } = deps;
+  const { ctx, engine } = deps;
   const commands = (ctx as unknown as {
     commands: {
       register(def: {
@@ -216,23 +239,30 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
     },
     {
       name: "ralphflow-create",
-      description: "（本版本未实现）交互式创建自定义工作流。",
-      shim: () => ({ kind: "card", text: "本版本（v0）尚未实现该命令。已实现：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`。" }),
+      description: "交互式创建自定义工作流（模型引导设计 → 写 YAML → doctor 校验）。示例：/ralphflow-create 把 C 代码迁移到 Rust",
+      input: { hint: "[流程想法]" },
+      shim: (inv) => ({
+        kind: "directive",
+        text: `用户想${inv.rawInput.trim() ? `创建一个工作流：${inv.rawInput.trim()}` : "创建自定义 Ralph Flow 工作流"}。请调用 \`ralphflow_create\` 工具获取完整设计指引，然后按指引与用户交互：一轮问清流程阶段与审查门位置（用户没说清楚才问）→ 呈现步骤图 → 写 YAML 到 \`ralph-flow/workflows/\` → 调用 \`ralphflow_doctor\` 校验到「可启动」且无警告 → 交接运行方式。`,
+      }),
     },
     {
       name: "ralphflow-doctor",
-      description: "（本版本未实现）诊断工作流/实例/状态。",
-      shim: () => ({ kind: "card", text: "本版本（v0）尚未实现该命令。已实现：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`。" }),
+      description: "诊断工作流定义与实例状态。示例：/ralphflow-doctor",
+      shim: () => ({
+        kind: "directive",
+        text: "用户执行了 /ralphflow-doctor，想诊断工作流与实例。请调用 `ralphflow_doctor` 工具，然后把诊断为 ❌ 的每一项用通俗语言向用户说明原因与修复建议；全部 ✅ 就简短说「一切正常」。",
+      }),
     },
     {
       name: "ralphflow-reset",
       description: "（本版本未实现）重做当前步。",
-      shim: () => ({ kind: "card", text: "本版本（v0）尚未实现该命令。已实现：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`。" }),
+      shim: () => ({ kind: "card", text: "本版本未实现（涉及上下文管理，暂缓）。已可用：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`。" }),
     },
     {
       name: "ralphflow-rewind",
       description: "（本版本未实现）回退到上游步骤。",
-      shim: () => ({ kind: "card", text: "本版本（v0）尚未实现该命令。已实现：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`。" }),
+      shim: () => ({ kind: "card", text: "本版本未实现（涉及上下文管理，暂缓）。已可用：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`。" }),
     },
   ];
 
@@ -260,6 +290,44 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
     } catch (err) {
       ctx.logger?.warn?.("[ralphflow] command registration skipped:", err);
     }
+  }
+
+  // ─── 动态工作流快捷命令（/loop、/spec、自定义名）——与 opencode/claude 语义一致 ──
+  const taken = new Set<string>(defs.map((d) => d.name));
+  try {
+    for (const wf of engine.listWorkflows()) {
+      if (wf.invalid) continue;
+      const slug = String(wf.name).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+      if (!slug || taken.has(slug)) continue;
+      taken.add(slug);
+      const desc = wf.desc || `启动 ${wf.name} 工作流`;
+      try {
+        commands.register({
+          name: slug,
+          description: `(ralphflow) ${desc} · 示例：/${slug} <任务描述>`,
+          input: { hint: "<任务描述>" },
+          handler: async (inv: { rawInput: string; agent: Agent; signal: AbortSignal }) => {
+            try {
+              const task = inv.rawInput.trim();
+              if (!task) {
+                return { kind: "error", text: `用法：/${slug} <任务描述>\n\n示例：/${slug} 修复登录模块的空指针` };
+              }
+              const sid = messageSessionId(inv.agent);
+              if (sid) {
+                deps.deliver(sid, `[ralphflow] 用户通过 /${slug} 启动了 \`${wf.name}\` 工作流。请调用 \`ralphflow_start\` 工具：workflow = \`${wf.name}\`，task = \`${task}\`。按工具返回结果行动（含 DO 任务与交卷协议）；若报错，如实转达。`);
+              }
+              return { kind: "success" };
+            } catch (err) {
+              return { kind: "error", text: err instanceof Error ? err.message : String(err) };
+            }
+          },
+        });
+      } catch {
+        // 与其它插件撞名：静默跳过，与 opencode 版"绝不覆盖"语义一致
+      }
+    }
+  } catch (err) {
+    ctx.logger?.warn?.("[ralphflow] workflow shortcut registration skipped:", err);
   }
 }
 
