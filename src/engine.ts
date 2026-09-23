@@ -142,17 +142,38 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   /** 实例 → 在飞取消信号（取消/暂停时中止验证者，不白烧 token） */
   const aborts = new Map<string, AbortController>();
 
+  // ─── 多工作区：实例落在「发起会话的工作区」，索引文件负责任意发现 ─────────
+  const indexPath = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
+  const registry: Record<string, string> = (() => {
+    try { return JSON.parse(fs.readFileSync(indexPath, "utf-8")) as Record<string, string>; } catch { return {}; }
+  })();
+  function saveRegistry(): void {
+    try {
+      const tmp = `${indexPath}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(registry, null, 2), "utf-8");
+      fs.renameSync(tmp, indexPath);
+    } catch (e) { log("warn", "registry_write_failed", { error: msg(e) }); }
+  }
+  function registerInstance(instId: string, workspace: string): void { registry[instId] = workspace; saveRegistry(); }
+  function workspaceOf(instId: string): string { return registry[instId] ?? projectDir; }
+  function rootOf(workspace: string): string { return path.join(workspace, RALPH_FLOW_DIR); }
+  function dirsOf(workspace: string) {
+    const r = rootOf(workspace);
+    return { root: r, instancesDir: path.join(r, "instances"), workflowsDir: path.join(r, "workflows"), reportsDir: path.join(r, "reports") };
+  }
+
   const log = (level: "info" | "warn" | "error", event: string, data?: unknown) => {
     try { ports.log?.(level, event, data); } catch {}
   };
 
-  function ensureLayout(): void {
-    for (const d of [root, instancesDir, workflowsDir, reportsDir]) {
-      try { fs.mkdirSync(d, { recursive: true }); } catch {}
+  function ensureLayout(workspace = projectDir): void {
+    const d = dirsOf(workspace);
+    for (const p of [d.root, d.instancesDir, d.workflowsDir, d.reportsDir]) {
+      try { fs.mkdirSync(p, { recursive: true }); } catch {}
     }
     // 内置工作流落盘为可编辑资产（已存在则不覆盖——用户改动优先）
     for (const name of BUILTIN_WORKFLOWS) {
-      const dest = path.join(workflowsDir, `${name}.yaml`);
+      const dest = path.join(d.workflowsDir, `${name}.yaml`);
       if (fs.existsSync(dest)) continue;
       const src = builtinWorkflowPath(name);
       if (!src) continue;
@@ -175,18 +196,23 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   const KNOWN_STEP_KEYS = new Set(["id", "desc", "do", "check", "check_voting", "input", "output", "manual_step", "on_pass", "on_fail", "max_fail_count"]);
   const KNOWN_WF_KEYS = new Set(["description", "manual_step", "adversarial_check", "steps"]);
 
+  function knownWorkflowDirs(): string[] {
+    const dirs = new Set<string>([workflowsDir, globalWorkflowsDir]);
+    for (const w of Object.values(registry)) dirs.add(dirsOf(w).workflowsDir);
+    return [...dirs];
+  }
+
   function workflowPaths(name: string): string[] {
-    return [
-      path.join(workflowsDir, `${name}.yaml`),
-      path.join(workflowsDir, `${name}.yml`),
-      path.join(globalWorkflowsDir, `${name}.yaml`),
-      path.join(globalWorkflowsDir, `${name}.yml`),
-    ];
+    const out: string[] = [];
+    for (const dir of knownWorkflowDirs()) {
+      out.push(path.join(dir, `${name}.yaml`), path.join(dir, `${name}.yml`));
+    }
+    return out;
   }
 
   function listWorkflows(): WorkflowEntry[] {
     const names = new Set<string>(BUILTIN_WORKFLOWS);
-    for (const dir of [workflowsDir, globalWorkflowsDir]) {
+    for (const dir of knownWorkflowDirs()) {
       try {
         for (const f of fs.readdirSync(dir)) {
           if (/\.ya?ml$/i.test(f)) names.add(f.replace(/\.ya?ml$/i, ""));
@@ -298,7 +324,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   // ─── 状态 I/O（原子写）─────────────────────────────────────────────────────
 
-  function instanceDir(instId: string): string { return path.join(instancesDir, instId); }
+  function instanceDir(instId: string): string { return path.join(dirsOf(workspaceOf(instId)).instancesDir, instId); }
   function statePath(instId: string): string { return path.join(instanceDir(instId), "state.json"); }
 
   function readState(instId: string): InstanceState | null {
@@ -332,7 +358,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   function listInstances(): InstanceInfo[] {
     try {
-      return fs.readdirSync(instancesDir)
+      return Object.keys(registry)
         .map((id) => ({ id, state: readState(id) }))
         .filter((x): x is InstanceInfo => !!x.state)
         .sort((a, b) => (a.state.started_at < b.state.started_at ? -1 : 1));
@@ -548,13 +574,15 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return listInstances().find((i) => i.state.active && i.state.owner_session === sessionId);
   }
 
-  function start(workflowName: string, task: string, sessionId: string): ToolResult {
+  /** workspace：发起会话的工作区（缺省回落 projectDir 单根模式） */
+  function start(workflowName: string, task: string, sessionId: string, workspace = projectDir): ToolResult {
     if (!workflowName?.trim()) return { ok: false, text: "缺少工作流名。用法：`ralphflow_start(workflow, task)` 或 `/ralphflow-start <工作流> <任务>`。" };
     if (!task?.trim()) return { ok: false, text: "缺少任务描述。示例：`/ralphflow-start loop 修复登录模块的空指针`。" };
     const mine = activeInstanceOfSession(sessionId);
     if (mine) {
       return { ok: false, text: `当前会话已有活跃实例 \`${mine.id}\`（${mine.state.workflow_name} · ${mine.state.current_step}）。用 \`/ralphflow-continue\` 继续，或 \`/ralphflow-cancel\` 取消。` };
     }
+    try { ensureLayout(workspace); } catch {}
     const { def: wf, problems, warnings } = loadWorkflow(workflowName.trim());
     if (!wf) return { ok: false, text: `工作流 \`${workflowName}\` 无法启动：\n${problems.map((p) => `- ${p}`).join("\n")}` };
     const first = wf.steps[0]!;
@@ -565,9 +593,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       fail_count: 0, paused: false, do_submitted: false, owner_session: sessionId,
       delegations: [], verdicts: [], history: [], started_at: now, updated_at: now,
     };
+    registerInstance(instId, workspace);
     pushHistory(state, "start", `workflow=${wf.name}`, first.id);
     writeState(state, instId);
-    log("info", "instance_start", { instId, workflow: wf.name });
+    log("info", "instance_start", { instId, workflow: wf.name, workspace });
     const warnText = warnings.length > 0 ? `\n\n⚠️ 定义里有本版本未支持的键（已忽略）：\n${warnings.map((w) => `- ${w}`).join("\n")}` : "";
     const text = [
       `🚀 已启动工作流 **${wf.name}**（实例 \`${instId}\`，共 ${wf.steps.length} 步）。${warnText}`,
@@ -710,24 +739,57 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return lines.join("\n");
   }
 
+  /** 派生状态标签（无相位字段） */
+  function phaseLabel(s: InstanceState): string {
+    if (!s.active) return "已结束";
+    if (s.paused) return `暂停(${s.pause_reason})`;
+    if (s.delegations.length > 0) return "验证中";
+    if (s.do_submitted) return "待放行";
+    return "执行中";
+  }
+
+  function relativeTime(iso: string | undefined): string {
+    if (!iso) return "未知";
+    try {
+      const t = new Date(iso).getTime();
+      if (!Number.isFinite(t)) return "未知";
+      const ms = Date.now() - t;
+      if (ms < 60_000) return "刚刚";
+      if (ms < 3_600_000) return `${Math.floor(ms / 60_000)} 分钟前`;
+      if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)} 小时前`;
+      return `${Math.floor(ms / 86_400_000)} 天前`;
+    } catch { return "未知"; }
+  }
+
   function listAll(): ToolResult {
     const all = listInstances();
-    if (all.length === 0) return { ok: true, text: "还没有任何实例。" };
-    const active = all.filter((i) => i.state.active);
-    const lines = [
-      `活跃实例 ${active.length} 个 / 共 ${all.length} 个：`,
-      "",
-      ...all.map((i) => {
+    const wfs = listWorkflows();
+    const head: string[] = ["## 可用工作流", ""];
+    if (wfs.length === 0) head.push("没有找到工作流。");
+    else {
+      for (const w of wfs) {
+        head.push(`- **${w.name}**: ${w.desc || "(无描述)"}${w.invalid ? "（定义无效）" : ""}`);
+      }
+    }
+    const body: string[] = ["", `## 工作流实例（${all.length} 个）`, ""];
+    if (all.length === 0) {
+      body.push("（暂无实例）");
+    } else {
+      for (const i of all) {
         const s = i.state;
-        const flag = !s.active ? "已结束" : s.paused ? `暂停(${s.pause_reason})` : s.delegations.length > 0 ? "验证中" : s.do_submitted ? "待放行" : "执行中";
-        return `- \`${i.id}\` — ${s.workflow_name} · ${s.current_step} · ${flag} · 失败${s.fail_count} · ${s.owner_session ? "有属主" : "无属主"}`;
-      }),
-      "",
-      "接管无属主实例：`/ralphflow-continue <实例ID>`。",
-      "",
-      "可用工作流：" + listWorkflows().map((w) => `${w.name}${w.invalid ? "(定义无效)" : ""}`).join("、"),
-    ];
-    return { ok: true, text: lines.join("\n") };
+        const task = s.user_task.replace(/\s+/g, " ").slice(0, 60) + (s.user_task.length > 60 ? "…" : "");
+        body.push(`### \`${i.id}\``);
+        body.push(`- **工作流**: ${s.workflow_name}`);
+        if (task) body.push(`- **任务**: ${task}`);
+        body.push(`- **步骤**: ${s.current_step}（${phaseLabel(s)}）`);
+        body.push(`- **状态**: ${phaseLabel(s)}`);
+        body.push(`- **属主会话**: ${s.owner_session ? `\`${s.owner_session.slice(0, 8)}\`` : "无"}`);
+        body.push(`- **最后活动**: ${relativeTime(s.updated_at)}`);
+        body.push("");
+      }
+    }
+    body.push("接管无属主实例：`/ralphflow-continue <实例ID>`。");
+    return { ok: true, text: head.concat(body).join("\n") };
   }
 
   /** 插件加载/进程重启：孤儿委派 fail-safe（不隐式继续、不隐式通过） */
@@ -748,7 +810,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   return {
     root, instancesDir, workflowsDir, reportsDir, projectDir,
     ensureLayout, listWorkflows, loadWorkflow,
-    readState, listInstances, instanceDir,
+    readState, listInstances, instanceDir, workspaceOf, indexPath,
     start, onAssistantMessage, continueInstance, cancelInstance, statusOf, listAll, restore,
     activeInstanceOfSession,
   };

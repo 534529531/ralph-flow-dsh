@@ -152,6 +152,29 @@ const S = () => `session-${++n}`;
   check("孤儿委派 → fail-safe 暂停 check_infra", after.paused && after.pause_reason === "check_infra" && after.delegations.length === 0);
 }
 
+// ── 8) 显式工作区放置：实例落在发起会话的工作区 ──────────────────────────────
+{
+  const s = S();
+  const ws = path.join(dir, "ws-b");
+  fs.mkdirSync(ws, { recursive: true });
+  const r = engine.start("loop", "工作区用例", s, ws);
+  check("显式工作区 start 成功", r.ok);
+  const id = newestId();
+  check("实例目录落在指定工作区", engine.instanceDir(id).startsWith(path.join(ws, "ralph-flow", "instances")), engine.instanceDir(id));
+  check("索引可发现（listInstances 可见）", engine.listInstances().some((i) => i.id === id));
+  check("内置工作流已复制到该工作区", fs.existsSync(path.join(ws, "ralph-flow", "workflows", "loop.yaml")));
+}
+
+// ── 清理（含索引里由本次测试写入的条目）──────────────────────────────────────
+const indexPath = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
+try {
+  const idx = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+  let changed = false;
+  for (const [id, ws] of Object.entries(idx)) {
+    if (typeof ws === "string" && ws.startsWith(dir)) { delete idx[id]; changed = true; }
+  }
+  if (changed) fs.writeFileSync(indexPath, JSON.stringify(idx, null, 2), "utf-8");
+} catch {}
 try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
 
 console.log(`\n${pass} passed, ${fail} failed`);

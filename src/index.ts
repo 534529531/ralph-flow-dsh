@@ -13,17 +13,21 @@ import { registerTools, registerCommands } from "./tools.js";
 export const name = "ralphflow";
 export const inject = ["tools", "commands", "subagents", "agents", "sessions"];
 
-/** 工作区根：RALPHFLOW_WORKSPACE 环境变量 > 首个会话 cwd > 进程 cwd */
+/** 工作区根：RALPHFLOW_WORKSPACE 环境变量 > 进程 cwd（实例按会话工作区放置，见 workspaceOfSession） */
 function resolveWorkspace(ctx: Context): string {
   const env = process.env.RALPHFLOW_WORKSPACE;
   if (env && env.trim()) return env.trim();
-  try {
-    const sessions = ctx.sessions as unknown as { list(): { header?: { cwd?: string } }[] } | undefined;
-    for (const s of sessions?.list() ?? []) {
-      if (s.header?.cwd) return s.header.cwd;
-    }
-  } catch {}
   return process.cwd();
+}
+
+/** 发起会话的工作区（实例资产沉淀的位置）；查不到回落到全局根 */
+function workspaceOfSession(ctx: Context, sessionId: string, fallback: string): string {
+  try {
+    const sessions = ctx.sessions as unknown as { get(id: string): { header?: { cwd?: string } } | undefined };
+    const cwd = sessions.get(sessionId)?.header?.cwd;
+    if (cwd && cwd.trim()) return cwd;
+  } catch {}
+  return resolveWorkspace(ctx) || fallback;
 }
 
 function lastAssistantText(data: unknown): string | undefined {
@@ -100,7 +104,7 @@ export function apply(ctx: Context): void {
     log("warn", "session_event_listener_failed", { error: e instanceof Error ? e.message : String(e) });
   }
 
-  const handlers = registerTools({ ctx, engine, deliver });
+  const handlers = registerTools({ ctx, engine, deliver, workspaceOfSession: (sid) => workspaceOfSession(ctx, sid, workspace) });
   registerCommands({ ctx, engine, deliver, handlers });
 
   // 崩溃/重载恢复：孤儿委派 fail-safe（暂停等用户，不隐式继续）

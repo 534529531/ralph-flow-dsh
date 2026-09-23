@@ -13,6 +13,8 @@ export interface ToolContext {
   ctx: Context;
   engine: Engine;
   deliver: (sessionId: string, text: string) => boolean;
+  /** 解析发起会话的工作区（实例资产落点） */
+  workspaceOfSession?: (sessionId: string) => string;
 }
 
 export type ToolHandler = (args: any, agent: Agent | undefined) => Promise<string> | string;
@@ -31,7 +33,8 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
   const startHandler: ToolHandler = (args, agent) => {
     const sessionId = sessionIdOf(agent);
     if (!sessionId) return "找不到当前会话，无法启动工作流。";
-    return engine.start(String(args?.workflow ?? ""), String(args?.task ?? ""), sessionId).text;
+    const workspace = deps.workspaceOfSession?.(sessionId) ?? engine.projectDir;
+    return engine.start(String(args?.workflow ?? ""), String(args?.task ?? ""), sessionId, workspace).text;
   };
 
   const continueHandler: ToolHandler = (args, agent) => {
@@ -194,7 +197,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       description: "列出全部实例与可用工作流。示例：/ralphflow-list",
       shim: () => ({
         kind: "directive",
-        text: "用户执行了 /ralphflow-list。请调用 `ralphflow_list` 工具，然后用一句话向用户概述有哪些实例（含状态）和可用工作流。工具返回空则说明还没有任何实例。",
+        text: "用户执行了 /ralphflow-list。请调用 `ralphflow_list` 工具获取数据，然后把「可用工作流」整理成**表格**（列：工作流 | 用途描述），把「工作流实例」按工具返回的字段简要列给用户（实例 id、工作流、任务、步骤、状态、属主）。数据以工具返回为准，不要编造；没有实例就直说。",
       }),
     },
     {
