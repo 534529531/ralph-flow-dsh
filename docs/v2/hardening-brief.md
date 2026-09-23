@@ -60,6 +60,8 @@
 | 重复投递 | 已有 5 秒同文本去重护栏；若发现单击命令产生多条指令，查注册幂等 |
 | 宿主日志 | 插件日志进 GUI 终端（`/proc/<pid>/fd/1`），会话里读不到——验证要靠 `scripts/*.mjs`、实例 `state.json`、`ralph-flow/reports/` 与真实 GUI 行为 |
 | 验证者能力 | 委派用 `ctx.subagents.start(provider, {...})`；provider 名从 `ctx.subagents.list()` 取（优先 `spawn`）；`outputSchema`/`toolFilter` 要先看 provider 的 `capabilities` |
+| **复现脚本的删除范围（血泪）** | 上一轮有复现脚本执行了 `rmSync(realWs, …)`，把**真实工作区的 `ralph-flow/`** 删了（连同它自己正在跑的实例状态）→ 实例消失 → 之后的交卷无归属被忽略，整轮验证作废。**规则：一律 `mkdtemp` 临时工作区，禁止对真实工作区/`~/.dsh` 索引做任何删除**；清理只允许针对你 `mkdtemp` 出来的目录 |
+| 交卷无归属 | 已加告警（`src/index.ts`）：会话曾有活跃实例、交卷时却找不到实例 → 会明确播报"交卷未被处理"并提示改用临时工作区。看到这条告警就说明实例状态已丢，**重建实例重跑**，不要继续在旧实例上磨 |
 
 ## 6. 验收标准（独立验证者逐条核对）
 

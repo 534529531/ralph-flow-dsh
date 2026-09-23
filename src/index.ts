@@ -101,6 +101,8 @@ export function apply(ctx: Context): void {
   try { engine.ensureLayout(); } catch (e) { log("warn", "ensure_layout_failed", { error: String(e) }); }
 
   // 全局会话事件流 → 引擎（只观测交卷事实；判定永远不会从这里产生）
+  // recentlyOwned：会话 → 最近一次"拥有活跃实例"的时刻（交卷丢失告警用）
+  const recentlyOwned = new Map<string, number>();
   try {
     const on = (ctx as unknown as { on?: (name: string, listener: (...args: unknown[]) => void) => (() => void) | void }).on;
     if (typeof on === "function") {
@@ -110,7 +112,25 @@ export function apply(ctx: Context): void {
         const ev = e as { type?: unknown; data?: unknown };
         if (ev.type !== "assistant/message") return;
         const text = lastAssistantText(ev.data);
-        if (text) engine.onAssistantMessage(sid, text);
+        if (!text) return;
+
+        // 「曾拥有实例」记录：只要该会话在实例存活期间产生过助手消息就记一笔。
+        // 用于交卷丢失告警（缺陷 A）：实例状态被外部删除时，交卷不能静默消失。
+        const owned = engine.activeInstanceOfSession(sid);
+        if (owned) recentlyOwned.set(sid, Date.now());
+
+        if (!owned && /<promise>\s*done\s*<\/promise>/i.test(text)) {
+          const seen = recentlyOwned.get(sid);
+          const OWNED_TTL_MS = 24 * 3600 * 1000;
+          if (seen !== undefined && Date.now() - seen < OWNED_TTL_MS) {
+            recentlyOwned.delete(sid); // 只告警一次，避免刷屏
+            log("warn", "submit_without_instance", { sessionId: sid });
+            deliver(sid, "[ralphflow] ⚠️ 检测到交卷标记 `<promise>done</promise>`，但本会话当前**没有活跃工作流实例**，这次交卷没有被处理。\n\n常见原因：实例状态文件被删除 / 工作区被清理 / 实例已取消。\n\n请用 `/ralphflow-list` 查看现有实例；必要时重新 `/ralphflow-start <工作流> <任务>` 启动。若你正在复现或调试，请改用临时工作区，不要删真实工作区的 `ralph-flow/`。");
+            return;
+          }
+        }
+
+        engine.onAssistantMessage(sid, text);
       });
     } else {
       log("warn", "session_event_listener_unavailable", {});
