@@ -208,7 +208,11 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       shim: (inv) => {
         const parts = inv.rawInput.trim().split(/\s+/).filter(Boolean);
         if (parts.length < 2) {
-          return { kind: "card", text: "用法：`/ralphflow-start <工作流> <任务描述>`\n\n示例：`/ralphflow-start loop 修复登录模块的空指针`" };
+          // 用法错误也交回 AI：像 opencode 一样由模型说明用法并追问缺失信息
+          return {
+            kind: "directive",
+            text: "用户执行了 /ralphflow-start 但参数不完整（需要工作流名 + 任务描述）。**不要调用任何工具**，先用自然语言向用户说明用法并询问缺少的信息：只有任务没有工作流 → 问用哪个工作流；只有工作流没有任务 → 问要做什么；都没有 → 两者都问。必要时用 ralphflow_list 查看可用工作流供用户选择。",
+          };
         }
         const workflow = parts[0]!;
         const task = parts.slice(1).join(" ");
@@ -288,12 +292,18 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
     {
       name: "ralphflow-reset",
       description: "（本版本未实现）重做当前步。",
-      shim: () => ({ kind: "card", text: "本版本未实现（涉及上下文管理，暂缓）。已可用：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`。" }),
+      shim: () => ({
+        kind: "directive",
+        text: "用户执行了 /ralphflow-reset（重做当前步，涉及上下文管理，本版本暂缓实现）。**不要调用任何工具**，用自然语言说明：该命令本版本未实现、暂缓原因（涉及上下文管理），以及当前可用命令：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`；如用户确实想重做，可建议重新交卷触发自动返工，或取消后重启。",
+      }),
     },
     {
       name: "ralphflow-rewind",
       description: "（本版本未实现）回退到上游步骤。",
-      shim: () => ({ kind: "card", text: "本版本未实现（涉及上下文管理，暂缓）。已可用：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`。" }),
+      shim: () => ({
+        kind: "directive",
+        text: "用户执行了 /ralphflow-rewind（回退到上游步骤，涉及上下文管理，本版本暂缓实现）。**不要调用任何工具**，用自然语言说明：该命令本版本未实现、暂缓原因（涉及上下文管理），以及当前可用命令：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`。",
+      }),
     },
   ];
 
@@ -308,9 +318,13 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
             const out = def.shim({ rawInput: inv.rawInput, agent: inv.agent, signal: inv.signal });
             if (out.kind === "directive") {
               const sid = messageSessionId(inv.agent);
-              if (sid) deps.deliver(sid, `[ralphflow] ${out.text}`);
-              // 回复留给模型，这里不渲染命令卡文本（claude/opencode 语义）
-              return { kind: "success" };
+              if (sid) {
+                deps.deliver(sid, `[ralphflow] ${out.text}`);
+                // 回复留给模型（claude/opencode 语义），命令卡不渲染任何程序文本
+                return { kind: "success" };
+              }
+              // 找不到会话（罕见兜底）：卡片展示，避免用户什么反馈都没有
+              return { kind: "error", text: "当前会话已离线，无法交给模型处理。请刷新后重试。" };
             }
             return { kind: "success", text: out.text };
           } catch (err) {
@@ -340,10 +354,14 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
           handler: async (inv: { rawInput: string; agent: Agent; signal: AbortSignal }) => {
             try {
               const task = inv.rawInput.trim();
-              if (!task) {
-                return { kind: "error", text: `用法：/${slug} <任务描述>\n\n示例：/${slug} 修复登录模块的空指针` };
-              }
               const sid = messageSessionId(inv.agent);
+              if (!task) {
+                // 缺任务也交回 AI：先说明用法再等任务
+                if (sid) {
+                  deps.deliver(sid, `[ralphflow] 用户执行了 /${slug}（\`${wf.name}\` 工作流）但没有附带任务描述。**不要调用任何工具**，先用自然语言说明用法：\`/${slug} <任务描述>\`，并请用户补上要完成的任务。`);
+                }
+                return { kind: "success" };
+              }
               if (sid) {
                 deps.deliver(sid, `[ralphflow] 用户通过 /${slug} 启动了 \`${wf.name}\` 工作流。请调用 \`ralphflow_start\` 工具：workflow = \`${wf.name}\`，task = \`${task}\`。若工具报错，如实转达；若成功，按它返回的指示执行并遵循下面的机制。\n\n${SHARED_MECHANISM}`);
               }
