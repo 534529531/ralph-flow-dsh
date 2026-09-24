@@ -19,7 +19,9 @@
 - 非 `manual_step` 且无 `check` 的步骤告警
 
 **1.3 验证者提示词**（对齐 opencode 的 CHECK 上下文）
-- 补 `desc` + `output`：我们 DO 提示词有「## 交付物」，CHECK 没有，验证者不知道本步承诺交付什么
+- 补**完整的「本步上下文」块**：`desc` + `do` + `input` + `output` + 产出目录（我们原来只有 `检查依据`，验证者不知道本步承诺交付什么）
+- **移除「执行者交卷摘要」**（T1 硬规则，作者定案）：验证者**只看结果是否满足检查依据，不管执行者怎么做的**。opencode 与 claude 版都**从不**把自述传给验证者，并在提示词里明令"不要依赖任何外部提供的实现总结"。
+  - 注意：移除的是**验证者 prompt 里的那一段**，不是 `ralphflow_submit` 的 `summary` 参数——那个参数仍服务于**审查门改稿重交去重**（opencode 的 `.manual-gate-last` 摘要哈希是同一用途）。`VerifyRequest` 类型上已删除 `submitSummary` 字段，从类型层面防止重新引入。
 
 **1.4 报告**（对齐 opencode 的报告内容）
 - 补每步耗时 / 重试次数（从 `history` 的 `ts` 与 `fail_counts` 派生，**不新增落盘字段**）

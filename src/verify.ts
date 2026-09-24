@@ -92,6 +92,9 @@ export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): s
     ...(req.step.output ? [`**交付物（本步承诺的产出）**：${String(req.step.output).trim()}`] : []),
     `**产出目录**：\`${rel}/\` —— 检查依据里没写路径的文件名（如 \`summary.md\`）即指此目录下的文件。`,
   ];
+  // T1：**不注入执行者的交卷自述**。验证者只看"结果是否满足检查依据"，不看执行者
+  // 怎么做的、自称做了什么。opencode 与 claude 版同样从不传入自述，并明令
+  // "不要依赖任何外部提供的实现总结"——自述是锚点，会软化独立判定。
   const parts = [
     "## 任务",
     req.userTask,
@@ -102,12 +105,10 @@ export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): s
     "## 检查依据",
     req.step.check?.trim() || "（本步未声明检查依据，请按任务的每一条要求严格核对：是否落实、是否真实可用、有无遗漏。）",
     "",
-    "## 执行者交卷摘要",
-    req.submitSummary?.trim() || "（无摘要）",
-    "",
     "## 取证要求",
     "在**当前工作区**里取证（读文件、跑命令、搜索），逐条核对检查依据。",
-    "产出目录也在这个工作区内，用上面的相对路径即可读到；**不要只凭交卷摘要下结论**。",
+    "产出目录也在这个工作区内，用上面的相对路径即可读到。",
+    "**只看结果**：以你亲自取证到的事实为准，不采信任何执行者自述或实现总结。",
     wantStructured
       // 原生结构化输出可用：判定由 structured_output 工具承载，不需要文本标签。
       ? "先写出取证过程与结论，最后**调用 `structured_output` 工具**提交判定（passed / reason）。只调用一次。"

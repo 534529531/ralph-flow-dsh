@@ -294,18 +294,27 @@ const S = () => `session-${++n}`;
   }
 }
 
-// ── 13) §1.3 CHECK 提示词补 desc + 交付物 + 产出目录 ──────────────────────────
+// ── 13) §1.3 CHECK 提示词补 desc + 交付物 + 产出目录；T1 不注入执行者自述 ───────
 {
   const wf = { name: "loop", steps: [], manual_step: [], warnings: [] };
   const step = { id: "s", desc: "写文档", do: "写文档", check: "检查 x.md", output: "x.md + summary.md" };
   const prompt = buildCheckPrompt({
-    instId: "inst-1", step, workflow: wf, userTask: "任务", submitSummary: "做完了",
+    instId: "inst-1", step, workflow: wf, userTask: "任务",
     checkIndex: 0, artifactsRelDir: ".dsh/ralph-flow/artifacts/inst-1", signal: new AbortController().signal,
   }, true);
   check("CHECK 含步骤 desc", prompt.includes("## 本步上下文") && prompt.includes("写文档"));
   check("CHECK 含交付物（DO 的承诺）", prompt.includes("交付物") && prompt.includes("x.md + summary.md"));
   check("CHECK 含产出目录（工作区相对路径）", prompt.includes("`.dsh/ralph-flow/artifacts/inst-1/`"), prompt);
   check("CHECK 要求去产出目录取证", prompt.includes("产出目录也在这个工作区内"));
+  // T1 硬规则：验证者只看结果，不看执行者怎么做的/自称做了什么
+  // （opencode 与 claude 版同样从不传入自述，并明令"不要依赖任何外部提供的实现总结"）
+  check("CHECK 不注入「执行者交卷摘要」段", !prompt.includes("执行者交卷摘要"), prompt);
+  check("CHECK 不出现任何自述标记", !prompt.includes("（无摘要）"), prompt);
+  check("CHECK 明示只看结果、不采信自述", prompt.includes("只看结果") && prompt.includes("不采信任何执行者自述"));
+  // 类型层面：VerifyRequest 不得再有 submitSummary 字段（防止重新引入）
+  check("VerifyRequest 类型已移除 submitSummary",
+    !fs.readFileSync(new URL("../src/engine.ts", import.meta.url), "utf-8")
+      .slice(0, 4000).includes("submitSummary: string;"));
 }
 
 // ── 14) §1.4 报告补每步耗时与重试次数（从 history/fail_counts 派生）────────────

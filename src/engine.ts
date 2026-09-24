@@ -158,7 +158,6 @@ export interface VerifyRequest {
   step: StepDef;
   workflow: WorkflowDef;
   userTask: string;
-  submitSummary: string;
   ownerSession?: string;
   checkIndex: number;
   /**
@@ -166,7 +165,15 @@ export interface VerifyRequest {
    * 验证者继承父会话工作区，因此用它就能读到 DO 的产出；CHECK 提示词据此注入「产出目录」。
    */
   artifactsRelDir: string;
-  /** 取消句柄（dsh 委派契约要求的 "caller's cancellation"；不是超时预算） */
+  /**
+   * 取消句柄（dsh 委派契约要求的 "caller's cancellation"；不是超时预算）
+   *
+   * 注意这里**没有** `submitSummary`：执行者的交卷自述**不进验证者视野**（T1）。
+   * opencode 与 claude 版都从不把自述传给验证者，并在提示词里明令"不要依赖任何外部
+   * 提供的实现总结"。验证者的职责是**只看结果是否满足检查依据，不管执行者怎么做的**。
+   * 交卷自述仍留在 `state.last_submit_summary`，但只服务于审查门改稿重交去重
+   * （见 `onSubmit`），不再流向验证者。
+   */
   signal: AbortSignal;
 }
 
@@ -724,7 +731,6 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     try {
       verdict = await ports.verify({
         instId, step, workflow: wf, userTask: state.user_task,
-        submitSummary: state.last_submit_summary ?? "",
         ownerSession: state.owner_session, checkIndex, artifactsRelDir: artifactsRelDirOf(instId),
         signal: controller.signal,
       });

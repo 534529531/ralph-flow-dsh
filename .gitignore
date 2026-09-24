@@ -6,9 +6,6 @@ lib/
 # 工作区运行时根：dot-dir，**精确**忽略（不要整个 `.dsh/`——将来 dsh 会在
 # `<workspace>/.dsh/` 里放需要入库的项目配置）
 .dsh/ralph-flow/
-# 旧布局（本版之前的 `<workspace>/ralph-flow/`）：迁移后只应剩在飞实例的残留，
-# 作者重启新代码后即可删除本行与残留目录（见 docs/v2/evidence/summary-completion.md）
-/ralph-flow/
 .dsh-home/
 
 # ── 验证产物（e2e 浏览器截图/结果 JSON/archived/txt 正文快照） ──────────
