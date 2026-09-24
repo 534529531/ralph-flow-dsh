@@ -73,12 +73,6 @@ function supportsOutputSchema(ctx: Context, name: string): boolean {
   }
 }
 
-function splitModel(ref: string): { provider?: string; model?: string } {
-  const idx = ref.indexOf("/");
-  if (idx > 0) return { provider: ref.slice(0, idx).trim(), model: ref.slice(idx + 1).trim() };
-  return { model: ref.trim() };
-}
-
 /** CHECK 提示词构造（导出供测试直接断言 §1.3 的 desc/交付物/产出目录） */
 export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): string {
   const rel = req.artifactsRelDir;
@@ -174,13 +168,15 @@ export async function runVerifier(deps: VerifyDeps, req: VerifyRequest): Promise
   }
   const config = req.workflow.adversarial_check;
   const systemPrompt = config?.system_prompt?.trim() || DEFAULT_ADVERSARIAL_SYSTEM_PROMPT;
-  const model = config?.model ? splitModel(config.model) : undefined;
+  // 验证模型由**引擎**归一化后传入（优先级：步骤 check_model > 全局 adversarial_check.model）。
+  // 这里不再自己解析 YAML 里的 model 形态——归一化只有一处，三端语义才一致。
+  const model = req.model;
   const toolAllow = resolveToolAllow(ctx);
   const wantStructured = supportsOutputSchema(ctx, name);
 
   const agentOptions: Record<string, string> = {};
-  if (model?.provider) agentOptions.provider = model.provider;
-  if (model?.model) agentOptions.model = model.model;
+  if (model?.providerID) agentOptions.provider = model.providerID;
+  if (model?.modelID) agentOptions.model = model.modelID;
 
   // 委派生命周期完全交给 dsh 原生能力：不设 ralphflow 自己的超时。
   // dsh 的委派契约里 `signal` 是**取消句柄**（SubagentStartRequest.signal = "the caller's

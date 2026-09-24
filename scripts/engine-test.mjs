@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createEngine } from "../lib/engine.js";
+import { createEngine, resolveCheckModel } from "../lib/engine.js";
 import { buildCheckPrompt } from "../lib/verify.js";
 import { CREATE_GUIDE } from "../lib/create.js";
 
@@ -265,6 +265,75 @@ const S = () => `session-${++n}`;
   check("manual_step 逗号字符串写法被接受", !!ok.def && ok.def.manual_step.join(",") === "a,b", JSON.stringify(ok.def?.manual_step));
 }
 
+// ── 11b) A1 三端资产兼容：check_model / 模型引用两形态（对齐 opencode 2.8.0）─────
+{
+  const wfFile = (name, lines) => {
+    fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
+    return engine.loadWorkflow(name);
+  };
+  // 归一化语义（照抄 opencode resolveCheckModel）
+  const norm = [
+    ["deepseek/deepseek-chat", "deepseek", "deepseek-chat"],
+    ["a/b/c", "a", "b/c"],
+  ];
+  for (const [input, pid, mid] of norm) {
+    const r = resolveCheckModel(input);
+    check(`resolveCheckModel 字符串 "${input}" → ${pid}/${mid}`, r?.providerID === pid && r?.modelID === mid, JSON.stringify(r));
+  }
+  const objR = resolveCheckModel({ providerID: " anthropic ", modelID: " claude-haiku-4-5 " });
+  check("resolveCheckModel 对象形态（并 trim）", objR?.providerID === "anthropic" && objR?.modelID === "claude-haiku-4-5", JSON.stringify(objR));
+  for (const bad of ["sonnet", { modelID: "x" }, { providerID: "a", modelID: "  " }, "/x", ""]) {
+    check(`resolveCheckModel 解析不出 → undefined（${JSON.stringify(bad)}）`, resolveCheckModel(bad) === undefined);
+  }
+  // 合法形态静默通过
+  const okStr = wfFile("cm-ok-str", ["steps:", "  - id: a", "    do: X", "    check: c", "    check_model: deepseek/deepseek-chat", "    on_pass: done", "    max_fail_count: 1"]);
+  check("check_model 字符串形态可加载且无告警", !!okStr.def && okStr.problems.length === 0 && okStr.warnings.length === 0, JSON.stringify(okStr));
+  const okObj = wfFile("cm-ok-obj", ["steps:", "  - id: a", "    do: X", "    check: c", "    check_model:", "      providerID: anthropic", "      modelID: claude-haiku-4-5", "    on_pass: done", "    max_fail_count: 1"]);
+  check("check_model 对象形态可加载且无告警", !!okObj.def && okObj.problems.length === 0 && okObj.warnings.length === 0, JSON.stringify(okObj));
+  // 硬错误（照抄 opencode：同写 check_voting、无 check）
+  const noCheck = wfFile("cm-no-check", ["steps:", "  - id: a", "    do: X", "    check_model: a/b", "    on_pass: done", "    max_fail_count: 1"]);
+  check("check_model 无 check → 硬错误", !noCheck.def && noCheck.problems.some((p) => p.includes("check_model")), JSON.stringify(noCheck.problems));
+  const withVoting = wfFile("cm-with-voting", ["steps:", "  - id: a", "    do: X", "    check: c", "    check_model: a/b", "    check_voting:", "      - check: c1", "    on_pass: done", "    max_fail_count: 1"]);
+  check("check_model 与 check_voting 同写 → 硬错误", !withVoting.def && withVoting.problems.some((p) => p.includes("check_model")), JSON.stringify(withVoting.problems));
+  // 告警（形态合法但解析不出 → 回退，不静默）
+  const bare = wfFile("cm-bare", ["steps:", "  - id: a", "    do: X", "    check: c", "    check_model: sonnet", "    on_pass: done", "    max_fail_count: 1"]);
+  check("check_model 裸名 → 告警回退（不静默）", !!bare.def && bare.warnings.some((w) => w.includes("check_model")), JSON.stringify(bare.warnings));
+  const halfObj = wfFile("cm-half", ["steps:", "  - id: a", "    do: X", "    check: c", "    check_model:", "      modelID: x", "    on_pass: done", "    max_fail_count: 1"]);
+  check("check_model 对象缺字段 → 告警回退", !!halfObj.def && halfObj.warnings.some((w) => w.includes("check_model")), JSON.stringify(halfObj.warnings));
+  // 全局 adversarial_check.model 对象形态（以前被静默丢弃）
+  const gObj = wfFile("g-obj", ["adversarial_check:", "  model:", "    providerID: openai", "    modelID: gpt-5", "steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 1"]);
+  check("全局 model 对象形态被接受（不再静默丢弃）", !!gObj.def && gObj.warnings.length === 0 && resolveCheckModel(gObj.def.adversarial_check?.model)?.providerID === "openai", JSON.stringify(gObj));
+  const gBare = wfFile("g-bare", ["adversarial_check:", "  model: sonnet", "steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 1"]);
+  check("全局 model 裸名 → 告警回退", !!gBare.def && gBare.warnings.some((w) => w.includes("adversarial_check.model")), JSON.stringify(gBare.warnings));
+}
+
+// ── 11c) A1 优先级链：步骤 check_model > 全局 model（端到端）──────────────────
+{
+  const s = S();
+  const wfYaml = (name, lines) => fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
+  wfYaml("prio", [
+    "adversarial_check:", "  model: openai/gpt-5", "steps:",
+    "  - id: a", "    do: X", "    check: c", "    check_model: anthropic/claude-haiku-4-5",
+    "    on_pass: b", "    on_fail: a", "    max_fail_count: 1",
+    "  - id: b", "    do: Y", "    check: d", "    on_pass: done", "    on_fail: b", "    max_fail_count: 1",
+  ]);
+  const seen = [];
+  const eng2 = createEngine(engine.projectDir, {
+    verify: async (req) => { seen.push(req.model); return { status: "passed", reason: "s" }; },
+    deliver: () => true,
+  });
+  const sid = "prio-session";
+  eng2.start("prio", "t", sid);
+  eng2.onSubmit(sid, "one");
+  await settle();
+  const first = seen[0];
+  check("步骤 check_model 覆盖全局 model", first?.providerID === "anthropic" && first?.modelID === "claude-haiku-4-5", JSON.stringify(first));
+  eng2.onSubmit(sid, "two");
+  await settle();
+  const second = seen[1];
+  check("未写 check_model 的步骤继承全局 model", second?.providerID === "openai" && second?.modelID === "gpt-5", JSON.stringify(second));
+}
+
 // ── 12) §1.2 doctor lint：不可达 / 无 done / 模板记号 / 无 check ───────────────
 {
   const wfFile = (name, lines) => {
@@ -376,10 +445,17 @@ const S = () => `session-${++n}`;
   const started = engine.start("guide-input", "输入提示词用例", sInp);
   check("DO 提示词含 desc/交付物、但**不含** input", started.ok && started.text.includes("描述D") && started.text.includes("交付标记O") && !started.text.includes("输入标记I"), started.text.slice(0, 400));
   const checkPrompt = buildCheckPrompt({
-    instId: "guide-input", step: inp.def.steps[0], workflow: inp.def, userTask: "任务", submitSummary: "",
+    instId: "guide-input", step: inp.def.steps[0], workflow: inp.def, userTask: "任务",
     checkIndex: 0, artifactsRelDir: ".dsh/ralph-flow/artifacts/guide-input", signal: new AbortController().signal,
   }, true);
   check("CHECK 提示词含 input（指引所述一致）", checkPrompt.includes("输入标记I"));
+  // 行为侧 5：A1 —— 指引声称支持 check_model 与两形态 model，行为必须一致
+  check("指引提到 check_model", CREATE_GUIDE.includes("check_model"));
+  check("指引写明验证模型优先级链", CREATE_GUIDE.includes("check_model` > 全局"), CREATE_GUIDE.slice(0, 200));
+  const cmGuide = guideFile("guide-cm", ["steps:", "  - id: a", "    do: X", "    check: c", "    check_model: deepseek/deepseek-chat", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
+  check("指引所述 check_model 写法确实可加载", !!cmGuide.def && cmGuide.problems.length === 0, JSON.stringify(cmGuide));
+  const cmBadGuide = guideFile("guide-cm-bad", ["steps:", "  - id: a", "    do: X", "    check_model: a/b", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
+  check("指引所述「无 check 即硬错误」确实成立", !cmBadGuide.def && cmBadGuide.problems.some((p) => p.includes("check_model")), JSON.stringify(cmBadGuide.problems));
 }
 
 // ── 清理（索引在隔离 HOME 里，只删本测试写入的条目）────────────────────────────

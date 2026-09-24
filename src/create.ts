@@ -35,7 +35,9 @@ manual_step:            # 可选：对抗验证通过后停下等人放行的步
                         # 引用不存在的步骤 = 硬错误（门会静默失效，绝不放过）
 
 adversarial_check:      # 可选：独立验证者配置
-  model: deepseek/deepseek-chat   # 可选："provider/model" 验证模型；填则换，不填用默认
+  model: deepseek/deepseek-chat   # 可选：验证模型。两种写法都行：
+                        #   "provider/model" 字符串，或对象 { providerID, modelID }（两者都要填）
+                        #   裸模型名（如 sonnet）解析不出 provider → 告警并回退默认
   # agent: spawn        # 可选：验证者子代理名（默认用部署可用者）
   # system_prompt: ...  # 可选：给验证者的 system 提示
   # 注：timeout_ms 本版本未支持（警告忽略）——验证超时交给宿主 dsh 的原生看门狗
@@ -53,11 +55,15 @@ steps:                  # 必填，非空；从第一个元素开始执行
     on_pass: next-id    # 可选，缺省 = 顺序下一步（末步视为 "done"）；写了必须指向存在的步骤或 "done"
     on_fail: step-id    # 可选，缺省 = 自身；写了必须指向存在的步骤（不允许 "done"）
     max_fail_count: 3   # 可选，缺省 3；写了必须是 ≥1 的整数（0/负数/小数 = 硬错误）
+    check_model: deepseek/deepseek-chat   # 可选：**本步**的验证模型，覆盖全局 model（写法同 model）
+                        # 仅单 check 场景生效：与 check_voting 同写、或本步没有 check = 硬错误
 \`\`\`
 
-**硬规则**（违反 → 启动即被拒绝并说人话）：\`do\` 必填且为非空字符串；\`check\` 若出现必须是字符串（\`check: true\` 这类会被拒绝，本意是不检查就删掉该键）；on_pass/on_fail 可省略，但一旦写了必须引用存在的步骤 id（"done" 仅 on_pass 有效）；manual_step 必须引用存在的步骤 id；\`max_fail_count\` 可省略（缺省 3），但一旦写了必须是 ≥1 的整数；steps 非空、id 唯一。
+**验证模型优先级链**（与 opencode/claude 一致）：步骤 \`check_model\` > 全局 \`adversarial_check.model\` > provider/部署默认。
 
-**doctor 告警**（能启动，但会出问题）：不可达步骤（从第一个步骤沿 on_pass/on_fail 走不到）；没有任何可达步骤的 \`on_pass: done\`（工作流永远无法完成）；\`{{...}}\` 模板记号（本版本**不解析任何**模板变量）；非 manual_step 且没有 \`check\` 的步骤。
+**硬规则**（违反 → 启动即被拒绝并说人话）：\`do\` 必填且为非空字符串；\`check\` 若出现必须是字符串（\`check: true\` 这类会被拒绝，本意是不检查就删掉该键）；on_pass/on_fail 可省略，但一旦写了必须引用存在的步骤 id（"done" 仅 on_pass 有效）；manual_step 必须引用存在的步骤 id；\`max_fail_count\` 可省略（缺省 3），但一旦写了必须是 ≥1 的整数；\`check_model\` 与 \`check_voting\` 同写、或写了 \`check_model\` 却没有 \`check\`，都是硬错误；steps 非空、id 唯一。
+
+**doctor 告警**（能启动，但会出问题）：不可达步骤（从第一个步骤沿 on_pass/on_fail 走不到）；没有任何可达步骤的 \`on_pass: done\`（工作流永远无法完成）；\`{{...}}\` 模板记号（本版本**不解析任何**模板变量）；非 manual_step 且没有 \`check\` 的步骤；\`model\`/\`check_model\` 解析不出 provider（裸模型名，或对象缺 providerID/modelID）——此时该配置被忽略并回退默认，**不会静默生效**。
 
 **产出目录**：每个实例有隔离的产出目录 \`<workspace>/.dsh/ralph-flow/artifacts/<实例ID>/\`，实例启动时自动建好、完成后保留。DO 与 CHECK 提示词都会自动带上「产出目录」一行，所以在 \`do\`/\`output\` 里**写裸文件名**即可（例如 \`summary.md\`），不用写路径、也不需要任何模板记号。
 

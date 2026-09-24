@@ -28,6 +28,52 @@ const ARTIFACTS_DIRNAME = "artifacts";
 
 // ─── 方言类型（与 opencode/claude 版共享的 YAML 方言）────────────────────────
 
+/**
+ * 验证模型的引用形态（与 opencode/claude 完全一致）：
+ * - 字符串 `"provider/model"`（如 `deepseek/deepseek-chat`）
+ * - 对象 `{ providerID, modelID }`（两者都必须是非空字符串）
+ * **裸模型名**（如 `"sonnet"`）无法解析到 provider → 回退到默认模型（doctor 告警）。
+ */
+export type ModelRef = string | { providerID?: string; modelID?: string };
+
+/**
+ * 归一化模型引用（照抄 opencode `resolveCheckModel` 的语义，保证三端同一份资产同解）：
+ * - 对象：`providerID` 与 `modelID` 都是非空字符串才有效，否则 `undefined`（回退）
+ * - 字符串：必须在第一个 `/` 处切开且 provider 非空；**裸名 → `undefined`**
+ */
+export function resolveCheckModel(model: ModelRef | undefined | null): { providerID: string; modelID: string } | undefined {
+  if (!model) return undefined;
+  if (typeof model === "object") {
+    const pid = model.providerID;
+    const mid = model.modelID;
+    if (typeof pid === "string" && pid.trim() && typeof mid === "string" && mid.trim()) {
+      return { providerID: pid.trim(), modelID: mid.trim() };
+    }
+    return undefined;
+  }
+  if (typeof model !== "string") return undefined;
+  const idx = model.indexOf("/");
+  if (idx > 0) {
+    const pid = model.slice(0, idx).trim();
+    const mid = model.slice(idx + 1).trim();
+    if (pid && mid) return { providerID: pid, modelID: mid };
+  }
+  return undefined;
+}
+
+/** 保留原始形态（字符串或对象），供 `loadWorkflow` 解析；非法类型 → undefined */
+function parseModelRef(v: unknown): ModelRef | undefined {
+  if (typeof v === "string") return v;
+  if (v && typeof v === "object") return v as { providerID?: string; modelID?: string };
+  return undefined;
+}
+
+/** 模型引用的人类可读描述（用于告警文案） */
+function describeModelRef(v: ModelRef): string {
+  if (typeof v === "string") return `字符串 "${v}"`;
+  return `对象 {providerID: ${JSON.stringify(v.providerID)}, modelID: ${JSON.stringify(v.modelID)}}`;
+}
+
 export interface StepDef {
   id: string;
   desc?: string;
@@ -39,10 +85,15 @@ export interface StepDef {
   on_pass?: string;
   on_fail?: string;
   max_fail_count?: number;
+  /**
+   * 步骤级验证模型覆盖（对齐 opencode/claude 2.8.0）。
+   * **仅单 `check` 场景生效**；与 `check_voting` 同写、或没有 `check` → 加载期硬错误。
+   */
+  check_model?: ModelRef;
 }
 
 export interface AdversarialConfig {
-  model?: string;
+  model?: ModelRef;
   system_prompt?: string;
   /**
    * 本版本未支持（方言容错：警告忽略）。
@@ -165,6 +216,13 @@ export interface VerifyRequest {
    * 验证者继承父会话工作区，因此用它就能读到 DO 的产出；CHECK 提示词据此注入「产出目录」。
    */
   artifactsRelDir: string;
+  /**
+   * 已归一化的验证模型（优先级：步骤 `check_model` > 全局 `adversarial_check.model`）。
+   * 归一化在**引擎**里做（`resolveCheckModel`），验证者只消费结果——与 opencode 的
+   * `resolveVerifierModel` 同构，保证三端同一份资产解析出同一个模型。
+   * `undefined` = 用 provider/部署默认。
+   */
+  model?: { providerID: string; modelID: string };
   /**
    * 取消句柄（dsh 委派契约要求的 "caller's cancellation"；不是超时预算）
    *
@@ -331,7 +389,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   // ─── 工作流加载与校验（坏文件 fail-fast 说人话）────────────────────────────
 
-  const KNOWN_STEP_KEYS = new Set(["id", "desc", "do", "check", "check_voting", "input", "output", "manual_step", "on_pass", "on_fail", "max_fail_count"]);
+  const KNOWN_STEP_KEYS = new Set(["id", "desc", "do", "check", "check_voting", "check_model", "input", "output", "manual_step", "on_pass", "on_fail", "max_fail_count"]);
   const KNOWN_WF_KEYS = new Set(["description", "manual_step", "adversarial_check", "steps"]);
 
   function knownWorkflowDirs(): string[] {
@@ -429,6 +487,25 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         && (typeof s.max_fail_count !== "number" || !Number.isInteger(s.max_fail_count) || s.max_fail_count < 1)) {
         problems.push(`步骤 \`${s.id}\` 的 \`max_fail_count\` 必须是 ≥1 的整数（当前 ${JSON.stringify(s.max_fail_count)}）。`);
       }
+      // check_model（步骤级验证模型覆盖，对齐 opencode/claude 2.8.0）：仅单 check 场景有意义。
+      // 两条硬错误照抄 opencode：与 check_voting 同写、或没有可用的 check —— 都几乎一定是配置笔误，
+      // 静默忽略会让用户以为「这步换了便宜模型验」，实际没换。
+      const checkModelRaw = s.check_model;
+      if (checkModelRaw !== undefined && checkModelRaw !== null) {
+        if (s.check_voting !== undefined && s.check_voting !== null) {
+          problems.push(`步骤 \`${s.id}\` 同时写了 \`check_voting\` 与 \`check_model\`：\`check_model\` 仅单 \`check\` 场景生效，此处无意义（多验证者时各票用自己条目里的 \`model\`）。`);
+        }
+        if (typeof s.check !== "string" || s.check.trim() === "") {
+          problems.push(`步骤 \`${s.id}\` 写了 \`check_model\` 但没有可用的 \`check\`：\`check_model\` 仅当步骤提供 \`check\` 时才生效，请补上 \`check\` 或删掉 \`check_model\`。`);
+        }
+        const parsed = parseModelRef(checkModelRaw);
+        if (!parsed) {
+          problems.push(`步骤 \`${s.id}\` 的 \`check_model\` 类型非法（应为 "provider/model" 字符串或 {providerID, modelID} 对象）。`);
+        } else if (!resolveCheckModel(parsed)) {
+          // 形态合法但解析不出 provider（裸模型名 / 对象缺字段）→ 告警并回退，与 opencode 一致
+          warnings.push(`步骤 \`${s.id}\` 的 \`check_model\` 是${describeModelRef(parsed)}，解析不出 provider/model，该配置被忽略并回退到默认验证模型（需要 "provider/model" 或 {providerID, modelID} 两个非空字符串）。`);
+        }
+      }
       steps.push({
         id: s.id,
         desc: typeof s.desc === "string" ? s.desc : undefined,
@@ -440,6 +517,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         on_pass: typeof s.on_pass === "string" ? s.on_pass : undefined,
         on_fail: typeof s.on_fail === "string" ? s.on_fail : undefined,
         max_fail_count: typeof s.max_fail_count === "number" ? s.max_fail_count : undefined,
+        check_model: parseModelRef(checkModelRaw),
       });
     });
     // 引用校验：on_pass 必须指向存在的步骤或 done；on_fail 必须指向存在的步骤
@@ -481,13 +559,20 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       && (doc.adversarial_check as { timeout_ms?: unknown }).timeout_ms !== undefined) {
       warnings.push("`adversarial_check.timeout_ms` 本版本未支持（验证超时交给宿主 dsh 的原生看门狗），已忽略。");
     }
+    // 全局验证模型（adversarial_check.model）：字符串 "provider/model" 与对象 {providerID, modelID}
+    // 两种形态都支持（对齐 opencode/claude）。解析不出的（裸名 / 对象缺字段）→ 告警并回退默认，
+    // 绝不静默忽略——否则用户以为换了验证模型，实际没换。
+    const globalModel = parseModelRef(doc.adversarial_check?.model);
+    if (globalModel !== undefined && !resolveCheckModel(globalModel)) {
+      warnings.push(`\`adversarial_check.model\` 是${describeModelRef(globalModel)}，解析不出 provider/model，该配置被忽略并回退到默认验证模型（需要 "provider/model" 或 {providerID, modelID} 两个非空字符串）。`);
+    }
     const def: WorkflowDef = {
       name,
       description: typeof doc.description === "string" ? doc.description : "",
       manual_step: manual,
       adversarial_check: doc.adversarial_check && typeof doc.adversarial_check === "object"
         ? {
-            model: typeof doc.adversarial_check.model === "string" ? doc.adversarial_check.model : undefined,
+            model: globalModel,
             system_prompt: typeof doc.adversarial_check.system_prompt === "string" ? doc.adversarial_check.system_prompt : undefined,
             agent: typeof doc.adversarial_check.agent === "string" ? doc.adversarial_check.agent : undefined,
           }
@@ -732,6 +817,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       verdict = await ports.verify({
         instId, step, workflow: wf, userTask: state.user_task,
         ownerSession: state.owner_session, checkIndex, artifactsRelDir: artifactsRelDirOf(instId),
+        // 验证模型优先级链（对齐 opencode resolveVerifierModel）：
+        //   步骤 check_model  >  全局 adversarial_check.model  >  provider/部署默认
+        // 归一化在此一次性完成，verify.ts 只消费结果。
+        model: resolveCheckModel(step.check_model ?? wf.adversarial_check?.model),
         signal: controller.signal,
       });
     } catch (e) {
