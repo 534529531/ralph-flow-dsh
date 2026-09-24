@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { createEngine } from "../lib/engine.js";
 import { buildCheckPrompt } from "../lib/verify.js";
+import { CREATE_GUIDE } from "../lib/create.js";
 
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
 // 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
@@ -337,6 +338,39 @@ const S = () => `session-${++n}`;
   const idxAfter = JSON.parse(fs.readFileSync(engine.indexPath, "utf-8"));
   check("restore() 清掉悬挂条目", !idxAfter[id], JSON.stringify(idxAfter));
   check("restore() 不动正常条目", Object.values(idxAfter).length === Object.values(idxBefore).length - 1, JSON.stringify({ before: idxBefore, after: idxAfter }));
+}
+
+// ── 16) §1.6 CREATE_GUIDE 与引擎实际行为一致（文本 + 行为双向交叉验证）────────
+{
+  // 文本侧：不得再出现与实测相反的陈述
+  check("指引不再声称 doctor 报告「可启动」", !CREATE_GUIDE.includes("报告「可启动」") && !CREATE_GUIDE.includes("直到「可启动」"));
+  check("指引明确 input 只进 CHECK 提示词", CREATE_GUIDE.includes("只进 CHECK 提示词"));
+  check("指引明确子工作流形状是硬错误（不再说「不报错」）", CREATE_GUIDE.includes("硬错误、工作流无法启动") && !CREATE_GUIDE.includes("见到会警告并忽略，不报错"));
+  check("指引把 on_pass/on_fail/max_fail_count 标为可选", !CREATE_GUIDE.includes("必填：下个步骤") && CREATE_GUIDE.includes("可选，缺省"));
+
+  const guideFile = (name, lines) => {
+    fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
+    return engine.loadWorkflow(name);
+  };
+  // 行为侧 1：子工作流形状（无 do）确实无法启动
+  const sub = guideFile("guide-sub", ["steps:", "  - id: delegate", "    workflow: child", "    on_pass: done", "    on_fail: delegate", "    max_fail_count: 3"]);
+  check("子工作流形状（无 do）硬错误、无法启动", !sub.def && sub.problems.some((p) => p.includes("do")), JSON.stringify(sub.problems));
+  // 行为侧 2：只写 id/do/check 即可加载 → 三者确为可选
+  const min = guideFile("guide-min", ["steps:", "  - id: a", "    do: X", "    check: c"]);
+  check("只写 id/do/check 可加载（on_pass/on_fail/max_fail_count 确为可选）", !!min.def, JSON.stringify(min.problems));
+  // 行为侧 3：doctor 输出没有「可启动」，只有 ✅/❌ 与结论行
+  const diag = engine.diagnose().text;
+  check("doctor 输出不含「可启动」（指引措辞与输出一致）", !diag.includes("可启动") && diag.includes("全部 ✅"));
+  // 行为侧 4：input 只出现在 CHECK，不出现在 DO
+  const inp = guideFile("guide-input", ["steps:", "  - id: a", "    desc: 描述D", "    do: 干活D", "    check: 检查D", "    input: 输入标记I", "    output: 交付标记O", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
+  const sInp = S();
+  const started = engine.start("guide-input", "输入提示词用例", sInp);
+  check("DO 提示词含 desc/交付物、但**不含** input", started.ok && started.text.includes("描述D") && started.text.includes("交付标记O") && !started.text.includes("输入标记I"), started.text.slice(0, 400));
+  const checkPrompt = buildCheckPrompt({
+    instId: "guide-input", step: inp.def.steps[0], workflow: inp.def, userTask: "任务", submitSummary: "",
+    checkIndex: 0, artifactsRelDir: ".dsh/ralph-flow/artifacts/guide-input", signal: new AbortController().signal,
+  }, true);
+  check("CHECK 提示词含 input（指引所述一致）", checkPrompt.includes("输入标记I"));
 }
 
 // ── 清理（索引在隔离 HOME 里，只删本测试写入的条目）────────────────────────────

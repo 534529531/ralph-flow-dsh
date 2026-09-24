@@ -100,15 +100,22 @@
 
 ### §1.6 CREATE_GUIDE 对齐
 
-`src/create.ts` 整篇重写为与引擎逐条一致：
-- 路径全部改 `.dsh/ralph-flow/…`；
-- 快捷命令写明 **`/ralphflow-<工作流名>`**（旧的"`/<名字>`"是错的）；
-- 硬规则清单如实列出（`do` 必填、`check` 非字符串拒绝、`max_fail_count` ≥1 整数、引用校验、未知 `manual_step` 拒绝）；
-- 新增 doctor 告警清单（不可达 / 无 done / `{{...}}` / 无 check）；
-- `check` 不再标"必填"而是"非 manual_step 请务必填（缺则告警，运行时按通用兜底配方，**不会跳过验证**）"；
-- `max_fail_count` 语义写明（缺失用默认 3；0/负数/小数硬错误）；
-- 产出目录一节说明"写裸文件名即可，不需要模板记号"；
-- `input`/`output` 从"v0 不校验"改为"进 DO/CHECK 提示词"。
+> **独立验证者（第 1 轮）判负项**：本项第一版（`CREATE_GUIDE` 重写）自认"逐条对齐"，但验证者用探针
+> 证伪了其中 4 处陈述。复现与修正如下（引擎逻辑未改，只改指引文本 + 补交叉断言）。
+
+| # | 第一版的错误陈述 | 探针实测 | 修正后 |
+|---|---|---|---|
+| 1 | "本版本未支持（见到会警告并忽略，**不报错**）… 子工作流步骤（`workflow: xxx`）" | 子工作流形状（`id/workflow/desc/input/output/on_pass/on_fail/max_fail_count`，无 `do`）→ `def=null`，`problems=["步骤 delegate 缺少 do…"]`，**不可启动**（本轮新增的 `do` 硬错误所致） | 改为：`workflow` 键**警告忽略**，但子工作流形状（无 `do`）**硬错误、工作流无法启动**——本版本没有子工作流，请展开成普通步骤 |
+| 2 | `input` "进 DO/CHECK 提示词" | DO 提示词**不含** input（`step.input` 仅被 CHECK 使用；DO 构造器从不引用） | 改为 "**只进 CHECK 提示词**；DO 提示词不注入 input" |
+| 3 | `on_pass`/`on_fail`/`max_fail_count` 标"必填"，同段又说 `max_fail_count` "缺失用默认 3" | 只写 `id/do/check` → `def 有效`、零问题（三者均可省，缺省 = 顺序下一步/自身/3） | 全部改为 "**可选，缺省 …**；写了必须 …"，硬规则段同步为"可省略，但一旦写了必须…" |
+| 4 | 反复要求"重跑直到报告**「可启动」**" | `diagnose()` 从不输出"可启动"，只有 ✅/❌ 与结论行"…修复后重跑本命令直至全部 ✅" | 改为 "直到**全部 ✅ 且无告警**"，并引用 doctor 的真实结论行 |
+
+其余部分经探针逐条核对成立（dot-dir 路径、快捷命令 `/ralphflow-<工作流名>`、`manual_step` 两种写法与
+未知引用硬错误、`{{...}}`/无 check/不可达/无 done 四类告警、产出目录语义、`check_voting` 与未知键警告忽略）。
+
+**防回归**：engine-test §16 同时做**文本侧**（不得再出现 4 处错误陈述）与**行为侧**（子工作流形状确实
+硬错误、只写 `id/do/check` 确实可加载、doctor 输出确实没有"可启动"、input 确实只进 CHECK）双向交叉验证
+（12 条断言）。这样指引与实际行为再漂移就会被测试挡住。
 
 ### §1.7 产出目录
 
@@ -129,6 +136,9 @@
 CHECK 提示词，提取其中的相对路径 `x.dsh/ralph-flow/artifacts/<id>`，在工作区内写出 `summary.md`
 再读回 → 断言「验证者按该相对路径读得到产出（继承会话工作区，无需额外权限）」。
 这对应任务书 §3 的结论：验证者继承父会话工作区，所以产出目录**必须在工作区内**。
+
+> 注意区分：以上是**新代码**的引擎层证据；本轮在飞实例的宿主持有旧模块，其 CHECK 提示词没有
+> 「产出目录」行，`summary.md` 是手动归位——真实端到端待作者重启（见 §2.7 与 §5）。
 
 ### §1.8 运行时目录改 dot-dir
 
@@ -157,7 +167,7 @@ CHECK 提示词，提取其中的相对路径 `x.dsh/ralph-flow/artifacts/<id>`�
    既有夹具（spec 审查门、on_fail 跨步回退、成环 on_fail、gap/twostep/one/maxfail）全部照常加载。
 4. **8 个测试脚本全绿 + APPLY_OK + tsc 干净** ✅：
    ```
-   engine-test          57 passed, 0 failed
+   engine-test          66 passed, 0 failed
    hardening-test       29 passed, 0 failed
    verdict-integrity    39 passed, 0 failed
    native-delegation    22 passed, 0 failed
@@ -167,15 +177,21 @@ CHECK 提示词，提取其中的相对路径 `x.dsh/ralph-flow/artifacts/<id>`�
    verify-activation    APPLY_OK
    npx tsc --noEmit     干净
    ```
-   每条修复都配了断言（相比原 24 项，engine-test +33、native-delegation +6）。
-5. **CREATE_GUIDE 与引擎逐条一致** ✅ —— 见 §1.6。
+   每条修复都配了断言（相比原 24 项，engine-test +42、native-delegation +6）。
+5. **CREATE_GUIDE 与引擎逐条一致** ✅（**第 2 轮修复后**）—— 见 §1.6：第一版被验证者证伪 4 处，
+   已逐条改正并加 engine-test §16 的文本+行为双向交叉断言（12 条）。
 6. **边界未破** ✅ —— 见 §3。
-7. **产出目录生效** ✅ —— DO/CHECK 提示词都含「产出目录」行；验证者按该相对路径读得到产出
-   （真实 `runVerifier` 捕获 + 读回断言）；本轮的 `summary.md` 落在
-   `.dsh/ralph-flow/artifacts/loop-muey7m8h-x1x0/summary.md`，**仓库根没有 `summary.md`**。
+7. **产出目录生效** ✅（**分两层，如实区分**）——
+   - **引擎层（已生效）**：DO/CHECK 提示词都含「产出目录」行，验证者按该相对路径读得到产出
+     （native-delegation D1 用**真实 `runVerifier`** 捕获 CHECK 提示词 + 写读回断言；engine-test §10 断言 DO 提示词）。
+   - **本轮在飞实例（不算端到端证明）**：验证者已指出，本实例 `loop-muey7m8h-x1x0` 的宿主进程持有
+     **改动前**的模块，实际投给它的 CHECK 提示词里没有「产出目录」；因此
+     `.dsh/ralph-flow/artifacts/loop-muey7m8h-x1x0/summary.md` 是**执行者手动归位**的，不能计作
+     "真实 loop 端到端"证据。真正的端到端要等作者重启后跑一次真实 `loop`（已列入 §5）。
+   - 可确证的事实：仓库根**没有** `summary.md`，且新引擎（探针 P8）不再在根生成它。
 8. **布局迁移完成** ✅（含一条刻意的过渡残留，见 §5）——
    真实工作区 `<workspace>/.dsh/ralph-flow/{workflows,instances,reports,artifacts}` 齐全；
-   新引擎**不再创建**旧 `ralph-flow/`（探针 P8 证明）；`git status` 无未跟踪噪声
+   新引擎**不再创建**旧 `ralph-flow/`（探针 P8 证明）；`git status` 干净
    （`.dsh/ralph-flow/` 已精确忽略）；README / design §9 / `CREATE_GUIDE` 路径全部更新。
 9. **交付摘要入库** ✅ —— 本文件即 `docs/v2/evidence/summary-completion.md`；
    loop 自己的累积器写在产出目录（`summary.md`，**不入库**），仓库根不再有 `summary.md`。
@@ -253,5 +269,15 @@ CHECK 提示词，提取其中的相对路径 `x.dsh/ralph-flow/artifacts/<id>`�
 ## 6. 结论
 
 任务书 §1.1–§1.8 全部落地，每条都有改动前复现 + 改动后断言；§2 边界与 design §10 宪法逐条未破；
-8 个测试脚本全绿 + `APPLY_OK` + `tsc --noEmit` 干净；唯一遗留是"在飞实例的旧路径 state"
-与随之而来的重启后清理动作（已在 §5 写明原因与命令）。
+8 个测试脚本全绿（engine-test 66）+ `APPLY_OK` + `tsc --noEmit` 干净。
+
+**迭代记录（诚实）**：
+
+- **第 1 轮**：§1.1–§1.8 实现。独立验证者判负，唯一判负面是 §1.6——`CREATE_GUIDE` 有 4 处与引擎
+  实际行为相反的陈述（子工作流"不报错"、`input` 进 DO、三个字段标"必填"、「可启动」措辞）。
+  引擎功能面被验证者独立证实全部通过。
+- **第 2 轮（本次）**：只改文本与证据（引擎逻辑零改动）——修正上述 4 处，新增 engine-test §16 的
+  文本+行为双向交叉断言（12 条）防回归，并把验收第 7 条的"真实 loop 端到端"证据如实降级为
+  "引擎层已生效 / 在飞实例不算端到端证明"。
+
+唯一遗留是"在飞实例的旧路径 state"与随之而来的重启后清理 + 真实端到端验证动作（已在 §5 写明原因与命令）。

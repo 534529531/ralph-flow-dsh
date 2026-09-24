@@ -162,7 +162,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: "ralphflow_create",
-      description: "获取自定义工作流的交互式设计指引（模型与用户一轮问清流程 → 呈现步骤图 → 写 YAML → doctor 校验到可启动）。",
+      description: "获取自定义工作流的交互式设计指引（模型与用户一轮问清流程 → 呈现步骤图 → 写 YAML → doctor 校验到全部 ✅ 且无告警）。",
       params: {
         idea: { type: "string", description: "用户想自动化的流程想法（可选，有则附在指引前）。" },
       },
@@ -306,7 +306,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       input: { hint: "[流程想法]" },
       shim: (inv) => ({
         kind: "directive",
-        text: `用户想${inv.rawInput.trim() ? `创建一个工作流：${inv.rawInput.trim()}` : "创建自定义 Ralph Flow 工作流"}。请调用 \`ralphflow_create\` 工具获取完整设计指引，然后按指引与用户交互：一轮问清流程阶段与审查门位置（用户没说清楚才问）→ 呈现步骤图 → 写 YAML 到 \`.dsh/ralph-flow/workflows/\` → 调用 \`ralphflow_doctor\` 校验到「可启动」且无警告 → 交接运行方式。`,
+        text: `用户想${inv.rawInput.trim() ? `创建一个工作流：${inv.rawInput.trim()}` : "创建自定义 Ralph Flow 工作流"}。请调用 \`ralphflow_create\` 工具获取完整设计指引，然后按指引与用户交互：一轮问清流程阶段与审查门位置（用户没说清楚才问）→ 呈现步骤图 → 写 YAML 到 \`.dsh/ralph-flow/workflows/\` → 调用 \`ralphflow_doctor\` 校验到全部 ✅ 且无告警 → 交接运行方式。`,
       }),
     },
     {

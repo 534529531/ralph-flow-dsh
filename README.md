@@ -56,7 +56,7 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 - **裁判权定理**：判定只可能产生于独立会话（T1）；推进只由机械程序决定（T2）。
 - 状态模型：无相位字段，全部阶段由原始事实派生（交卷了吗 / 判定落地了吗 / 有在飞委派吗 / 暂停了吗）。
 - 验证者：全新独立会话，只见任务 + 检查依据 + 交卷摘要 +（可读的）产出目录，只读工具白名单，结构化判定 + 文本兜底，fail-closed。
-- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；引擎验证测试见 `scripts/engine-test.mjs`（57 项，含布局/产出目录/加载期硬校验/doctor lint/报告统计/索引 GC）。
+- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；引擎验证测试见 `scripts/engine-test.mjs`（66 项，含布局/产出目录/加载期硬校验/doctor lint/报告统计/索引 GC/CREATE_GUIDE 一致性）。
 
 ## v0 范围（诚实声明）
 

@@ -2,12 +2,13 @@
  * Ralph Flow for dsh v2 — 自定义工作流创建指引（面向模型，与 opencode/claude 版语义一致）
  *
  * /ralphflow-create = 触发词：给模型指令 → 模型调用本工具的引导文本 → 与用户交互式
- * 设计 → 写 YAML → ralphflow_doctor 校验到「可启动」。
+ * 设计 → 写 YAML → ralphflow_doctor 校验到「全部 ✅ 且无告警」。
  *
- * §1.6：本指引与引擎**实际行为**逐条对齐（含 dot-dir 路径与 `/ralphflow-<工作流名>` 快捷命令）。
+ * §1.6：本指引与引擎**实际行为**逐条对齐（含 dot-dir 路径、`/ralphflow-<工作流名>` 快捷命令、
+ * 各字段的可选性与缺省行为、doctor 的真实输出形态）。
  */
 
-export const CREATE_GUIDE = `和用户一起交互式设计一个自定义 Ralph Flow 工作流，写入 \`<workspace>/.dsh/ralph-flow/workflows/<name>.yaml\`（仅本工作区生效）或 \`~/.dsh/ralph-flow/workflows/<name>.yaml\`（全局可用，插件更新不覆盖），并用 ralphflow_doctor 工具校验，直到报告「可启动」且无告警。
+export const CREATE_GUIDE = `和用户一起交互式设计一个自定义 Ralph Flow 工作流，写入 \`<workspace>/.dsh/ralph-flow/workflows/<name>.yaml\`（仅本工作区生效）或 \`~/.dsh/ralph-flow/workflows/<name>.yaml\`（全局可用，插件更新不覆盖），并用 ralphflow_doctor 工具校验，直到它的输出里**每一项都是 ✅、没有 ❌、也没有告警**。
 
 ## 步骤
 
@@ -20,7 +21,7 @@ export const CREATE_GUIDE = `和用户一起交互式设计一个自定义 Ralph
 
 3. **写 YAML**（kebab-case 命名）。存放范围：默认本工作区；与内置（loop/spec）同名会遮蔽内置，确认有意再写。
 
-4. **校验**：调用 ralphflow_doctor 工具，修复它报出的每个问题与警告，重跑直到「可启动」且无警告。
+4. **校验**：调用 ralphflow_doctor 工具，修复它报出的每个 ❌ 与告警，重跑直到**全部 ✅ 且无告警**（doctor 的结论行写作「所有 ❌ 项即阻塞项，修复后重跑本命令直至全部 ✅」）。
 
 5. **交接**：展示最终步骤概览与运行方式：\`/ralphflow-start <名字> <任务>\`；下个会话起也可直接用自动注册的**快捷命令 \`/ralphflow-<工作流名>\`**（例如工作流叫 \`migrate\` 就是 \`/ralphflow-migrate <任务>\`）。
 
@@ -46,21 +47,21 @@ steps:                  # 必填，非空；从第一个元素开始执行
       完成实际工作…
     check: |            # 非 manual_step 步骤请务必填：独立验证者的取证判定配方
       检查…              # 缺 check → doctor 告警（DO 后仍会按通用兜底配方验证，不会被跳过）
-    input: proposal.md  # 可选：输入说明（进 DO/CHECK 提示词）
-    output: |           # 可选：交付物说明（进 DO/CHECK 提示词；裸文件名即落在产出目录）
+    input: proposal.md  # 可选：输入说明（**只进 CHECK 提示词**；DO 提示词不注入 input）
+    output: |           # 可选：交付物说明（进 DO 的「交付物」与 CHECK；裸文件名即落在产出目录）
       实现的代码 + summary.md
-    on_pass: next-id    # 必填：下个步骤 id，或 "done" 结束
-    on_fail: step-id    # 必填：失败重试目标（通常指向自身，不允许 "done"）
-    max_fail_count: 3   # 必填 ≥1 的整数（缺失用默认 3；0/负数/小数 = 硬错误）
+    on_pass: next-id    # 可选，缺省 = 顺序下一步（末步视为 "done"）；写了必须指向存在的步骤或 "done"
+    on_fail: step-id    # 可选，缺省 = 自身；写了必须指向存在的步骤（不允许 "done"）
+    max_fail_count: 3   # 可选，缺省 3；写了必须是 ≥1 的整数（0/负数/小数 = 硬错误）
 \`\`\`
 
-**硬规则**（违反 → 启动即被拒绝并说人话）：\`do\` 必填且为非空字符串；\`check\` 若出现必须是字符串（\`check: true\` 这类会被拒绝，本意是不检查就删掉该键）；on_pass/on_fail 必须引用存在的步骤 id（"done" 仅 on_pass 有效）；manual_step 必须引用存在的步骤 id；\`max_fail_count\` 若出现必须是 ≥1 的整数；steps 非空、id 唯一。
+**硬规则**（违反 → 启动即被拒绝并说人话）：\`do\` 必填且为非空字符串；\`check\` 若出现必须是字符串（\`check: true\` 这类会被拒绝，本意是不检查就删掉该键）；on_pass/on_fail 可省略，但一旦写了必须引用存在的步骤 id（"done" 仅 on_pass 有效）；manual_step 必须引用存在的步骤 id；\`max_fail_count\` 可省略（缺省 3），但一旦写了必须是 ≥1 的整数；steps 非空、id 唯一。
 
 **doctor 告警**（能启动，但会出问题）：不可达步骤（从第一个步骤沿 on_pass/on_fail 走不到）；没有任何可达步骤的 \`on_pass: done\`（工作流永远无法完成）；\`{{...}}\` 模板记号（本版本**不解析任何**模板变量）；非 manual_step 且没有 \`check\` 的步骤。
 
 **产出目录**：每个实例有隔离的产出目录 \`<workspace>/.dsh/ralph-flow/artifacts/<实例ID>/\`，实例启动时自动建好、完成后保留。DO 与 CHECK 提示词都会自动带上「产出目录」一行，所以在 \`do\`/\`output\` 里**写裸文件名**即可（例如 \`summary.md\`），不用写路径、也不需要任何模板记号。
 
-**本版本未支持（见到会警告并忽略，不报错）**：\`check_voting\`（多验证者投票，v0 单验证者按通用对抗检查执行）、子工作流步骤（\`workflow: xxx\`）、其它未识别键。
+**本版本未支持**：\`check_voting\`（多验证者投票，v0 单验证者按通用对抗检查执行）；**子工作流步骤**——\`workflow: xxx\` 这个键本身会被警告忽略，但按子工作流形状写的步骤（只有 \`workflow\`/\`input\`/\`output\`、**没有 \`do\`**）会因 \`do\` 必填而**硬错误、工作流无法启动**（本版本没有子工作流，请把子流程展开成普通步骤）；其它未识别键警告忽略。
 
 ## 设计最佳实践（除非用户反对，都应用）
 
