@@ -43,6 +43,8 @@
 - 改动面：`RALPH_FLOW_DIR`（[engine.ts:16](src/engine.ts#L16)，路径全由它派生）+ 6 处用户可见文案里的硬编码路径（`engine.ts:710/1076`、`tools.ts:286/299/309`、`create.ts:8`）+ `.gitignore` + 文档（README / design §9 / CREATE_GUIDE）
 - `.gitignore` 写 **`.dsh/ralph-flow/`（精确）**，**不要**整个 `.dsh/`——将来 dsh 可能在工作区 `.dsh/` 里放需要入库的项目配置
 - 迁移：旧 `ralph-flow/` 一次性 `mv` 即可。**当前无用户数据**（全局工作流目录为空、本地只有 loop/spec 自动副本、实例是 gitignored 临时数据）
+- 过渡期：本轮 round 1 时产出目录还没生效，loop 的累积器**仍会在仓库根生成一个新的 `summary.md`**；§1.7 落地后把它删掉，并确认后续轮次不再在根生成
+- **注意覆盖 `hardening-brief.md` §4.1**：那份说"审计清单写入 `summary.md`"，是上一轮遗留的说法（正是它把 67KB 摘要写进了仓库根并入库）。本轮改为写入 `docs/v2/evidence/summary-completion.md`（见 §4.9）
 - 顺带归档：仓库根的 `summary.md`（上一轮加固的 67KB 累积摘要，**已入库**）移到 `docs/v2/evidence/summary-hardening.md`，避免与新轮的累积器混淆
 - **1.7 与 1.8 一起做**（同一次改动），避免迁移两次
 
