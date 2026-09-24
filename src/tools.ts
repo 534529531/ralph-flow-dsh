@@ -283,7 +283,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       description: "列出全部实例与可用工作流。示例：/ralphflow-list",
       shim: () => ({
         kind: "directive",
-        text: "用户执行了 /ralphflow-list。请调用 `ralphflow_list` 工具获取数据，然后把「可用工作流」整理成**表格**（列：工作流 | 用途描述），把「工作流实例」按工具返回的字段简要列给用户（实例 id、工作流、任务、步骤、状态、属主）。数据以工具返回为准，不要编造；没有实例就直说。工作流解析顺序：项目/工作区自定义 > 全局 `~/.dsh/ralph-flow/workflows` > 插件内置。",
+        text: "用户执行了 /ralphflow-list。请调用 `ralphflow_list` 工具获取数据，然后把「可用工作流」整理成**表格**（列：工作流 | 用途描述），把「工作流实例」按工具返回的字段简要列给用户（实例 id、工作流、任务、步骤、状态、属主）。数据以工具返回为准，不要编造；没有实例就直说。工作流解析顺序：工作区自定义 `.dsh/ralph-flow/workflows/` > 全局 `~/.dsh/ralph-flow/workflows/` > 插件内置。",
       }),
     },
     {
@@ -296,7 +296,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
         const reason = parts.length > 1 ? `，reason = \`${parts.slice(1).join(" ")}\`` : "";
         return {
           kind: "directive",
-          text: `用户执行了 /ralphflow-cancel，要取消工作流实例${instance}。请调用 \`ralphflow_cancel\` 工具${reason}——它会中止任何在飞的独立验证会话、把最终报告归档到 \`ralph-flow/reports/\`。然后向用户简短确认已取消（或转达错误）。`,
+          text: `用户执行了 /ralphflow-cancel，要取消工作流实例${instance}。请调用 \`ralphflow_cancel\` 工具${reason}——它会中止任何在飞的独立验证会话、把最终报告归档到 \`.dsh/ralph-flow/reports/\`。然后向用户简短确认已取消（或转达错误）。`,
         };
       },
     },
@@ -306,7 +306,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       input: { hint: "[流程想法]" },
       shim: (inv) => ({
         kind: "directive",
-        text: `用户想${inv.rawInput.trim() ? `创建一个工作流：${inv.rawInput.trim()}` : "创建自定义 Ralph Flow 工作流"}。请调用 \`ralphflow_create\` 工具获取完整设计指引，然后按指引与用户交互：一轮问清流程阶段与审查门位置（用户没说清楚才问）→ 呈现步骤图 → 写 YAML 到 \`ralph-flow/workflows/\` → 调用 \`ralphflow_doctor\` 校验到「可启动」且无警告 → 交接运行方式。`,
+        text: `用户想${inv.rawInput.trim() ? `创建一个工作流：${inv.rawInput.trim()}` : "创建自定义 Ralph Flow 工作流"}。请调用 \`ralphflow_create\` 工具获取完整设计指引，然后按指引与用户交互：一轮问清流程阶段与审查门位置（用户没说清楚才问）→ 呈现步骤图 → 写 YAML 到 \`.dsh/ralph-flow/workflows/\` → 调用 \`ralphflow_doctor\` 校验到「可启动」且无警告 → 交接运行方式。`,
       }),
     },
     {

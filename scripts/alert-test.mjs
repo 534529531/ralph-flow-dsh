@@ -17,6 +17,12 @@ import os from "node:os";
 import path from "node:path";
 import { createEngine } from "../lib/engine.js";
 
+// HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
+// 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
+process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
+fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
+
+
 let pass = 0, fail = 0;
 const check = (n, c, e = "") => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.error(`  ✗ ${n} ${e}`); } };
 const sleep = (ms = 60) => new Promise((r) => setTimeout(r, ms));
@@ -120,7 +126,7 @@ console.log("\nA5 无实例会话交卷：不产生任何副作用");
   e.onSubmit("ghost-session", "交卷");
   e.onSubmit("ghost-session", "再交卷");
   check("没有凭空创建实例", e.listInstances().length === before, `before=${before} after=${e.listInstances().length}`);
-  check("没有产生报告", !fs.existsSync(path.join(ws, "ralph-flow", "reports")) || fs.readdirSync(path.join(ws, "ralph-flow", "reports")).length === 0);
+  check("没有产生报告", !fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "reports")) || fs.readdirSync(path.join(ws, ".dsh", "ralph-flow", "reports")).length === 0);
   cleanup(ws);
 }
 

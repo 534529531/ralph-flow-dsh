@@ -13,7 +13,18 @@ import path from "node:path";
 import os from "node:os";
 import yaml from "js-yaml";
 
-export const RALPH_FLOW_DIR = "ralph-flow";
+/**
+ * 工作区内的运行时根目录。**工作区 dot-dir**（§1.8）：与 opencode `.opencode/ralph-flow/`、
+ * claude `.claude/ralph-flow/` 形状一致；全局命名空间 `~/.dsh/ralph-flow/` 由
+ * {@link RALPH_FLOW_NAME} 拼出，两个作用域里的插件命名空间都叫 `ralph-flow`。
+ *
+ * 注意：这里是**工作区相对路径**（含 `/`），`path.join(workspace, RALPH_FLOW_DIR)` 仍成立。
+ */
+export const RALPH_FLOW_DIR = ".dsh/ralph-flow";
+/** 插件命名空间名（全局 `~/.dsh/<name>/...`）——与工作区内 `.dsh/<name>/` 对称 */
+export const RALPH_FLOW_NAME = "ralph-flow";
+/** 每实例产出目录的目录名（§1.7，与 opencode 同名） */
+const ARTIFACTS_DIRNAME = "artifacts";
 
 // ─── 方言类型（与 opencode/claude 版共享的 YAML 方言）────────────────────────
 
@@ -150,18 +161,96 @@ export interface VerifyRequest {
   submitSummary: string;
   ownerSession?: string;
   checkIndex: number;
+  /**
+   * 本实例产出目录的**工作区相对路径**（§1.7，正斜杠）。
+   * 验证者继承父会话工作区，因此用它就能读到 DO 的产出；CHECK 提示词据此注入「产出目录」。
+   */
+  artifactsRelDir: string;
   /** 取消句柄（dsh 委派契约要求的 "caller's cancellation"；不是超时预算） */
   signal: AbortSignal;
 }
 
 // ─── 引擎 ────────────────────────────────────────────────────────────────────
 
+/**
+ * §1.2 doctor lint：对**已通过硬校验**的工作流做可达性 / 收尾 / 模板 / 无检查告警
+ * （对齐 opencode 的 `lintWorkflow`，但按我们的推进规则计算：`on_pass` 缺省 = 顺序下一步）。
+ *
+ * 这些是「引擎只在运行时才暴露、甚至永远不暴露」的问题：
+ *   · 不可达步骤静默不执行；
+ *   · 没有可达步骤能到 `done` → 工作流永远不完成（旧版 doctor 还报 ✅，运行时无限循环）；
+ *   · 未解析的 `{{...}}` 原样进入提示词；
+ *   · 非 manual 步没写 check → 只有通用兜底配方，验收形同虚设。
+ */
+export function lintWorkflow(steps: StepDef[], manual: Set<string>): string[] {
+  const warnings: string[] = [];
+  if (steps.length === 0) return warnings;
+  const byId = new Map(steps.map((s) => [s.id, s]));
+  /** 与 nextStepId 同规则：on_pass 缺省 = 顺序下一步（末步 = done） */
+  const passTarget = (s: StepDef): string => {
+    if (s.on_pass) return s.on_pass;
+    const i = steps.findIndex((x) => x.id === s.id);
+    return i >= 0 && i + 1 < steps.length ? steps[i + 1]!.id : "done";
+  };
+  // 可达性：入口是 steps[0]，边 = on_pass/on_fail（on_fail 缺省指自身，不新增节点）。
+  const reachable = new Set<string>();
+  const queue = [steps[0]!.id];
+  while (queue.length > 0) {
+    const id = queue.pop()!;
+    if (reachable.has(id)) continue;
+    reachable.add(id);
+    const s = byId.get(id);
+    if (!s) continue;
+    const pass = passTarget(s);
+    if (pass !== "done") queue.push(pass);
+    queue.push(s.on_fail ?? s.id);
+  }
+  const unreachable = steps.filter((s) => !reachable.has(s.id)).map((s) => s.id);
+  if (unreachable.length > 0) {
+    warnings.push(`步骤 ${unreachable.map((s) => `\`${s}\``).join("、")} 从入口（steps 的第一项）沿 on_pass/on_fail 不可达，永远不会执行。`);
+  }
+  if (!steps.some((s) => reachable.has(s.id) && passTarget(s) === "done")) {
+    warnings.push("没有任何可达步骤的 `on_pass` 为 `done`，工作流永远无法正常完成（会一直循环）。");
+  }
+  // 未解析的模板变量：本版本**不解析任何** `{{...}}` 记号（产出目录会自动注入提示词，不需要记号）。
+  for (const s of steps) {
+    for (const field of ["desc", "do", "check", "input", "output"] as const) {
+      const text = s[field];
+      if (typeof text !== "string") continue;
+      for (const m of text.matchAll(/\{\{[^{}]*\}\}/g)) {
+        warnings.push(`步骤 \`${s.id}\` 的 ${field} 含模板变量 ${m[0]}，引擎不会解析（本版本不提供模板记号；产出目录本就会自动注入 DO/CHECK 提示词）。`);
+      }
+    }
+  }
+  // 非 manual 且无 check：DO 完成后只会按通用兜底配方验证（**不会跳过验证**），
+  // 但没有针对本步的验收配方 → 验证形同虚设，必须醒目告警。
+  for (const s of steps) {
+    const hasCheck = typeof s.check === "string" && s.check.trim() !== "";
+    if (!hasCheck && !manual.has(s.id) && s.manual_step !== true) {
+      warnings.push(`步骤 \`${s.id}\` 未配置对抗检查（无 \`check\`）：DO 完成后只会按通用兜底配方验证，建议补上针对本步的验收配方；确为人工审查步请加进 \`manual_step\`。`);
+    }
+  }
+  return warnings;
+}
+
+/** 人类可读时长（报告用）：`45s` / `3m12s` / `1h05m` */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "未知";
+  const total = Math.floor(ms / 1000);
+  if (total < 60) return `${total}s`;
+  const m = Math.floor(total / 60);
+  if (m < 60) return `${m}m${total % 60}s`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
+}
+
 export function createEngine(projectDir: string, ports: EnginePorts) {
   const root = path.join(projectDir, RALPH_FLOW_DIR);
   const instancesDir = path.join(root, "instances");
   const workflowsDir = path.join(root, "workflows");
   const reportsDir = path.join(root, "reports");
-  const globalWorkflowsDir = path.join(os.homedir(), ".dsh", RALPH_FLOW_DIR, "workflows");
+  const artifactsDir = path.join(root, ARTIFACTS_DIRNAME);
+  // 全局工作流目录仍是 `~/.dsh/ralph-flow/workflows`（插件命名空间在全局与工作区同名）
+  const globalWorkflowsDir = path.join(os.homedir(), ".dsh", RALPH_FLOW_NAME, "workflows");
   /** 实例 → 在飞取消信号（取消/暂停时中止验证者，不白烧 token） */
   const aborts = new Map<string, AbortController>();
 
@@ -182,7 +271,26 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   function rootOf(workspace: string): string { return path.join(workspace, RALPH_FLOW_DIR); }
   function dirsOf(workspace: string) {
     const r = rootOf(workspace);
-    return { root: r, instancesDir: path.join(r, "instances"), workflowsDir: path.join(r, "workflows"), reportsDir: path.join(r, "reports") };
+    return {
+      root: r,
+      instancesDir: path.join(r, "instances"),
+      workflowsDir: path.join(r, "workflows"),
+      reportsDir: path.join(r, "reports"),
+      artifactsDir: path.join(r, ARTIFACTS_DIRNAME),
+    };
+  }
+
+  /** 每实例产出目录（§1.7）：`<workspace>/.dsh/ralph-flow/artifacts/<instId>/` */
+  function artifactsDirOf(workspace: string, instId: string): string {
+    return path.join(dirsOf(workspace).artifactsDir, instId);
+  }
+
+  /**
+   * 产出目录的**工作区相对路径**（正斜杠，可嵌进 DO/CHECK 提示词）。
+   * 验证者继承父会话工作区，所以这个路径对它同样可读。
+   */
+  function artifactsRelDirOf(instId: string): string {
+    return `${RALPH_FLOW_DIR}/${ARTIFACTS_DIRNAME}/${instId}`;
   }
 
   const log = (level: "info" | "warn" | "error", event: string, data?: unknown) => {
@@ -191,7 +299,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   function ensureLayout(workspace = projectDir): void {
     const d = dirsOf(workspace);
-    for (const p of [d.root, d.instancesDir, d.workflowsDir, d.reportsDir]) {
+    for (const p of [d.root, d.instancesDir, d.workflowsDir, d.reportsDir, d.artifactsDir]) {
       try { fs.mkdirSync(p, { recursive: true }); } catch {}
     }
     // 内置工作流落盘为可编辑资产（已存在则不覆盖——用户改动优先）
@@ -299,6 +407,21 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       if (s.check_voting !== undefined) {
         warnings.push(`步骤 \`${s.id}\` 用了 \`check_voting\`（多验证者投票）：本版本未支持，已忽略并按通用对抗检查执行。`);
       }
+      // ── §1.1 加载期硬校验：写错了却没有任何信号 = 缺陷（要么硬错误，要么 doctor 告警）
+      // do 缺失：没有可执行的指令，整步无意义 → 硬错误（不再静默接受空步）。
+      if (typeof s.do !== "string" || s.do.trim() === "") {
+        problems.push(`步骤 \`${s.id}\` 缺少 \`do\`（必填：主会话执行的指令；缺失、非字符串或空串都不接受）。`);
+      }
+      // check 存在但非字符串（如 `check: true`）：几乎一定是漏写正文。
+      // 硬错误，不静默当成「本步不做检查」——避免把「想要 check」误读成「不想 check」。
+      if (s.check !== undefined && s.check !== null && typeof s.check !== "string") {
+        problems.push(`步骤 \`${s.id}\` 的 \`check\` 必须是字符串（当前是 ${typeof s.check}）。本意是不做对抗检查就删掉该键。`);
+      }
+      // max_fail_count 给了就必须是 ≥1 的整数（0/负数以前被静默接受 → 首次失败即暂停，用户看不懂）。
+      if (s.max_fail_count !== undefined
+        && (typeof s.max_fail_count !== "number" || !Number.isInteger(s.max_fail_count) || s.max_fail_count < 1)) {
+        problems.push(`步骤 \`${s.id}\` 的 \`max_fail_count\` 必须是 ≥1 的整数（当前 ${JSON.stringify(s.max_fail_count)}）。`);
+      }
       steps.push({
         id: s.id,
         desc: typeof s.desc === "string" ? s.desc : undefined,
@@ -325,12 +448,26 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       }
     }
     if (problems.length > 0) return { def: null, problems, warnings };
-    const manual = Array.isArray(doc.manual_step)
-      ? doc.manual_step.filter((x: unknown): x is string => typeof x === "string")
-      : [];
-    if (doc.manual_step !== undefined && !Array.isArray(doc.manual_step)) {
-      warnings.push("顶层 manual_step 不是列表，已忽略。");
+    // manual_step 方言：列表与**逗号字符串**两种写法都支持（对齐 opencode）。
+    const manual: string[] = [];
+    if (Array.isArray(doc.manual_step)) {
+      manual.push(...doc.manual_step
+        .filter((x: unknown): x is string => typeof x === "string" && x.trim() !== "")
+        .map((x: string) => x.trim()));
+    } else if (typeof doc.manual_step === "string") {
+      manual.push(...(doc.manual_step as string).split(",").map((x: string) => x.trim()).filter(Boolean));
+    } else if (doc.manual_step !== undefined && doc.manual_step !== null) {
+      warnings.push("顶层 manual_step 既不是列表也不是字符串，已忽略。");
     }
+    // manual_step 引用不存在的步骤 → 硬错误：用户以为有审查门，实际会一路自动跑过去，
+    // 这个偏差没有任何其它信号（create.ts 早已自称是硬规则，此前只是没实现）。
+    const unknownManual = manual.filter((id) => !ids.has(id));
+    if (unknownManual.length > 0) {
+      problems.push(`manual_step 引用了不存在的步骤：${unknownManual.map((m) => `\`${m}\``).join("、")}（审查门会静默失效，必须修正拼写或删掉）。`);
+      return { def: null, problems, warnings };
+    }
+    // §1.2 doctor 覆盖的 lint：引擎只在运行时（或永远不）暴露的问题，加载成功后补告警。
+    warnings.push(...lintWorkflow(steps, new Set(manual)));
     // 方言容错（design §8 Q13 定案）：timeout_ms 本版本未支持 → 警告忽略，不静默吞掉。
     // ralphflow 不再自设验证超时，委派生命周期完全交给 dsh 原生能力（见 verify.ts 注释）。
     if (doc.adversarial_check && typeof doc.adversarial_check === "object"
@@ -522,9 +659,15 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   // ─── 交卷与验证（三时刻①②）────────────────────────────────────────────────
 
-  /** DO prompt：宣告本步任务（交卷 = 调用 ralphflow_submit 工具，dsh 原生方式） */
-  function doPrompt(wf: WorkflowDef, state: InstanceState, step: StepDef, rework?: string): string {
+  /**
+   * DO prompt：宣告本步任务（交卷 = 调用 ralphflow_submit 工具，dsh 原生方式）。
+   *
+   * §1.7：每个 DO 提示词**各注入一行**「产出目录」（工作区相对路径）。
+   * 由此 `do`/`output` 里写裸文件名即落到该目录，跨任务不再串味；内置 loop/spec 不用改。
+   */
+  function doPrompt(instId: string, wf: WorkflowDef, state: InstanceState, step: StepDef, rework?: string): string {
     const idx = wf.steps.findIndex((s) => s.id === step.id) + 1;
+    const rel = artifactsRelDirOf(instId);
     const parts = [
       `[ralphflow] 工作流 \`${wf.name}\` · 步骤 ${idx}/${wf.steps.length}：**${step.id}**${step.desc ? ` — ${step.desc}` : ""}`,
       "",
@@ -533,6 +676,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       "",
       `## 本步要做什么`,
       (step.do || step.desc || step.id).trim(),
+      "",
+      `## 产出目录`,
+      `\`${rel}/\` —— 本步的文档产出（清单、方案、报告、摘要等）统一放在此目录。`,
+      `步骤里提到的文件若没写路径（例如 \`summary.md\`），即指该目录下的文件；明确写了其它路径的除外。`,
     ];
     if (step.output) parts.push("", `## 交付物`, String(step.output).trim());
     if (rework) {
@@ -578,7 +725,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       verdict = await ports.verify({
         instId, step, workflow: wf, userTask: state.user_task,
         submitSummary: state.last_submit_summary ?? "",
-        ownerSession: state.owner_session, checkIndex, signal: controller.signal,
+        ownerSession: state.owner_session, checkIndex, artifactsRelDir: artifactsRelDirOf(instId),
+        signal: controller.signal,
       });
     } catch (e) {
       verdict = { check_index: checkIndex, status: "infra", reason: `验证未跑成：${msg(e)}`, step_id: step.id, ts: new Date().toISOString() };
@@ -652,7 +800,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         log("info", "rework_rewind", { instId, from: step.id, to: target.id });
       }
       writeState(fresh, instId);
-      deliver(fresh, doPrompt(wf, fresh, target, verdict.reason), `🔄 步骤 ${target.id} 验证未通过，自动返工（${step.id} 第 ${failedTimes} 次）`);
+      deliver(fresh, doPrompt(instId, wf, fresh, target, verdict.reason), `🔄 步骤 ${target.id} 验证未通过，自动返工（${step.id} 第 ${failedTimes} 次）`);
       return;
     }
     // 全 passed（且判定属于当前步）
@@ -696,7 +844,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     // 这既避免把前一步的失败算到它头上，也让成环的 on_fail 仍能触及 max_fail_count。
     pushHistory(state, "step_start", next.desc ?? "", next.id);
     writeState(state, instId);
-    deliver(state, doPrompt(wf, state, next), `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（完成后会自动进入独立验证）`);
+    deliver(state, doPrompt(instId, wf, state, next), `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（完成后会自动进入独立验证）`);
   }
 
   function complete(instId: string, state: InstanceState, wf: WorkflowDef): void {
@@ -707,7 +855,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     state.do_submitted = false;
     writeState(state, instId);
     archiveReport(instId, state, wf, "done");
-    notify(state, `✅ 工作流 \`${wf.name}\` 完成，报告已归档到工作区的 \`ralph-flow/reports/\`。`, `✅ 工作流 ${wf.name} 完成（报告已归档 ralph-flow/reports/）`);
+    notify(state, `✅ 工作流 \`${wf.name}\` 完成，报告已归档到工作区的 \`${RALPH_FLOW_DIR}/reports/\`。`, `✅ 工作流 ${wf.name} 完成（报告已归档 ${RALPH_FLOW_DIR}/reports/）`);
   }
 
   function deliver(state: InstanceState, text: string, summary?: string): void {
@@ -726,11 +874,57 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   // ─── 报告归档 ──────────────────────────────────────────────────────────────
 
+  /**
+   * §1.4 每步耗时与重试次数：**全部从 `history` 的 `ts` 与 `fail_counts` 派生**
+   * （不新增落盘字段）。
+   *
+   * 耗时区间 = 属于某步的第一条历史事件 → 下一条属于其它步骤的事件（或 `endTs`）；
+   * 同一被反复进入的步骤（返工/回退）累计总时长。
+   *
+   * 重试次数 = `max(fail_counts[step], 该步 verdict_failed 条数)`：
+   * 通过时 `clearFailCount` 会把该步计数清零、恢复暂停时也会清零，所以单看
+   * `fail_counts` 会把「先失败几次再通过」记成 0 轮 —— 必须同时从 history 兜底。
+   */
+  function stepStats(state: InstanceState, endTs: number): Array<{ step: string; ms: number; retries: number }> {
+    const acc = new Map<string, { ms: number; order: number; failed: number }>();
+    let order = 0;
+    let lastStep: string | undefined;
+    let lastTs: number | undefined;
+    const ensure = (step: string) => {
+      let v = acc.get(step);
+      if (!v) { v = { ms: 0, order: order++, failed: 0 }; acc.set(step, v); }
+      return v;
+    };
+    for (const h of state.history) {
+      const step = h.step;
+      if (!step) continue;
+      const t = new Date(h.ts).getTime();
+      if (!Number.isFinite(t)) continue;
+      if (step !== lastStep) {
+        if (lastStep !== undefined && lastTs !== undefined) ensure(lastStep).ms += Math.max(0, t - lastTs);
+        lastStep = step;
+      }
+      lastTs = t;
+      const rec = ensure(step);
+      if (h.event === "verdict_failed") rec.failed += 1;
+    }
+    if (lastStep !== undefined && lastTs !== undefined) ensure(lastStep).ms += Math.max(0, endTs - lastTs);
+    return [...acc.entries()]
+      .sort((a, b) => a[1].order - b[1].order)
+      .map(([step, v]) => ({ step, ms: v.ms, retries: Math.max(state.fail_counts?.[step] ?? 0, v.failed) }));
+  }
+
   function archiveReport(instId: string, state: InstanceState, wf: WorkflowDef, status: "done" | "cancelled"): void {
     try {
       // 报告与实例同属一个工作区（实例目录在哪，报告就归档到哪）
       const target = dirsOf(workspaceOf(instId)).reportsDir;
       fs.mkdirSync(target, { recursive: true });
+      const end = new Date().toISOString();
+      const endTs = new Date(end).getTime();
+      const stats = stepStats(state, endTs);
+      const totalMs = Math.max(0, endTs - new Date(state.started_at).getTime());
+      const totalFails = stats.reduce((a, s) => a + s.retries, 0);
+      const artifactsRel = artifactsRelDirOf(instId);
       const lines = [
         `# ralphflow 报告 · ${wf.name}`,
         "",
@@ -738,8 +932,16 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         `- 状态：**${status === "done" ? "完成" : "取消"}**`,
         `- 任务：${state.user_task}`,
         `- 开始：${state.started_at}`,
-        `- 结束：${new Date().toISOString()}`,
-        `- 失败轮数：${state.fail_count}`,
+        `- 结束：${end}`,
+        `- 总耗时：${formatDuration(totalMs)}`,
+        `- 失败轮数：${totalFails}`,
+        `- 产出目录：\`${artifactsRel}/\``,
+        "",
+        "## 步骤耗时与重试",
+        "",
+        ...(stats.length > 0
+          ? stats.map((d) => `- \`${d.step}\`：耗时 ${formatDuration(d.ms)} · 失败 ${d.retries} 轮`)
+          : ["- （无步骤记录）"]),
         "",
         "## 轨迹",
         "",
@@ -785,8 +987,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     registerInstance(instId, workspace);
     pushHistory(state, "start", `workflow=${wf.name}`, first.id);
     writeState(state, instId);
+    // §1.7 产出目录：实例启动时建好，完成后**保留**（不随实例结束删除）。
+    try { fs.mkdirSync(artifactsDirOf(workspace, instId), { recursive: true }); } catch {}
     log("info", "instance_start", { instId, workflow: wf.name, workspace });
-    const warnText = warnings.length > 0 ? `\n\n⚠️ 定义里有本版本未支持的键（已忽略）：\n${warnings.map((w) => `- ${w}`).join("\n")}` : "";
+    const warnText = warnings.length > 0 ? `\n\n⚠️ 工作流定义告警：\n${warnings.map((w) => `- ${w}`).join("\n")}` : "";
     const text = [
       `🚀 已启动工作流 **${wf.name}**（实例 \`${instId}\`，共 ${wf.steps.length} 步）。${warnText}`,
       "",
@@ -794,7 +998,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       "",
       "请现在开始执行上面的任务。",
     ].join("\n");
-    return { ok: true, text: `${text}\n\n---\n\n${doPrompt(wf, state, first)}` };
+    return { ok: true, text: `${text}\n\n---\n\n${doPrompt(instId, wf, state, first)}` };
   }
 
   /**
@@ -979,7 +1183,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         void launchVerification(instId, state, wf, step);
         return { ok: true, text: `▶️ 已解除暂停（原因：${reason}），正在重新委派独立验证者检查步骤 \`${step.id}\`。` };
       }
-      deliver(state, doPrompt(wf, state, step), `▶️ 步骤 ${step.id} 继续执行`);
+      deliver(state, doPrompt(instId, wf, state, step), `▶️ 步骤 ${step.id} 继续执行`);
       return { ok: true, text: `▶️ 已解除暂停（原因：${reason}），已让模型继续步骤 \`${step.id}\`。` };
     }
 
@@ -1073,7 +1277,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 异步验证期间这是用户最需要的一句话：说明要不要操作、去哪看、怎么退出。
    */
   function nextActionHint(s: InstanceState): string | undefined {
-    if (!s.active) return "工作流已结束。报告在 `ralph-flow/reports/`；要再跑一次用 `/ralphflow-start <工作流> <任务>`。";
+    if (!s.active) return `工作流已结束。报告在 \`${RALPH_FLOW_DIR}/reports/\`；要再跑一次用 \`/ralphflow-start <工作流> <任务>\`。`;
     if (s.paused) {
       if (s.pause_reason === "max_failures") return "**等你定夺**：修好问题后 `/ralphflow-continue` 重新验证，或 `/ralphflow-cancel` 结束。";
       if (s.pause_reason === "no_submit") return "**等你处理**：模型反复未交卷。让它调用 `ralphflow_submit`，再 `/ralphflow-continue`；或 `/ralphflow-cancel` 结束。";
@@ -1177,6 +1381,21 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   /** 插件加载/进程重启：孤儿委派 fail-safe（不隐式继续、不隐式通过） */
   function restore(): void {
+    // §1.5 索引 GC：`state.json` 已不存在的悬挂条目（实例目录被手动清理、或布局迁移过）
+    // 必须清出索引，否则 listInstances / 接管列表永远看到读不到的幽灵实例。
+    // 只清索引条目，**绝不删任何目录**（血泪规则：复现脚本不得动真实工作区）。
+    let gcChanged = false;
+    for (const id of Object.keys(registry)) {
+      let exists = false;
+      try { exists = fs.statSync(statePath(id)).isFile(); } catch { exists = false; }
+      if (!exists) {
+        delete registry[id];
+        gcChanged = true;
+        log("warn", "registry_gc_dangling", { instId: id });
+      }
+    }
+    if (gcChanged) saveRegistry();
+
     for (const { id, state } of listInstances()) {
       if (!state.active) continue;
       if (state.delegations.length > 0) {

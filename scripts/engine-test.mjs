@@ -6,6 +6,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createEngine } from "../lib/engine.js";
+import { buildCheckPrompt } from "../lib/verify.js";
+
+// HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
+// 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
+process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
+fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-test-"));
 const deliveries = [];
@@ -160,16 +166,16 @@ const S = () => `session-${++n}`;
   const r = engine.start("loop", "工作区用例", s, ws);
   check("显式工作区 start 成功", r.ok);
   const id = newestId();
-  check("实例目录落在指定工作区", engine.instanceDir(id).startsWith(path.join(ws, "ralph-flow", "instances")), engine.instanceDir(id));
+  check("实例目录落在指定工作区", engine.instanceDir(id).startsWith(path.join(ws, ".dsh", "ralph-flow", "instances")), engine.instanceDir(id));
   check("索引可发现（listInstances 可见）", engine.listInstances().some((i) => i.id === id));
-  check("内置工作流已复制到该工作区", fs.existsSync(path.join(ws, "ralph-flow", "workflows", "loop.yaml")));
+  check("内置工作流已复制到该工作区", fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "workflows", "loop.yaml")));
   // 完整一轮 + 报告归档位置跟随工作区
   scripted.push({ status: "passed", reason: "报告位置验证" });
   submit(s, "完成。");
   await settle();
   const st = engine.readState(id);
   check("跨工作区实例通过并完成", st && !st.active);
-  check("报告归档在相同工作区", fs.existsSync(path.join(ws, "ralph-flow", "reports", `${id}.md`)), `${ws}/ralph-flow/reports/${id}.md`);
+  check("报告归档在相同工作区", fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "reports", `${id}.md`)), `${ws}/.dsh/ralph-flow/reports/${id}.md`);
 }
 
 // ── 9) 加固回归：委派超时交给 dsh 原生能力，ralphflow 不自设总时长上界 ─────────
@@ -202,7 +208,138 @@ const S = () => `session-${++n}`;
   try { fs.rmSync(dir2, { recursive: true, force: true }); } catch {}
 }
 
-// ── 清理（含索引里由本次测试写入的条目）──────────────────────────────────────
+// ── 10) 补全 §1.8：布局迁移到工作区 dot-dir，旧 ralph-flow/ 不再创建 ────────────
+{
+  const ws = path.join(dir, "ws-layout");
+  fs.mkdirSync(ws, { recursive: true });
+  const s = S();
+  const r = engine.start("loop", "布局用例", s, ws);
+  const id = newestId();
+  check("start 成功（布局用例）", r.ok && r.text.includes("布局用例"));
+  for (const sub of ["workflows", "instances", "reports", "artifacts"]) {
+    const p = path.join(ws, ".dsh", "ralph-flow", sub);
+    check(`新布局 .dsh/ralph-flow/${sub} 齐全`, fs.existsSync(p), p);
+  }
+  check("旧 ralph-flow/ 不再被创建", !fs.existsSync(path.join(ws, "ralph-flow")));
+  // §1.7 产出目录：实例启动时建好、完成后保留；DO 提示词注入工作区相对路径
+  const artDir = path.join(ws, ".dsh", "ralph-flow", "artifacts", id);
+  check("每实例产出目录已建好", fs.existsSync(artDir), artDir);
+  check(
+    "DO 提示词含产出目录（工作区相对路径）",
+    r.text.includes("## 产出目录") && r.text.includes(`.dsh/ralph-flow/artifacts/${id}/`),
+    r.text.slice(-260),
+  );
+  scripted.push({ status: "passed", reason: "布局 ok" });
+  submit(s, "布局完成。");
+  await settle();
+  check("完成后产出目录保留（不随实例结束删除）", fs.existsSync(artDir));
+}
+
+// ── 11) §1.1 加载期硬校验：写错了必须硬错误（静默 = 缺陷）─────────────────────
+{
+  const wfFile = (name, lines) => {
+    fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
+    return engine.loadWorkflow(name);
+  };
+  const r1 = wfFile("bad-check-type", ["steps:", "  - id: a", "    do: X", "    check: true", "    on_pass: done", "    max_fail_count: 1"]);
+  check("check 非字符串 → 硬错误", !r1.def && r1.problems.some((p) => p.includes("check")), JSON.stringify(r1.problems));
+
+  const r2 = wfFile("bad-no-do", ["steps:", "  - id: a", "    check: c", "    on_pass: done", "    max_fail_count: 1"]);
+  check("do 缺失 → 硬错误", !r2.def && r2.problems.some((p) => p.includes("do")), JSON.stringify(r2.problems));
+
+  const r3 = wfFile("bad-manual", ["manual_step:", "  - nope", "steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 1"]);
+  check("manual_step 引用不存在步骤 → 硬错误", !r3.def && r3.problems.some((p) => p.includes("manual_step")), JSON.stringify(r3.problems));
+
+  const r4 = wfFile("bad-maxfail0", ["steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 0"]);
+  check("max_fail_count: 0 → 硬错误", !r4.def && r4.problems.some((p) => p.includes("max_fail_count")), JSON.stringify(r4.problems));
+
+  const r5 = wfFile("bad-maxfail-neg", ["steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: -2"]);
+  check("max_fail_count 负数 → 硬错误", !r5.def && r5.problems.some((p) => p.includes("max_fail_count")), JSON.stringify(r5.problems));
+
+  const ok = wfFile("ok-manual-csv", [
+    "manual_step: a,b", "steps:",
+    "  - id: a", "    do: X", "    check: c", "    on_pass: b", "    on_fail: a", "    max_fail_count: 1",
+    "  - id: b", "    do: Y", "    check: d", "    on_pass: done", "    on_fail: b", "    max_fail_count: 1",
+  ]);
+  check("manual_step 逗号字符串写法被接受", !!ok.def && ok.def.manual_step.join(",") === "a,b", JSON.stringify(ok.def?.manual_step));
+}
+
+// ── 12) §1.2 doctor lint：不可达 / 无 done / 模板记号 / 无 check ───────────────
+{
+  const wfFile = (name, lines) => {
+    fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
+    return engine.loadWorkflow(name);
+  };
+  const r1 = wfFile("lint-unreach", [
+    "steps:",
+    "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1",
+    "  - id: orphan", "    do: Y", "    check: d", "    on_pass: done", "    on_fail: orphan", "    max_fail_count: 1",
+  ]);
+  check("不可达步骤 → 告警", !!r1.def && r1.warnings.some((w) => w.includes("不可达")), JSON.stringify(r1.warnings));
+
+  const r2 = wfFile("lint-nodone", ["steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: a", "    on_fail: a", "    max_fail_count: 1"]);
+  check("无任何可达 on_pass done → 告警（永不完成）", !!r2.def && r2.warnings.some((w) => w.includes("done")), JSON.stringify(r2.warnings));
+
+  const r3 = wfFile("lint-token", ["steps:", "  - id: a", "    do: '写到 {{output_dir}}/x.md'", "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
+  check("未解析模板变量 → 告警", !!r3.def && r3.warnings.some((w) => w.includes("{{output_dir}}")), JSON.stringify(r3.warnings));
+
+  const r4 = wfFile("lint-nocheck", ["steps:", "  - id: a", "    do: X", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
+  check("非 manual 且无 check → 告警", !!r4.def && r4.warnings.some((w) => w.includes("对抗检查")), JSON.stringify(r4.warnings));
+
+  // 不误伤：既有 loop/spec 与现有夹具照常加载、无 lint 误报
+  for (const n of ["loop", "spec"]) {
+    const { def, warnings } = engine.loadWorkflow(n);
+    check(`内置 ${n} 照常加载且无 lint 误报`, !!def && warnings.length === 0, JSON.stringify(warnings));
+  }
+}
+
+// ── 13) §1.3 CHECK 提示词补 desc + 交付物 + 产出目录 ──────────────────────────
+{
+  const wf = { name: "loop", steps: [], manual_step: [], warnings: [] };
+  const step = { id: "s", desc: "写文档", do: "写文档", check: "检查 x.md", output: "x.md + summary.md" };
+  const prompt = buildCheckPrompt({
+    instId: "inst-1", step, workflow: wf, userTask: "任务", submitSummary: "做完了",
+    checkIndex: 0, artifactsRelDir: ".dsh/ralph-flow/artifacts/inst-1", signal: new AbortController().signal,
+  }, true);
+  check("CHECK 含步骤 desc", prompt.includes("## 本步上下文") && prompt.includes("写文档"));
+  check("CHECK 含交付物（DO 的承诺）", prompt.includes("交付物") && prompt.includes("x.md + summary.md"));
+  check("CHECK 含产出目录（工作区相对路径）", prompt.includes("`.dsh/ralph-flow/artifacts/inst-1/`"), prompt);
+  check("CHECK 要求去产出目录取证", prompt.includes("产出目录也在这个工作区内"));
+}
+
+// ── 14) §1.4 报告补每步耗时与重试次数（从 history/fail_counts 派生）────────────
+{
+  const s = S();
+  const { id } = start("loop", "报告统计用例", s);
+  scripted.push({ status: "failed", reason: "先失败一次" });
+  submit(s, "第一版");
+  await settle();
+  scripted.push({ status: "passed", reason: "修好了" });
+  submit(s, "第二版");
+  await settle();
+  const st = engine.readState(id);
+  check("失败后重试再通过 → 完成", st && !st.active);
+  const report = fs.readFileSync(path.join(engine.reportsDir, `${id}.md`), "utf-8");
+  check("报告含总耗时", report.includes("总耗时："), report.slice(0, 400));
+  check("报告含每步耗时表", report.includes("## 步骤耗时与重试") && /`loop`：耗时 \S+/.test(report), report.slice(0, 600));
+  check("报告含重试次数（fail_counts 派生）", report.includes("失败 1 轮"), report.slice(0, 600));
+  check("报告含产出目录（入库可查）", report.includes(`.dsh/ralph-flow/artifacts/${id}/`));
+}
+
+// ── 15) §1.5 restore() 清掉悬挂索引条目（state.json 已不存在）─────────────────
+{
+  const s = S();
+  const { id } = start("loop", "GC 用例", s);
+  const idxBefore = JSON.parse(fs.readFileSync(engine.indexPath, "utf-8"));
+  check("GC 前索引含本实例", !!idxBefore[id], JSON.stringify(idxBefore));
+  fs.rmSync(engine.instanceDir(id), { recursive: true, force: true });
+  engine.restore();
+  const idxAfter = JSON.parse(fs.readFileSync(engine.indexPath, "utf-8"));
+  check("restore() 清掉悬挂条目", !idxAfter[id], JSON.stringify(idxAfter));
+  check("restore() 不动正常条目", Object.values(idxAfter).length === Object.values(idxBefore).length - 1, JSON.stringify({ before: idxBefore, after: idxAfter }));
+}
+
+// ── 清理（索引在隔离 HOME 里，只删本测试写入的条目）────────────────────────────
 const indexPath = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
 try {
   const idx = JSON.parse(fs.readFileSync(indexPath, "utf-8"));

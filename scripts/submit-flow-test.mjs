@@ -13,6 +13,12 @@ import { Context } from "@deepseek-ai/cordis";
 import { Session } from "@deepseek-ai/dsh-session";
 import * as plugin from "../lib/index.js";
 
+// HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
+// 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
+process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
+fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
+
+
 let pass = 0, fail = 0;
 const check = (n, c, e = "") => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.error(`  ✗ ${n} ${e}`); } };
 const sleep = (ms = 60) => new Promise((r) => setTimeout(r, ms));
@@ -86,7 +92,7 @@ console.log("\nS2 turn-stopping：未交卷时提醒（且提醒有上限）");
 
   const idx = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json"), "utf-8"));
   const iid = Object.keys(idx).find((k) => idx[k] === ws);
-  const st = JSON.parse(fs.readFileSync(path.join(ws, "ralph-flow", "instances", iid, "state.json"), "utf-8"));
+  const st = JSON.parse(fs.readFileSync(path.join(ws, ".dsh", "ralph-flow", "instances", iid, "state.json"), "utf-8"));
   check("暂停原因是 no_submit", st.paused && st.pause_reason === "no_submit", JSON.stringify({ p: st.paused, r: st.pause_reason }));
   check("提醒次数从 history 派生（未新增状态字段）", Array.isArray(st.history) && st.history.filter((h) => h.event === "submit_reminder").length === 2, JSON.stringify(st.history.map((h) => h.event)));
   const i2 = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json"), "utf-8"));

@@ -18,6 +18,12 @@ import path from "node:path";
 import { createEngine } from "../lib/engine.js";
 import { runVerifier, parseVerdict } from "../lib/verify.js";
 
+// HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
+// 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
+process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
+fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
+
+
 let pass = 0, fail = 0;
 const check = (n, c, e = "") => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.error(`  ✗ ${n} ${e}`); } };
 const sleep = (ms = 60) => new Promise((r) => setTimeout(r, ms));
@@ -40,7 +46,7 @@ console.log("D1 委派请求只带 dsh 契约字段，不注入自造超时");
   };
   const e = createEngine(ws, { deliver: () => true, verify: (r) => runVerifier({ ctx }, r), log: () => {} });
   e.ensureLayout();
-  e.start("loop", "原生字段", "d1");
+  const startRes = e.start("loop", "原生字段", "d1");
   e.onSubmit("d1", "完成");
   await sleep(120);
 
@@ -49,6 +55,22 @@ console.log("D1 委派请求只带 dsh 契约字段，不注入自造超时");
   check("未注入自造超时字段（timeoutMs/deadline/timeout）",
     !("timeoutMs" in (captured ?? {})) && !("deadline" in (captured ?? {})) && !("timeout" in (captured ?? {})) && !("controller" in (captured ?? {})),
     JSON.stringify(Object.keys(captured ?? {})));
+
+  // ── §1.7 产出目录：DO 与 CHECK 提示词都注入，且验证者按相对路径读得到 ──────
+  const relRe = /\.dsh\/ralph-flow\/artifacts\/[A-Za-z0-9-]+/;
+  check("DO 提示词含产出目录行 + 工作区相对路径", startRes.text.includes("## 产出目录") && relRe.test(startRes.text), startRes.text.slice(-260));
+  const prompt = captured?.prompt?.[0]?.text ?? "";
+  check("CHECK 提示词含本步上下文与产出目录行", prompt.includes("## 本步上下文") && prompt.includes("**产出目录**"));
+  check("CHECK 提示词含交付物（DO 的 output 承诺）", prompt.includes("交付物") && prompt.includes("summary.md"), prompt.slice(0, 400));
+  const rel = prompt.match(relRe)?.[0];
+  check("CHECK 提示词含工作区相对产出路径", !!rel, prompt.slice(0, 300));
+  if (rel) {
+    const abs = path.join(ws, rel);
+    fs.writeFileSync(path.join(abs, "summary.md"), "verified-by-check\n", "utf-8");
+    const seen = fs.readFileSync(path.join(abs, "summary.md"), "utf-8");
+    check("验证者按该相对路径读得到产出（继承会话工作区，无需额外权限）", seen.includes("verified-by-check"));
+  }
+  check("DO/CHECK 指向同一个产出目录", !!rel && startRes.text.includes(rel), JSON.stringify({ rel }));
   const ip = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
   const idx = JSON.parse(fs.readFileSync(ip, "utf-8"));
   for (const k of Object.keys(idx)) if (idx[k] === ws) delete idx[k];
@@ -81,7 +103,7 @@ console.log("\nD2 取消能真正中止在飞验证者（原生取消语义）")
   await sleep(80);
   check("取消真正传播到在飞验证者（signal aborted）", aborted);
   const st = e.readState(iid);
-  check("实例已取消且报告归档", !st.active && fs.existsSync(path.join(ws, "ralph-flow", "reports", `${iid}.md`)));
+  check("实例已取消且报告归档", !st.active && fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "reports", `${iid}.md`)));
   check("在飞委派已清空", st.delegations.length === 0);
   void resolveVerify;
   const ip = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
@@ -123,7 +145,7 @@ console.log("\nD4 验证者判定通道：原生 structured 优先，文本标�
     agents: { get: () => undefined },
   });
   const wf = { name: "loop", steps: [{ id: "s", check: "核对 X" }], manual_step: [], warnings: [] };
-  const req = () => ({ instId: "t", step: wf.steps[0], workflow: wf, userTask: "u", submitSummary: "", checkIndex: 0, signal: new AbortController().signal });
+  const req = () => ({ instId: "t", step: wf.steps[0], workflow: wf, userTask: "u", submitSummary: "", checkIndex: 0, artifactsRelDir: ".dsh/ralph-flow/artifacts/t", signal: new AbortController().signal });
 
   await runVerifier({ ctx: mk({ outputSchema: true }) }, req());
   const p1 = captured.prompt[0].text;

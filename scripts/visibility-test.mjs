@@ -17,6 +17,12 @@ import { Context } from "@deepseek-ai/cordis";
 import { Session } from "@deepseek-ai/dsh-session";
 import * as plugin from "../lib/index.js";
 
+// HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
+// 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
+process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
+fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
+
+
 let pass = 0, fail = 0;
 const check = (n, c, e = "") => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.error(`  ✗ ${n} ${e}`); } };
 const sleep = (ms = 80) => new Promise((r) => setTimeout(r, ms));

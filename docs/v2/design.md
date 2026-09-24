@@ -54,7 +54,7 @@
 ## 4. 状态（无相位）
 
 ```jsonc
-// <workspace>/ralph-flow/instances/<instance-id>/state.json
+// <workspace>/.dsh/ralph-flow/instances/<instance-id>/state.json
 {
   "active": true,
   "workflow_name": "loop",
@@ -73,7 +73,7 @@
 
 - **不存相位**（ADR-0004）：相位是派生量，存了就有两个写入者。v1 的 34 处文件标记位即此教训。
 - 每次运行一个 JSON，原子写（临时文件 + rename）。
-- 完成/取消后归档报告到 `ralph-flow/reports/`，实例转 `active: false`。
+- 完成/取消后归档报告到 `<workspace>/.dsh/ralph-flow/reports/`，实例转 `active: false`。
 
 **推进规则（T2 的落点，引擎唯一决策）：**
 
@@ -142,7 +142,8 @@
 ## 9. 工作流文件即资产（Q5 定案）
 
 - YAML 方言跨端共享（opencode/claude/dsh 同一套 `description / adversarial_check / steps / do / check / on_pass / on_fail`），是**硬约束**：同一份资产四端可跑，hub 生态押注于此。
-- 目录：`<workspace>/ralph-flow/workflows/` 自定 + 内置 loop/spec。
+- 目录：`<workspace>/.dsh/ralph-flow/workflows/` 自定 + 内置 loop/spec；每实例隔离的**产出目录**为 `<workspace>/.dsh/ralph-flow/artifacts/<instId>/`（实例启动时建好、完成后保留，DO/CHECK 提示词各注入一行工作区相对路径）。
+- **工作区运行时目录用 dot-dir**（`<workspace>/.dsh/ralph-flow/`）：与 opencode `.opencode/ralph-flow/`、claude `.claude/ralph-flow/` 形状一致，并与全局 `~/.dsh/ralph-flow/` 对称（同一作用域命名空间 `ralph-flow`）。`.gitignore` 只忽略 `.dsh/ralph-flow/`（精确），不忽略整个 `.dsh/`——将来 dsh 可能往工作区 `.dsh/` 放需要入库的项目配置。
 - 所有者：用户手写（进 git）；`ralphflow_create` 交互式创建器推迟（v0 只声明）。
 - 坏文件 fail-fast 说人话（§8 方言容错）。
 

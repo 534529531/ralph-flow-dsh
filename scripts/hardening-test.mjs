@@ -8,6 +8,11 @@ import os from "node:os";
 import path from "node:path";
 import { createEngine } from "../lib/engine.js";
 
+// HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
+// 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
+process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
+fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
+
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-hardening-"));
 const deliveries = [];
 let scripted = [];
@@ -273,7 +278,7 @@ console.log("\nH9 审查门 + 在飞委派：改稿重交必须生效（不得�
   try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
 }
 
-// ── 清理 ────────────────────────────────────────────────────────────────────
+// ── 清理（索引在隔离 HOME 里，只删本测试写入的条目）──────────────────────────
 const indexPath = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
 try {
   const idx = JSON.parse(fs.readFileSync(indexPath, "utf-8"));

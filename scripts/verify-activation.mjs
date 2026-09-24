@@ -2,8 +2,17 @@
  * 激活冒烟：在最小 cordis Context 上挂载 ralphflow 插件，复现 apply() 激活路径。
  * 注入面用 stub 顶替，只为验证 apply() 不抛（工具 schema 校验/命令注册走真实 dsh-tools 运行时）。
  */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { Context } from "@deepseek-ai/cordis";
 import * as plugin from "../lib/index.js";
+
+// HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
+// 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
+process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
+fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
+
 
 const ctx = new Context();
 const provided = new Map();

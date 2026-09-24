@@ -79,10 +79,25 @@ function splitModel(ref: string): { provider?: string; model?: string } {
   return { model: ref.trim() };
 }
 
-function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): string {
+/** CHECK 提示词构造（导出供测试直接断言 §1.3 的 desc/交付物/产出目录） */
+export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): string {
+  const rel = req.artifactsRelDir;
+  // §1.3：CHECK 必须拿到与 DO 同等的承诺上下文（desc + 交付物 + 产出目录），
+  // 否则验证者不知道本步承诺交付什么，只能泛泛核对。
+  const stepFacts = [
+    `**步骤**：\`${req.step.id}\``,
+    ...(req.step.desc ? [`**描述**：${req.step.desc}`] : []),
+    `**本步任务**：${(req.step.do ?? "").trim() || "（未声明）"}`,
+    ...(req.step.input ? [`**输入**：${String(req.step.input).trim()}`] : []),
+    ...(req.step.output ? [`**交付物（本步承诺的产出）**：${String(req.step.output).trim()}`] : []),
+    `**产出目录**：\`${rel}/\` —— 检查依据里没写路径的文件名（如 \`summary.md\`）即指此目录下的文件。`,
+  ];
   const parts = [
     "## 任务",
     req.userTask,
+    "",
+    "## 本步上下文",
+    stepFacts.join("\n"),
     "",
     "## 检查依据",
     req.step.check?.trim() || "（本步未声明检查依据，请按任务的每一条要求严格核对：是否落实、是否真实可用、有无遗漏。）",
@@ -92,6 +107,7 @@ function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): string {
     "",
     "## 取证要求",
     "在**当前工作区**里取证（读文件、跑命令、搜索），逐条核对检查依据。",
+    "产出目录也在这个工作区内，用上面的相对路径即可读到；**不要只凭交卷摘要下结论**。",
     wantStructured
       // 原生结构化输出可用：判定由 structured_output 工具承载，不需要文本标签。
       ? "先写出取证过程与结论，最后**调用 `structured_output` 工具**提交判定（passed / reason）。只调用一次。"
