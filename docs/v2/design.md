@@ -44,7 +44,7 @@
 |---|---|
 | 引擎 = MCP server（常驻） | 插件内 Service，进程内持有全部状态 |
 | 驱动器 = hooks（一次性进程） | Service 内部监听 `session/event` + `agent/turn-stopping` |
-| Stop hook 见 `<promise>done</promise>` | `session/event` 的 `assistant/message` 最后一行（v1 `lastAssistantText` 同款） |
+| Stop hook 见 `<promise>done</promise>` | **模型调用 `ralphflow_submit` 工具**（工具调用是事实；工具结果带 `concludesTurn` 由机器结束回合）。不再对模型自由文本做正则匹配 |
 | 「去验证」宣告（hook 注入） | `agent.steer(userMessage)`（source `{kind:"plugin"}`；v1 `agent.followup` 已实测可用） |
 | `SubagentStop` 记录判定 | **`await subagents.start(...).result`（权威）** + `subagent/end` 事件（审计） |
 | `ralph-check` agent 定义 | `subagents.start` 传 `toolFilter` + `persona` + `outputSchema`（程序级强制） |
@@ -88,11 +88,13 @@
 
 ## 5. 三时刻（dsh 版本）
 
-1. **DO 交卷**：主会话最后一行 `<promise>done</promise>`（协议与 opencode/claude 一致，资产与心智通用）→ 引擎在 `session/event` 观测 → 若无在飞委派 → **引擎自己委派验证者**（`subagents.start`）。主会话全程无委派能力（T1 结构性成立）。
-2. **验证者交卷**：await `run.result`，`structured` 经 `outputSchema` 校验后写 `verdicts[]`；结构不合 → 打回重交（上限 3）；**任何解析失败 = infra 或打回，绝不 passed**。`subagent/end` 记审计（含 `agent_id`）。
-3. **`ralphflow_continue`**：引擎读判定按 §4 表推进。校验：判定存在 / `step_id` 等于当前步 / `ts` 晚于本次进入 DO（防旧判定复用）。不足推进 → 拒绝并说明原因，**不烧 fail_count**。
+1. **DO 交卷**：主会话**调用 `ralphflow_submit` 工具**（dsh 原生：工具调用即事实，工具结果带 `concludesTurn` 结束回合）→ 引擎在工具 handler 内受理 → 若无在飞委派 → **引擎自己委派验证者**（`subagents.start`）。主会话全程无委派能力（T1 结构性成立）。
+   - **忘了交卷的兜底**：`agent/turn-stopping`（serial、可 await，claude/opencode 版 Stop hook 的原生等价物）在回合关闭前检查「有活跃实例 / 本步未交卷 / 无在飞委派」，是则以 `agent.steer` 提醒调用 `ralphflow_submit`；提醒次数由 history 派生，达上限（2 次）则暂停（`no_submit`）等用户，绝不死循环催促。
+   - 交卷工具**必定返回结果**（受理 / 已交卷 / 无实例 / 暂停中），模型与用户都能看到 —— 交卷不再有「静默消失」的路径。
+2. **验证者交卷**：await `run.result`（与宿主 `dsh-tool-subagent` 同款，不设 ralphflow 自造超时）；判定**首选原生结构化输出**，`structured` 经 `outputSchema` 校验后写 `verdicts[]`；provider 不支持 `outputSchema` 时才降级要求 `<promise-check>` 文本标签；**任何解析失败 = infra，绝不 passed**。`subagent/end` 记审计（含 `agent_id`）。
+3. **`ralphflow_continue`**：引擎读判定按 §4 表推进。校验：判定存在 / `step_id` 等于当前步（归属校验）。不足推进 → 拒绝并说明原因，**不烧 fail_count**。
 
-**审查门（§6 详述）通过后**：人在门上 `continue` 放行；人说"改一下" → 主会话修改、重新 `done`、重新验证、再次回到门（**轻量打回，无程序化 return**，等价于 reset 当前步但不算 reset 命令）。
+**审查门（§6 详述）通过后**：人在门上 `continue` 放行；人说"改一下" → 主会话修改、再次调用 `ralphflow_submit`、重新验证、再次回到门（**轻量打回，无程序化 return**，等价于 reset 当前步但不算 reset 命令；重开前会真正中止在飞委派，避免孤儿）。
 
 ## 6. 审查门（manual_step，v0 就要）
 
@@ -124,12 +126,15 @@
 | `/ralphflow-doctor` | `ralphflow_doctor` | 实现（工作流/实例诊断，坏文件说人话） |
 | `/loop`、`/spec`、`/<自定义>` | — | 动态注册的工作流快捷命令（与 opencode 一致） |
 | `/ralphflow-reset` `/ralphflow-rewind` | 只声明不实现（涉及上下文管理，作者定案暂缓） |
+| —（无命令，DO 阶段由模型自动调用） | `ralphflow_submit` | DO 交卷（dsh 原生工具调用；取代 `<promise>done</promise>` 文本标记）。见 §5 三时刻① |
 
 **v0 没有**：多验证者投票、reset、rewind、客户端 UI、HTTP 通道、通知、沙箱。
 
 **v0 有**：YAML 引擎、内置 `loop` + `spec`、审查门、续跑、落盘、失败重试、多实例、报告归档、崩溃 fail-safe。
 
 **方言容错（Q13 定案）**：未知/未支持键（`check_voting`、`timeout_ms` 等）→ **警告该键 v0 未支持已忽略，按默认语义跑**；不做语义降级兼容（不加工作量）。语法错误、`on_pass`/`on_fail` 引用不存在的步骤 → **fail-fast 带人话报错**。
+
+**超时不在内核里造（作者定案）**：委派生命周期（含模型卡死/打转等异常）**一律交给宿主 dsh 的原生能力**（请求级空闲看门狗、工具调用时限策略），ralphflow 不自建超时轮询或竞速。理由：这是宿主职责，插件重复实现只会分叉行为、随宿主演进腐化。故 `timeout_ms` 永久 warn+ignore，**不要**在后续轮次重新引入有界竞速（claude 版 ADR 独立得出同一结论：`timeout_ms` 零消费者 → 必须静默忽略）。
 
 ## 9. 工作流文件即资产（Q5 定案）
 

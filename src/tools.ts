@@ -365,33 +365,39 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
     }
   }
 
-  // ─── 动态工作流快捷命令（/loop、/spec、自定义名）——与 opencode/claude 语义一致 ──
+  // ─── 动态工作流快捷命令：/ralphflow-<工作流名>（与 claude code 版看齐）────────
+  // claude 版：cmdName = SLASH_COMMAND_PREFIX("ralphflow-") + wf.name，且只对
+  // 名字安全（^[a-zA-Z0-9_-]+$）的工作流注册。这里同款，另加 dsh 命令名约束
+  // （小写、^[a-z][a-z0-9_-]*$）与静态命令撞名保护（如工作流叫 start → ralphflow-start 已占用则跳过）。
   const taken = new Set<string>(defs.map((d) => d.name));
   try {
     for (const wf of engine.listWorkflows()) {
       if (wf.invalid) continue;
-      const slug = String(wf.name).toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
-      if (!slug || taken.has(slug)) continue;
-      taken.add(slug);
+      const rawName = String(wf.name);
+      if (!/^[a-zA-Z0-9_-]+$/.test(rawName)) continue;
+      const cmd = `ralphflow-${rawName.toLowerCase()}`;
+      if (!/^[a-z][a-z0-9_-]*$/.test(cmd)) continue;
+      if (taken.has(cmd)) continue;
+      taken.add(cmd);
       const desc = wf.desc || `启动 ${wf.name} 工作流`;
       try {
         commands.register({
-          name: slug,
-          description: `(ralphflow) ${desc} · 示例：/${slug} <任务描述>`,
+          name: cmd,
+          description: `(ralphflow) ${desc} · 示例：/${cmd} <任务描述>`,
           input: { hint: "<任务描述>" },
           handler: async (inv: { rawInput: string; agent: Agent; signal: AbortSignal }) => {
             try {
               const task = inv.rawInput.trim();
               const sid = messageSessionId(inv.agent);
               if (!task) {
-                // 缺任务也交回 AI：先说明用法再等任务
+                // 缺任务也交回 AI：先说明用法再等任务（claude 版同款：先问要完成什么）
                 if (sid) {
-                  deps.deliver(sid, `[ralphflow] 用户执行了 /${slug}（\`${wf.name}\` 工作流）但没有附带任务描述。**不要调用任何工具**，先用自然语言说明用法：\`/${slug} <任务描述>\`，并请用户补上要完成的任务。`);
+                  deps.deliver(sid, `[ralphflow] 用户执行了 /${cmd}（\`${wf.name}\` 工作流）但没有附带任务描述。**不要调用任何工具**，先用自然语言说明用法：\`/${cmd} <任务描述>\`，并请用户补上要完成的任务。`);
                 }
                 return { kind: "success" };
               }
               if (sid) {
-                deps.deliver(sid, `[ralphflow] 用户通过 /${slug} 启动了 \`${wf.name}\` 工作流。请调用 \`ralphflow_start\` 工具：workflow = \`${wf.name}\`，task = \`${task}\`。若工具报错，如实转达；若成功，按它返回的指示执行并遵循下面的机制。\n\n${SHARED_MECHANISM}`);
+                deps.deliver(sid, `[ralphflow] 用户通过 /${cmd} 启动了 \`${wf.name}\` 工作流。请调用 \`ralphflow_start\` 工具：workflow = \`${wf.name}\`，task = \`${task}\`。若工具报错，如实转达；若成功，按它返回的指示执行并遵循下面的机制。\n\n${SHARED_MECHANISM}`);
               }
               return { kind: "success" };
             } catch (err) {
@@ -400,7 +406,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
           },
         });
       } catch {
-        // 与其它插件撞名：静默跳过，与 opencode 版"绝不覆盖"语义一致
+        // 与其它插件撞名：静默跳过，与 claude/opencode 版"绝不覆盖"语义一致
       }
     }
   } catch (err) {

@@ -34,6 +34,21 @@
 - `reset` / `rewind` 的实现（作者定案暂缓，涉及上下文管理）——保持"只声明不实现"。
 - 新的 slash 命令或工具（命令面固定为：`start` `list` `status` `continue` `cancel` `create` `doctor` + 工作流快捷命令 + `reset`/`rewind` 占位）。
 - 任何形式的"修复类命令"（doctor/unbrick/reset 的实现）——宪法 §10.8。
+- **自建超时 / 看门狗 / 竞速**（`timeout_ms` 重启用、给验证者委派包一层 `Promise.race` 等）——作者定案：模型卡死、打转等异常属**宿主职责**，由 dsh 原生能力（请求级空闲看门狗、工具调用时限策略）维护；插件重复造轮子只会分叉行为、随宿主演进腐化。`timeout_ms` **永久 warn+ignore**，后续轮次**不要**重新引入有界竞速。
+
+> **§3 修订记录（作者在会话中直接定案，非执行者擅改）**
+> **DO 交卷协议改为 dsh 原生工具调用**：新增**恰好一个**模型可见工具 `ralphflow_submit`，
+> 取代原先「模型在最后一行输出 `<promise>done</promise>`、引擎正则扫描」的文本标记机制。
+> - **动机**：文本标记与 YAML 资产无关（资产零命中），是纯运行时机制；其失败模式是**静默**的
+>   （标记写进代码块 / 措辞变化 → 交卷蒸发）。dsh 原生的完成方式是**工具调用**——宿主自己的
+>   `dsh-subagent-in-process-driver` 就注册 `structured_output` 工具，模型调用即完成，
+>   结果带 `concludesTurn` 由机器结束回合。
+> - **边界影响（如实记录）**：这是**新增工具**，且该工具名与 opencode/claude 版不再逐字一致；
+>   但 **slash 命令面零变化**（未新增命令），用户旅程与 `ralph-flow/` 目录布局不变。
+> - **兜底**：`agent/turn-stopping`（原生，claude 版 Stop hook 的等价物）负责「忘了交卷」，
+>   提醒上限 2 次后暂停（`no_submit`）等用户，绝不死循环催促。
+> - **CHECK 侧**：判定**首选原生 `outputSchema`**；`<promise-check>` 文本标签仅在 provider
+>   不支持 `outputSchema` 时作为降级兜底。
 
 **必须保持**：
 - 命令语义 = **触发词**：`/ralphflow-*` 一律把指令投给模型、由模型自然语言回复，**零程序化卡片返回**（含用法错误与未实现命令）。

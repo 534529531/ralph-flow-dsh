@@ -29,7 +29,7 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 | `/ralphflow-cancel` | `ralphflow_cancel` | 取消并归档报告 |
 | `/ralphflow-create` | `ralphflow_create` | 交互式创建自定义工作流 |
 | `/ralphflow-doctor` | `ralphflow_doctor` | 诊断工作流定义与实例状态 |
-| `/loop`、`/spec`、`/<自定义>` | — | 工作流快捷命令（等同 `/ralphflow-start`） |
+| `/ralphflow-<工作流名>` | — | 动态注册的工作流快捷命令（如 `/ralphflow-loop`、`/ralphflow-spec`；命名与 claude code 版一致） |
 
 `reset / rewind` 已声明未实现（涉及上下文管理，暂缓）；其余命令与 opencode 版功能看齐。命令语义 = **触发词**：`/ralphflow-*` **一律**由模型自然语言回复（含用法错误与未实现命令），**零程序化卡片返回**，行为与 claude code/opencode 完全一致。
 
