@@ -29,7 +29,7 @@ function check(name, cond, extra = "") {
 const sleep = (ms) => new Promise((r) => setTimeout(r, 30));
 const newestId = () => engine.listInstances().sort((a, b) => (a.state.started_at > b.state.started_at ? 1 : -1)).at(-1)?.id;
 function start(wf, task, sid) { const r = engine.start(wf, task, sid); return { r, id: newestId() }; }
-function submit(id, text, sid) { engine.onAssistantMessage(sid, text); }
+function submit(sid, summary) { return engine.onSubmit(sid, summary); }
 const settle = () => sleep(30);
 
 engine.ensureLayout();
@@ -42,9 +42,9 @@ const S = () => `session-${++n}`;
   const wfs = engine.listWorkflows();
   check("内置 loop/spec 可加载", wfs.length >= 2 && wfs.every((w) => !w.invalid), JSON.stringify(wfs.map((w) => w.name)));
   const { r, id } = start("loop", "写一个 hello.html", s);
-  check("start 成功且 DO prompt 完整", r.ok && r.text.includes("写一个 hello.html") && r.text.includes("<promise>done</promise>"));
+  check("start 成功且 DO prompt 完整", r.ok && r.text.includes("写一个 hello.html") && r.text.includes("ralphflow_submit"));
   scripted.push({ status: "passed", reason: "文件存在且内容正确" });
-  submit(id, "已完成，创建了 hello.html。\n<promise>done</promise>", s);
+  submit(s, "已完成，创建了 hello.html。");
   await settle();
   const st = engine.readState(id);
   check("通过后实例完成 + 报告归档", st && !st.active && fs.existsSync(path.join(engine.reportsDir, `${id}.md`)));
@@ -56,11 +56,11 @@ const S = () => `session-${++n}`;
   const { id } = start("loop", "会失败的脚本", s);
   deliveries.length = 0;
   scripted.push({ status: "failed", reason: "脚本语法错误" });
-  submit(id, "写完了。\n<promise>done</promise>", s);
+  submit(s, "写完了。");
   await settle();
   const st = engine.readState(id);
   check("失败 → 回到 DO 可重交（fail_count=1）", st.active && !st.do_submitted && st.verdicts.length === 0 && st.fail_count === 1 && !st.paused);
-  check("返工原因 + 交卷协议都交回主会话", deliveries.some((t) => t.includes("脚本语法错误")) && deliveries.some((t) => t.includes("<promise>done</promise>")));
+  check("返工原因 + 交卷协议都交回主会话", deliveries.some((t) => t.includes("脚本语法错误")) && deliveries.some((t) => t.includes("ralphflow_submit")));
 }
 
 // ── 3) infra 暂停（不烧账）→ continue 重验失败（烧一账回 DO）─────────────────
@@ -68,7 +68,7 @@ const S = () => `session-${++n}`;
   const s = S();
   const { id } = start("loop", "infra 用例", s);
   scripted.push({ status: "infra", reason: "provider 不可用" });
-  submit(id, "好了。\n<promise>done</promise>", s);
+  submit(s, "好了。");
   await settle();
   let st = engine.readState(id);
   check("infra → 暂停 check_infra 且 fail_count=0", st.paused && st.pause_reason === "check_infra" && st.fail_count === 0, JSON.stringify({ p: st.pause_reason, f: st.fail_count }));
@@ -96,10 +96,10 @@ const S = () => `session-${++n}`;
   ].join("\n"));
   const { id } = start("maxfail", "一直被拒的任务", s);
   scripted.push({ status: "failed", reason: "第一次失败" });
-  submit(id, "交卷一。\n<promise>done</promise>", s);
+  submit(s, "交卷一。");
   await settle();
   scripted.push({ status: "failed", reason: "第二次失败" });
-  submit(id, "交卷二。\n<promise>done</promise>", s);
+  submit(s, "交卷二。");
   await settle();
   const st = engine.readState(id);
   check("达 2 次上限 → 暂停 max_failures", st.paused && st.pause_reason === "max_failures" && st.fail_count === 2, JSON.stringify({ p: st.pause_reason, f: st.fail_count }));
@@ -112,7 +112,7 @@ const S = () => `session-${++n}`;
   check("spec 启动且首步 propose", r.ok && engine.readState(id).current_step === "propose", r.text.slice(0, 100));
   deliveries.length = 0;
   scripted.push({ status: "passed", reason: "proposal.md 完备" });
-  submit(id, "proposal 写好了。\n<promise>done</promise>", s);
+  submit(s, "proposal 写好了。");
   await settle();
   let st = engine.readState(id);
   check("pass 后停在审查门（不推进）", st.active && st.current_step === "propose" && st.verdicts.length === 1, `step=${st.current_step}`);
@@ -129,12 +129,12 @@ const S = () => `session-${++n}`;
   const c1 = engine.continueInstance(s);
   check("未交卷 → 拒绝推进", !c1.ok && c1.text.includes("还没交卷"), c1.text);
   scripted.push({ status: "failed", reason: "不过" });
-  submit(id, "交卷。\n<promise>done</promise>", s);
+  submit(s, "交卷。");
   await settle();
   const c2 = engine.continueInstance(s);
   check("判定未通过后 continue 绝不推进（fail-closed）", !c2.ok && (c2.text.includes("不能推进") || c2.text.includes("还没交卷")), c2.text);
   scripted.push({ status: "passed", reason: "通过了" });
-  submit(id, "修好了。\n<promise>done</promise>", s);
+  submit(s, "修好了。");
   await settle();
   const st = engine.readState(id);
   check("通过后推进完成", st && !st.active);
@@ -165,11 +165,41 @@ const S = () => `session-${++n}`;
   check("内置工作流已复制到该工作区", fs.existsSync(path.join(ws, "ralph-flow", "workflows", "loop.yaml")));
   // 完整一轮 + 报告归档位置跟随工作区
   scripted.push({ status: "passed", reason: "报告位置验证" });
-  submit(id, "完成。\n<promise>done</promise>", s);
+  submit(s, "完成。");
   await settle();
   const st = engine.readState(id);
   check("跨工作区实例通过并完成", st && !st.active);
   check("报告归档在相同工作区", fs.existsSync(path.join(ws, "ralph-flow", "reports", `${id}.md`)), `${ws}/ralph-flow/reports/${id}.md`);
+}
+
+// ── 9) 加固回归：委派超时交给 dsh 原生能力，ralphflow 不自设总时长上界 ─────────
+// 设计取舍（作者定案）：用宿主原生委派能力就跟随宿主，不自造超时。
+// 宿主对整次子代理运行本就不设上界（subagent / in-process-driver / agent-loop 均无
+// timeout 逻辑），只提供请求级防护（dsh-llm-deepseek 的 streamIdleTimeoutMs 空闲看门狗）。
+// 引擎只负责把 dsh 要求的取消句柄（signal）传下去。
+{
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-native-"));
+  let sawSignal = false;
+  const e2 = createEngine(dir2, {
+    deliver: () => true,
+    verify: async (req) => {
+      sawSignal = req.signal instanceof AbortSignal;
+      return { check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), status: "passed", reason: "ok" };
+    },
+    log: () => {},
+  });
+  e2.ensureLayout();
+  e2.start("loop", "原生委派契约用例", "native-session");
+  e2.onSubmit("native-session", "完成");
+  await sleep(40);
+  check("验证端口收到 dsh 要求的取消句柄（signal）", sawSignal);
+  try {
+    const idxPath2 = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
+    const idx2 = JSON.parse(fs.readFileSync(idxPath2, "utf-8"));
+    for (const k of Object.keys(idx2)) if (idx2[k] === dir2) delete idx2[k];
+    fs.writeFileSync(idxPath2, JSON.stringify(idx2, null, 2));
+  } catch {}
+  try { fs.rmSync(dir2, { recursive: true, force: true }); } catch {}
 }
 
 // ── 清理（含索引里由本次测试写入的条目）──────────────────────────────────────

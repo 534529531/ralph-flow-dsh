@@ -21,15 +21,17 @@ const SHARED_MECHANISM = `## 工作流机制（每次启动都会生效）
 
 **DO 阶段（执行）**：
 - 按收到的提示执行当前步骤的任务，完成实际工作（写代码、创建文件、运行命令）。
-- 所有任务要求满足后，在回复的**最后一行**输出 \`<promise>done</promise>\`。
-- 普通步骤到此为止——你空闲时系统会**自动**运行独立 CHECK，**不需要**调用任何工具。
+- 所有任务要求满足后，**调用 \`ralphflow_submit\` 工具交卷**（可在 \`summary\` 参数里简述做了什么）。
+- 只在回复里说「完成了」**不会**触发验证——必须调用工具。
+- 普通步骤到此为止——你空闲时系统会**自动**运行独立 CHECK，**不需要**调用其它工具。
 
 **CHECK 阶段（自动进行）**：
-- 你输出 done 后，一个**独立验证者会话**（全新上下文，看不到本对话）依据该步骤的检查依据取证判定。你会收到「🔍 验证中」与验证结果消息。
+- 交卷后，一个**独立验证者会话**（全新上下文，看不到本对话）依据该步骤的检查依据取证判定。你会收到「🔍 验证中」与验证结果消息。
+- 验证是**异步**的：通常需要 1–5 分钟，期间不需要你做任何操作，跑完会自动唤醒本会话。
 - **通过** → 工作流自动推进到下一步并注入下一条 DO 提示。
 - **未通过** → 你收到失败原因并重做该步（自动重试，不会反复打扰用户）。
 
-**手动步骤**（工作流 \`manual_step\` 列出的步骤）：CHECK **通过后**系统停下等**用户**审查（会收到 🙋 消息）。用户的 \`/ralphflow-continue\` 是**放行**——直接进入下一步，不重复验证。用户要求修改时，你改完重新输出 \`<promise>done</promise>\`，会再次自动验证，通过后再停下。
+**手动步骤**（工作流 \`manual_step\` 列出的步骤）：CHECK **通过后**系统停下等**用户**审查（会收到 🙋 消息）。用户的 \`/ralphflow-continue\` 是**放行**——直接进入下一步，不重复验证。用户要求修改时，你改完再次调用 \`ralphflow_submit\`，会再次自动验证，通过后再停下。
 
 **暂停与恢复**：某步验证失败达到 \`max_fail_count\` 时工作流暂停。用 \`/ralphflow-status\` 看失败原因，修复后 \`/ralphflow-continue\` 恢复（重置失败计数并重试）。
 
@@ -95,9 +97,20 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
 
   const doctorHandler: ToolHandler = () => engine.diagnose().text;
 
+  /**
+   * DO 阶段交卷（dsh 原生方式：工具调用即事实，不靠正则扫自由文本）。
+   * `concludeTurn` 由注册处调用，让本次工具结果结束当前回合。
+   */
+  const submitHandler: ToolHandler = (args, agent) => {
+    const sessionId = sessionIdOf(agent);
+    if (!sessionId) return "找不到当前会话，无法交卷。";
+    const summary = args?.summary !== undefined ? String(args.summary) : undefined;
+    return engine.onSubmit(sessionId, summary).text;
+  };
+
   const unimplHandler: ToolHandler = () => "本版本未实现（涉及上下文管理，暂缓）。已可用：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`。";
 
-  const toolDefs: Array<{ name: string; description: string; params: Record<string, any>; handler: ToolHandler }> = [
+  const toolDefs: Array<{ name: string; description: string; params: Record<string, any>; handler: ToolHandler; concludeTurn?: boolean }> = [
     {
       name: "ralphflow_start",
       description: "启动一个 Ralph Flow 工作流：模型执行当前步骤，完成后由独立验证者（独立会话）取证判定，失败自动返工。",
@@ -106,6 +119,15 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
         task: { type: "string", required: true, description: "要完成的任务描述。" },
       },
       handler: startHandler,
+    },
+    {
+      name: "ralphflow_submit",
+      description: "【DO 阶段交卷】本步实际工作完成后调用本工具交卷；独立验证者随后取证判定。不交卷则验证不会开始。",
+      params: {
+        summary: { type: "string", description: "可选：简述本步做了什么（供验证者参考；验证者仍会独立取证，不会采信自我评价）。" },
+      },
+      handler: submitHandler,
+      concludeTurn: true,
     },
     {
       name: "ralphflow_continue",
@@ -152,13 +174,6 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
       params: {},
       handler: doctorHandler,
     },
-    // 声明不实现：reset/rewind 涉及上下文管理，本版本暂缓（返回明确解释）
-    ...["reset", "rewind"].map((n) => ({
-      name: `ralphflow_${n}`,
-      description: `（本版本未实现，仅为命令面占位）与 opencode/claude 版同名的 ralphflow_${n} 工具。`,
-      params: {},
-      handler: unimplHandler,
-    })),
   ];
 
   for (const def of toolDefs) {
@@ -168,11 +183,24 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
       description: def.description,
       parameters: def.params,
       output: { schema: { type: "string" }, render: (_args: unknown, value: string) => [{ type: "text", text: value }] },
-      async execute(args: unknown, exec: { agent?: Agent }) {
-        return def.handler(args ?? {}, exec?.agent);
+      async execute(args: unknown, exec: { agent?: Agent; concludeTurn?: () => void }) {
+        const out = await def.handler(args ?? {}, exec?.agent);
+        // 交卷工具用宿主原生的 concludeTurn 结束本回合
+        // （与 dsh-subagent-in-process-driver 的 structured_output 同款机制）。
+        if (def.concludeTurn && typeof exec?.concludeTurn === "function") {
+          try { exec.concludeTurn(); } catch {}
+        }
+        return out;
       },
     }));
   }
+
+  // reset / rewind：只声明不实现（design §8 / 宪法 §10.10）。
+  // 它们**不注册为工具** —— 注册了就等于给模型一个可调用、会返回内容的实现，
+  // 与「命令面固定 + 只声明不实现」的边界冲突。命令处理面（/ralphflow-reset、
+  // /ralphflow-rewind）仍然把指令交给模型，由模型自然语言解释暂缓原因。
+  for (const n of ["reset", "rewind"]) handlers.set(`ralphflow_${n}`, unimplHandler);
+
   return handlers;
 }
 

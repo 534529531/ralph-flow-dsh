@@ -11,13 +11,20 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { AdversarialConfig, StepDef, WorkflowDef, Verdict, VerifyRequest } from "./engine.js";
 
+/**
+ * 验证者 system prompt。
+ *
+ * 判定通道**首选 dsh 原生结构化输出**（`outputSchema` → 子代理调用 structured_output 工具，
+ * 引擎读 `result.structured`）。文本标签只是 provider 不支持 `outputSchema` 时的降级兜底，
+ * 因此这里**不写死**标签格式 —— 由 buildCheckPrompt 按 wantStructured 决定是否要求标签。
+ */
 const DEFAULT_ADVERSARIAL_SYSTEM_PROMPT = `你是一个严格、独立、对抗性的检查者。你的职责是**取证后判定**：根据给定的检查依据，判断执行者声称完成的工作是否真的完成。
 
 纪律：
 - 你与执行者完全隔离：你只看到任务、检查依据和执行者交卷时的摘要。不要相信摘要里的自我评价，一切以你亲自取证为准。
 - 用工具取证：读文件、跑命令、搜索代码。没有证据的结论无效。
 - 你是只读检查者：不要修改任何文件，不要写任何东西。
-- 判定格式：最后一行单独输出 <promise-check>true</promise-check>（通过）或 <promise-check>false</promise-check>（不通过），前面写出你的取证过程与结论。`;
+- 判定：给出你的取证过程与结论，并按「检查依据」末尾说明的方式提交判定结果。`;
 
 const VERIFIER_TOOL_ALLOW = ["read", "grep", "glob", "bash", "read_image"] as const;
 
@@ -72,7 +79,7 @@ function splitModel(ref: string): { provider?: string; model?: string } {
   return { model: ref.trim() };
 }
 
-function buildCheckPrompt(req: VerifyRequest): string {
+function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): string {
   const parts = [
     "## 任务",
     req.userTask,
@@ -85,7 +92,11 @@ function buildCheckPrompt(req: VerifyRequest): string {
     "",
     "## 取证要求",
     "在**当前工作区**里取证（读文件、跑命令、搜索），逐条核对检查依据。",
-    "最后一行单独输出 `<promise-check>true</promise-check>` 或 `<promise-check>false</promise-check>`，前面写出取证过程与结论。",
+    wantStructured
+      // 原生结构化输出可用：判定由 structured_output 工具承载，不需要文本标签。
+      ? "先写出取证过程与结论，最后**调用 `structured_output` 工具**提交判定（passed / reason）。只调用一次。"
+      // 降级路径：provider 不支持 outputSchema 时才要求文本标签。
+      : "先写出取证过程与结论，并在最后一行单独输出 `<promise-check>true</promise-check>`（通过）或 `<promise-check>false</promise-check>`（不通过）。",
   ];
   return parts.join("\n");
 }
@@ -146,7 +157,6 @@ export async function runVerifier(deps: VerifyDeps, req: VerifyRequest): Promise
   }
   const config = req.workflow.adversarial_check;
   const systemPrompt = config?.system_prompt?.trim() || DEFAULT_ADVERSARIAL_SYSTEM_PROMPT;
-  const timeout = config?.timeout_ms && config.timeout_ms > 0 ? config.timeout_ms : 900_000;
   const model = config?.model ? splitModel(config.model) : undefined;
   const toolAllow = resolveToolAllow(ctx);
   const wantStructured = supportsOutputSchema(ctx, name);
@@ -155,15 +165,20 @@ export async function runVerifier(deps: VerifyDeps, req: VerifyRequest): Promise
   if (model?.provider) agentOptions.provider = model.provider;
   if (model?.model) agentOptions.model = model.model;
 
-  const timeoutHandle = setTimeout(() => { try { (req.signal as unknown as { abort(): void }).abort(); } catch {} }, timeout);
-  void timeoutHandle.unref?.();
+  // 委派生命周期完全交给 dsh 原生能力：不设 ralphflow 自己的超时。
+  // dsh 的委派契约里 `signal` 是**取消句柄**（SubagentStartRequest.signal = "the caller's
+  // cancellation"，驱动器用它在取消时 child.cancel），不是超时预算；宿主对整次子代理运行
+  // 本就不设上界（subagent / in-process-driver / agent-loop 均无 timeout 逻辑），
+  // 上层只提供**请求级**防护（dsh-llm-deepseek 的 streamIdleTimeoutMs 空闲看门狗）。
+  // 跟随宿主不设总时长上界的取舍：宿主迭代时（更完善的取消/看门狗）ralphflow 自动受益；
+  // 自造超时反而会与宿主契约脱节（见 docs/v2/hardening-brief.md 要求 1）。
 
   let run: any;
   try {
     const startReq: Record<string, unknown> = {
       label: `Ralph Check: ${req.step.id} ${req.userTask.slice(0, 50)}`,
       prompt: [
-        { type: "text", text: `${systemPrompt}\n\n---\n\n${buildCheckPrompt(req)}` },
+        { type: "text", text: `${systemPrompt}\n\n---\n\n${buildCheckPrompt(req, wantStructured)}` },
       ],
       signal: req.signal,
       persona: "你是一个严格、独立、对抗性的检查者。你只读取证并给出判定，绝不修改任何文件。",
@@ -187,17 +202,17 @@ export async function runVerifier(deps: VerifyDeps, req: VerifyRequest): Promise
 
     const started = await subagents(ctx).start(name, startReq);
     run = started as { result?: Promise<{ structured?: unknown; output?: unknown; stopReason?: string }> };
+    // 原生等待：与 dsh-tool-subagent（宿主自己的委派工具）同款 —— 直接 await run.result，
+    // 由宿主决定子代理何时结束。取消仍经 req.signal 传下去（dsh 的取消契约）。
     const settled = await run.result;
-    clearTimeout(timeoutHandle);
     return parseVerdict(settled, req.step.id, req.checkIndex);
   } catch (e) {
-    clearTimeout(timeoutHandle);
     const aborted = req.signal.aborted;
     return {
       check_index: req.checkIndex,
       status: "infra",
       reason: aborted
-        ? `验证超时（${Math.round(timeout / 60000)} 分钟）或已中止。`
+        ? "验证已中止（用户取消或实例结束），验证者未返回判定。"
         : `验证委派失败：${e instanceof Error ? e.message : String(e)}`,
       step_id: req.step.id,
       ts: new Date().toISOString(),

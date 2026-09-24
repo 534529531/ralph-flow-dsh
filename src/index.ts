@@ -5,7 +5,7 @@
  * 无客户端、无 HTTP、无 jobs——v0 是对话内完整闭环。
  */
 import type { Context } from "@deepseek-ai/cordis";
-import { createUserMessage } from "@deepseek-ai/dsh-llm";
+import { createUserMessage, boundContextSummary } from "@deepseek-ai/dsh-llm";
 import { createEngine } from "./engine.js";
 import { runVerifier } from "./verify.js";
 import { registerTools, registerCommands } from "./tools.js";
@@ -62,7 +62,19 @@ export function apply(ctx: Context): void {
   const recentDeliveries = new Map<string, number>();
   const DEDUPE_WINDOW_MS = 5000;
 
-  const deliver = (sessionId: string, text: string): boolean => {
+  /**
+   * 把一条消息投给会话（模型看得到），并让它**对用户可见**。
+   *
+   * 关键：dsh 客户端按 `source.form` 决定怎么渲染 plugin 注入的 user 消息
+   * （`dsh-client-ui-chat` 的 `contextBody`/`contextForm`）：
+   *   · 带 `form:"notice"` + `summary` → 渲染为 **notice 行**，summary 是「不用展开就能读」的一行摘要；
+   *   · **没有 form** → `case null: return opaque` → 退化成 `OpaqueBody`（不显眼的上下文注入行）。
+   * 这正是 dsh 自己的做法：`dsh-agent` 的 modelSwitchNotice 就用
+   * `{kind:"plugin", plugin:"model-selection", form:"notice", summary: boundContextSummary(...)}`。
+   *
+   * 所以：**凡是要让用户看见的播报，都必须带 summary**；不带 summary 的只适合纯内部管道。
+   */
+  const deliver = (sessionId: string, text: string, summary?: string): boolean => {
     try {
       const agent = agentOf(sessionId) as { steer?: (m: unknown) => unknown; followup?: (m: unknown) => unknown } | undefined;
       if (!agent) return false;
@@ -77,10 +89,11 @@ export function apply(ctx: Context): void {
           if (now - ts > DEDUPE_WINDOW_MS) recentDeliveries.delete(k);
         }
       }
-      const msg = createUserMessage({
-        content: [{ type: "text", text }],
-        source: { kind: "plugin", plugin: "ralphflow" },
-      });
+      const brief = typeof summary === "string" ? summary.trim() : "";
+      const source = brief
+        ? { kind: "plugin" as const, plugin: "ralphflow", form: "notice" as const, summary: boundContextSummary(brief) }
+        : { kind: "plugin" as const, plugin: "ralphflow" };
+      const msg = createUserMessage({ content: [{ type: "text", text }], source });
       // steer：提交给最近一步，空闲驱动器会开新一轮（0.1.x 官方机制）；
       // followup：旧版本兼容兜底。
       if (typeof agent.steer === "function") { agent.steer(msg); return true; }
@@ -100,9 +113,8 @@ export function apply(ctx: Context): void {
 
   try { engine.ensureLayout(); } catch (e) { log("warn", "ensure_layout_failed", { error: String(e) }); }
 
-  // 全局会话事件流 → 引擎（只观测交卷事实；判定永远不会从这里产生）
-  // recentlyOwned：会话 → 最近一次"拥有活跃实例"的时刻（交卷丢失告警用）
-  const recentlyOwned = new Map<string, number>();
+  // 全局会话事件流 → 引擎：**只做上下文捕获**（给验证者 prompt 用的最近助手文本）。
+  // 交卷检测已不在这里 —— 它由模型调用 ralphflow_submit 工具承担（dsh 原生方式）。
   try {
     const on = (ctx as unknown as { on?: (name: string, listener: (...args: unknown[]) => void) => (() => void) | void }).on;
     if (typeof on === "function") {
@@ -112,31 +124,43 @@ export function apply(ctx: Context): void {
         const ev = e as { type?: unknown; data?: unknown };
         if (ev.type !== "assistant/message") return;
         const text = lastAssistantText(ev.data);
-        if (!text) return;
-
-        // 「曾拥有实例」记录：只要该会话在实例存活期间产生过助手消息就记一笔。
-        // 用于交卷丢失告警（缺陷 A）：实例状态被外部删除时，交卷不能静默消失。
-        const owned = engine.activeInstanceOfSession(sid);
-        if (owned) recentlyOwned.set(sid, Date.now());
-
-        if (!owned && /<promise>\s*done\s*<\/promise>/i.test(text)) {
-          const seen = recentlyOwned.get(sid);
-          const OWNED_TTL_MS = 24 * 3600 * 1000;
-          if (seen !== undefined && Date.now() - seen < OWNED_TTL_MS) {
-            recentlyOwned.delete(sid); // 只告警一次，避免刷屏
-            log("warn", "submit_without_instance", { sessionId: sid });
-            deliver(sid, "[ralphflow] ⚠️ 检测到交卷标记 `<promise>done</promise>`，但本会话当前**没有活跃工作流实例**，这次交卷没有被处理。\n\n常见原因：实例状态文件被删除 / 工作区被清理 / 实例已取消。\n\n请用 `/ralphflow-list` 查看现有实例；必要时重新 `/ralphflow-start <工作流> <任务>` 启动。若你正在复现或调试，请改用临时工作区，不要删真实工作区的 `ralph-flow/`。");
-            return;
-          }
-        }
-
-        engine.onAssistantMessage(sid, text);
+        if (text) engine.noteAssistantText(sid, text);
       });
     } else {
       log("warn", "session_event_listener_unavailable", {});
     }
   } catch (e) {
     log("warn", "session_event_listener_failed", { error: e instanceof Error ? e.message : String(e) });
+  }
+
+  // DO 阶段「忘了交卷」兜底：用宿主原生的 agent/turn-stopping（serial、可 await）。
+  // 它在回合关闭前发问；我们 steer 一条提醒 → 机器重读 inbox → 再跑一步。
+  // 这正是 claude/opencode 版 Stop hook 的原生等价物（design §3 的「驱动器」角色），
+  // 但不再依赖对自由文本做正则匹配。
+  try {
+    const on = (ctx as unknown as { on?: (name: string, listener: (...args: unknown[]) => void) => unknown }).on;
+    if (typeof on === "function") {
+      on("agent/turn-stopping", (payload?: unknown) => {
+        const sid = (payload as { agent?: { id?: string } } | undefined)?.agent?.id;
+        if (!sid) return;
+        let verdict: { remind: boolean; message?: string; summary?: string };
+        try { verdict = engine.remindToSubmit(sid); } catch (e) {
+          log("warn", "turn_stopping_failed", { sessionId: sid, error: e instanceof Error ? e.message : String(e) });
+          return;
+        }
+        // 带 summary 才会渲染成用户可见的 notice 行（否则是 opaque 注入行，用户看不到）
+        if (!verdict.message) return;
+        if (!verdict.remind) {
+          deliver(sid, `[ralphflow] ${verdict.message}`, verdict.summary ?? "⏸ ralphflow 已暂停等你处理");
+          return;
+        }
+        deliver(sid, verdict.message, verdict.summary ?? "⚠️ ralphflow：本步尚未交卷");
+      });
+    } else {
+      log("warn", "turn_stopping_listener_unavailable", {});
+    }
+  } catch (e) {
+    log("warn", "turn_stopping_listener_failed", { error: e instanceof Error ? e.message : String(e) });
   }
 
   const handlers = registerTools({ ctx, engine, deliver, workspaceOfSession: (sid) => workspaceOfSession(ctx, sid, workspace) });

@@ -33,6 +33,11 @@ export interface StepDef {
 export interface AdversarialConfig {
   model?: string;
   system_prompt?: string;
+  /**
+   * 本版本未支持（方言容错：警告忽略）。
+   * 验证超时交给宿主 dsh 的原生看门狗，ralphflow 不自设总时长上界。
+   * 字段保留仅为兼容旧 YAML 的读取与告警。
+   */
   timeout_ms?: number;
   /** 验证者 provider 名；缺省用部署里可用的第一个 */
   agent?: string;
@@ -78,9 +83,21 @@ export interface InstanceState {
   workflow_name: string;
   current_step: string;
   user_task: string;
+  /**
+   * **每步**失败轮数（原始事实，落盘）。
+   * 为什么必须按步记：`max_fail_count` 是**步骤级**属性，而 `on_fail` 可回退到更早步骤
+   * （内置 spec.yaml 的 verify→implement 就是）。单一标量会让被回退到的步骤继承前一步的
+   * 失败数 → 它自己第一次失败就触发上限（提前暂停）；反过来若回退时清零，成环的 on_fail
+   * 又永远累积不到上限 → 无限 ping-pong。按步记同时解决两者。
+   */
+  fail_counts: Record<string, number>;
+  /**
+   * 当前步的失败轮数。**派生量，不落盘**（宪法 §10.4）：
+   * 由 `readState` 从 `fail_counts[current_step]` 算出，仅作读取便利；`writeState` 会剔除它。
+   */
   fail_count: number;
   paused: boolean;
-  pause_reason?: "max_failures" | "check_infra" | "user_cancelled";
+  pause_reason?: "max_failures" | "check_infra" | "user_cancelled" | "no_submit";
   /** 本轮 DO 是否已交卷（引擎观测到的事实） */
   do_submitted: boolean;
   owner_session?: string;
@@ -113,8 +130,13 @@ export interface ToolResult {
 
 /** 引擎对外的两个端口：向属主会话投递指令 / 委派独立验证者（T1 的唯一入口） */
 export interface EnginePorts {
-  /** 把指令投递给主会话（插件消息 + 唤醒） */
-  deliver: (sessionId: string, text: string) => boolean;
+  /**
+   * 把指令投递给主会话（插件消息 + 唤醒）。
+   * `summary` 是给**用户看**的一行摘要：dsh 客户端按 `source.form === "notice"` + `summary`
+   * 渲染成不展开就能读的 notice 行；省略则退化为不显眼的 opaque 注入行（用户看不到）。
+   * 凡是用户应当知道的播报都必须传 summary。
+   */
+  deliver: (sessionId: string, text: string, summary?: string) => boolean;
   /** 委派独立验证者，返回判定（绝不接受主会话提供的判定） */
   verify: (req: VerifyRequest) => Promise<Verdict>;
   log?: (level: "info" | "warn" | "error", event: string, data?: unknown) => void;
@@ -128,6 +150,7 @@ export interface VerifyRequest {
   submitSummary: string;
   ownerSession?: string;
   checkIndex: number;
+  /** 取消句柄（dsh 委派契约要求的 "caller's cancellation"；不是超时预算） */
   signal: AbortSignal;
 }
 
@@ -289,11 +312,15 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         max_fail_count: typeof s.max_fail_count === "number" ? s.max_fail_count : undefined,
       });
     });
-    // 引用校验：on_pass / on_fail 必须指向存在的步骤或 done
+    // 引用校验：on_pass 必须指向存在的步骤或 done；on_fail 必须指向存在的步骤
+    // （`on_fail: done` 非法 —— 失败不能「结束工作流」，见 design §4 / CREATE_GUIDE 方言说明）
     for (const s of steps) {
       for (const [key, target] of [["on_pass", s.on_pass], ["on_fail", s.on_fail]] as const) {
         if (target === undefined) continue;
-        if (target === "done") continue;
+        if (target === "done") {
+          if (key === "on_fail") problems.push(`步骤 \`${s.id}\` 的 on_fail 指向 \`done\`；失败重试目标必须是存在的步骤 id（不允许 done）。`);
+          continue;
+        }
         if (!ids.has(target)) problems.push(`步骤 \`${s.id}\` 的 ${key} 指向不存在的步骤 \`${target}\`。`);
       }
     }
@@ -304,6 +331,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     if (doc.manual_step !== undefined && !Array.isArray(doc.manual_step)) {
       warnings.push("顶层 manual_step 不是列表，已忽略。");
     }
+    // 方言容错（design §8 Q13 定案）：timeout_ms 本版本未支持 → 警告忽略，不静默吞掉。
+    // ralphflow 不再自设验证超时，委派生命周期完全交给 dsh 原生能力（见 verify.ts 注释）。
+    if (doc.adversarial_check && typeof doc.adversarial_check === "object"
+      && (doc.adversarial_check as { timeout_ms?: unknown }).timeout_ms !== undefined) {
+      warnings.push("`adversarial_check.timeout_ms` 本版本未支持（验证超时交给宿主 dsh 的原生看门狗），已忽略。");
+    }
     const def: WorkflowDef = {
       name,
       description: typeof doc.description === "string" ? doc.description : "",
@@ -312,7 +345,6 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         ? {
             model: typeof doc.adversarial_check.model === "string" ? doc.adversarial_check.model : undefined,
             system_prompt: typeof doc.adversarial_check.system_prompt === "string" ? doc.adversarial_check.system_prompt : undefined,
-            timeout_ms: typeof doc.adversarial_check.timeout_ms === "number" ? doc.adversarial_check.timeout_ms : undefined,
             agent: typeof doc.adversarial_check.agent === "string" ? doc.adversarial_check.agent : undefined,
           }
         : undefined,
@@ -334,21 +366,56 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       s.delegations ??= [];
       s.verdicts ??= [];
       s.history ??= [];
+      // 向后兼容读取：老 state.json 只有标量 fail_count（无 fail_counts）。
+      // 归入当前步的计数，避免升级后「失败轮数」凭空归零。
+      s.fail_counts ??= {};
+      if (typeof s.fail_counts[s.current_step] !== "number" && typeof s.fail_count === "number" && s.fail_count > 0) {
+        s.fail_counts[s.current_step] = s.fail_count;
+      }
+      // 派生当前步失败轮数（不落盘）
+      s.fail_count = typeof s.fail_counts[s.current_step] === "number" ? s.fail_counts[s.current_step] : 0;
       return s as InstanceState;
     } catch { return null; }
   }
 
   function writeState(state: InstanceState, instId: string): void {
     state.updated_at = new Date().toISOString();
+    // 落盘前剔除派生量 fail_count（宪法 §10.4：状态不存派生量）。
+    // 每次读取都由 fail_counts[current_step] 重算，故不可能出现两个写入者不一致。
+    const { fail_count: _derivedFailCount, ...persisted } = state;
+    void _derivedFailCount;
     try {
       const dir = instanceDir(instId);
       fs.mkdirSync(dir, { recursive: true });
       const tmp = path.join(dir, `.state.${process.pid}.tmp`);
-      fs.writeFileSync(tmp, JSON.stringify(state, null, 2), "utf-8");
+      fs.writeFileSync(tmp, JSON.stringify(persisted, null, 2), "utf-8");
       fs.renameSync(tmp, statePath(instId));
     } catch (e) {
       log("error", "state_write_failed", { instId, error: msg(e) });
     }
+  }
+
+  /** 某步当前的失败轮数（按步计数；缺省 0） */
+  function failCountOf(state: InstanceState, stepId?: string): number {
+    const id = stepId ?? state.current_step;
+    const n = state.fail_counts?.[id];
+    return typeof n === "number" ? n : 0;
+  }
+
+  /** 记一次失败并返回该步累计次数 */
+  function bumpFailCount(state: InstanceState, stepId: string): number {
+    state.fail_counts ??= {};
+    const n = failCountOf(state, stepId) + 1;
+    state.fail_counts[stepId] = n;
+    state.fail_count = failCountOf(state); // 保持读取便利字段同步
+    return n;
+  }
+
+  /** 某步验证通过 → 该步失败史已了结，清零（下次再进来是干净的重试） */
+  function clearFailCount(state: InstanceState, stepId: string): void {
+    state.fail_counts ??= {};
+    state.fail_counts[stepId] = 0;
+    state.fail_count = failCountOf(state);
   }
 
   function pushHistory(state: InstanceState, event: string, detail?: string, step?: string): void {
@@ -401,9 +468,61 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return state.verdicts.some((v) => v.status === "infra");
   }
 
+  /**
+   * 判定是否属于「当前这一步」（design §5 第 3 条的归属校验）。
+   * 判定可以携带空 step_id（外部/历史数据），此时按匹配处理，不误伤。
+   */
+  function verdictBelongsToStep(v: Verdict, stepId: string): boolean {
+    return !v.step_id || v.step_id === stepId;
+  }
+
+  /** 当前步是否已停下等放行的审查门（判定齐且全 passed，且判定属于本步） */
+  function atOpenGate(wf: WorkflowDef, state: InstanceState, step: StepDef): boolean {
+    return isGate(wf, step) && allPassedVerified(state, step);
+  }
+
+  /**
+   * 判定齐、全 passed，且**判定确实属于当前步**（design §5 第 3 条的归属校验）。
+   * 归属用 step_id 判定；缺少 step_id 的判定按当前步处理，避免历史数据被误判为不通过。
+   * 错位判定（step_id 指向别的步骤）一律不算通过 —— fail-closed。
+   */
+  function allPassedVerified(state: InstanceState, step: StepDef): boolean {
+    if (!allPassed(state)) return false;
+    return state.verdicts.every((v) => verdictBelongsToStep(v, step.id));
+  }
+
+  /** 判定里是否有「不属于当前步」的条目（用于给用户说清拒绝原因） */
+  function foreignVerdicts(state: InstanceState, step: StepDef): Verdict[] {
+    return state.verdicts.filter((v) => v.step_id && v.step_id !== step.id);
+  }
+
+  /**
+   * 门上重开一轮 DO（轻量打回，无程序化 return）：
+   * 用户说「改一下」→ 主会话修改、重新交卷、重新验证、再次回到门（design §5 末段）。
+   * 只清本轮交卷事实与判定，不动 fail_count（打回不是失败，不烧账）。
+   *
+   * 注意：若还有在飞委派，必须**真正中止**它再清记账，否则委派变孤儿——
+   * 它的判定回来时 `current_step` 守卫会丢弃（可诊断但白烧 token），
+   * 而 `delegations` 被清空又会让 continue 误以为「没有验证在跑」。
+   */
+  function reopenGate(state: InstanceState, instId: string, step: StepDef, reason: string): void {
+    if (state.delegations.length > 0) {
+      // 只中止本实例的验证者；引擎随后重新委派，语义等价于「上一轮作废」
+      try { aborts.get(instId)?.abort(); } catch {}
+      aborts.delete(instId);
+      log("info", "gate_reopen_abort_inflight", { instId, count: state.delegations.length });
+    }
+    state.do_submitted = false;
+    state.verdicts = [];
+    state.delegations = [];
+    state.last_submit_summary = undefined;
+    pushHistory(state, "gate_reopened", reason, step.id);
+    writeState(state, instId);
+  }
+
   // ─── 交卷与验证（三时刻①②）────────────────────────────────────────────────
 
-  /** DO prompt：宣告本步任务（顺势力措辞，最后一行交卷标记） */
+  /** DO prompt：宣告本步任务（交卷 = 调用 ralphflow_submit 工具，dsh 原生方式） */
   function doPrompt(wf: WorkflowDef, state: InstanceState, step: StepDef, rework?: string): string {
     const idx = wf.steps.findIndex((s) => s.id === step.id) + 1;
     const parts = [
@@ -422,7 +541,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     parts.push(
       "",
       "## 交卷方式",
-      "完成实际工作后，在回复的**最后一行**单独输出 `<promise>done</promise>`。独立验证者会立刻检查你的产出。",
+      "完成实际工作后，按顺序做两件事：",
+      "",
+      "1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（异步，通常 1–5 分钟，**不需要用户做任何操作**）→ 期间用户可以做什么（补充信息或纠正方向 / 用 `/ralphflow-status` 看进度 / 用 `/ralphflow-cancel` 中止）。用用户的语言写，不要把它埋进技术叙述里。",
+      "2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。独立验证者会立刻检查你的产出。",
+      "",
+      "不要只在回复里说「完成了」——那样不会触发验证。**必须调用工具**。",
     );
     return parts.join("\n");
   }
@@ -436,8 +560,18 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     pushHistory(state, "verify_start", `check_index=${checkIndex}`, step.id);
     writeState(state, instId);
     log("info", "verify_start", { instId, step: step.id, checkIndex });
-    // 阶段播报：验证开始即告知（opencode 同款「🔍 CHECK 阶段已开始」体验）
-    notify(state, `🔍 步骤 \`${step.id}\` 已交卷，独立验证者（独立会话）正在取证判定…`);
+    // 阶段播报：验证是**异步**的（委派独立子代理，分钟级；不阻塞主会话回合）。
+    // 这段静默窗口必须讲清三件事：正在发生什么 / 要不要你操作 / 去哪看进度。
+    notify(state, [
+      `🔍 步骤 \`${step.id}\` 已交卷，独立验证者（独立会话，看不到本对话）正在取证判定。`,
+      "",
+      `**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。验证通常需要 1–5 分钟（它要真的去读文件、跑命令取证）。`,
+      "",
+      `期间你可以：`,
+      `- 直接在此会话补充信息或纠正方向（会被模型看到）`,
+      `- 用 \`/ralphflow-status\` 随时查看进度与最近轨迹`,
+      `- 想中止就 \`/ralphflow-cancel\``,
+    ].join("\n"), `🔍 步骤 ${step.id} 已交卷，独立验证中（1–5 分钟，无需操作）`);
 
     let verdict: Verdict;
     try {
@@ -449,12 +583,33 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     } catch (e) {
       verdict = { check_index: checkIndex, status: "infra", reason: `验证未跑成：${msg(e)}`, step_id: step.id, ts: new Date().toISOString() };
     }
+    // 归一化验证端口的返回：判定是外部输入，形状不可信。
+    // fail-closed —— 形状不对一律当 infra，绝不当成「通过」；
+    // 同时补齐字段，避免下游对 undefined 取属性把整条 async 链抛成未处理拒绝。
+    verdict = normalizeVerdict(verdict, step.id, checkIndex);
 
-    // 落判定：只信 ports.verify 的返回（T1）。实例可能在验证期间被取消。
+    // 落判定：只信 ports.verify 的返回（T1）。
+    //
+    // 必须校验「这一笔判定是否仍属于当轮有效委派」。仅看 active/current_step 不够：
+    //   · reopenGate 中止在飞委派后清了记账，但被中止那一笔在 dsh driver 里会以
+    //     stopReason=aborted **正常 resolve**，经 verify.ts 变成 infra 照常返回；
+    //   · restore() 的孤儿恢复同样清记账，而验证者进程其实还活着。
+    // 这两种「迟到判定」若被接收，会写出假 check_infra 并吞掉当轮真正的通过判定。
+    // 判据：delegations 里仍登记着本 runId（被清掉/被替换 = 本笔已作废）。
     const fresh = readState(instId);
-    if (!fresh || !fresh.active || fresh.current_step !== step.id) return;
+    const ownsRun = !!fresh && fresh.delegations.some((d) => d.run_id === runId);
+    if (!fresh || !fresh.active || fresh.paused || fresh.current_step !== step.id || !ownsRun) {
+      const why = !fresh ? "instance_state_missing"
+        : !fresh.active ? "instance_inactive"
+        : fresh.paused ? "instance_paused"
+        : fresh.current_step !== step.id ? "step_changed"
+        : "run_superseded";
+      log("warn", "verdict_discarded", { instId, reason: why, status: verdict.status, step: step.id, runId });
+      return;
+    }
     fresh.delegations = fresh.delegations.filter((d) => d.run_id !== runId);
     fresh.verdicts.push(verdict);
+    if (verdict.status === "passed") clearFailCount(fresh, step.id);
     aborts.delete(instId);
     pushHistory(fresh, `verdict_${verdict.status}`, verdict.reason.slice(0, 300), step.id);
     log("info", "verdict", { instId, status: verdict.status });
@@ -463,30 +618,47 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       fresh.paused = true;
       fresh.pause_reason = "check_infra";
       writeState(fresh, instId);
-      notify(fresh, `⏸ 验证未跑成（基础设施问题，不计失败）：${verdict.reason}\n\n修复后运行 \`/ralphflow-continue\` 重新验证。`);
+      notify(fresh, `⏸ 验证未跑成（基础设施问题，不计失败）：${verdict.reason}\n\n修复后运行 \`/ralphflow-continue\` 重新验证。`, `⏸ 验证未跑成（基础设施问题），已暂停步骤 ${step.id}`);
       return;
     }
     if (anyFailed(fresh)) {
-      fresh.fail_count += 1;
+      const failedTimes = bumpFailCount(fresh, step.id);
       const max = step.max_fail_count ?? 3;
-      if (fresh.fail_count >= max) {
+      if (failedTimes >= max) {
         fresh.paused = true;
         fresh.pause_reason = "max_failures";
         writeState(fresh, instId);
-        notify(fresh, `⏸ 步骤 \`${step.id}\` 连续 ${fresh.fail_count} 轮未通过（上限 ${max}），已暂停等你定夺。\n\n验证者的意见：\n${verdict.reason}\n\n处理后可运行 \`/ralphflow-continue\` 重新验证，或 \`/ralphflow-cancel\` 结束。`);
+        notify(fresh, `⏸ 步骤 \`${step.id}\` 连续 ${failedTimes} 轮未通过（上限 ${max}），已暂停等你定夺。\n\n验证者的意见：\n${verdict.reason}\n\n处理后可运行 \`/ralphflow-continue\` 重新验证，或 \`/ralphflow-cancel\` 结束。`, `⏸ 步骤 ${step.id} 连续 ${failedTimes} 轮未通过，已暂停等你定夺`);
         return;
       }
-      // 返工：同一回合把原因交回主会话（rework DO prompt 已含原因，不再重复通知）
+      // 返工：按 **on_fail** 回退（design §4「按 on_fail 回退」）。on_fail 缺省指自身。
+      const targetId = failStepId(wf, step);
+      const target = stepOf(wf, targetId);
+      if (!target) {
+        // on_fail 指向 "done" 或不存在的步骤 —— 坏定义，绝不静默跳步
+        fresh.paused = true;
+        fresh.pause_reason = "check_infra";
+        pushHistory(fresh, "rework_target_invalid", `on_fail=${targetId}`, step.id);
+        writeState(fresh, instId);
+        notify(fresh, `⏸ 步骤 \`${step.id}\` 的 \`on_fail\` 指向 \`${targetId}\`，不是可回退的步骤，已暂停（引擎拒绝跳步）。`, `⏸ 步骤 ${step.id} 的 on_fail 定义无效，已暂停`);
+        return;
+      }
       fresh.do_submitted = false;
       fresh.verdicts = [];
+      fresh.delegations = [];
+      if (target.id !== step.id) {
+        fresh.current_step = target.id;
+        pushHistory(fresh, "rework_rewind", `${step.id} → ${target.id}`, target.id);
+        log("info", "rework_rewind", { instId, from: step.id, to: target.id });
+      }
       writeState(fresh, instId);
-      deliver(fresh, doPrompt(wf, fresh, step, verdict.reason));
+      deliver(fresh, doPrompt(wf, fresh, target, verdict.reason), `🔄 步骤 ${target.id} 验证未通过，自动返工（${step.id} 第 ${failedTimes} 次）`);
       return;
     }
-    // 全 passed
-    if (isGate(wf, step)) {
+    // 全 passed（且判定属于当前步）
+    if (isGate(wf, step) && allPassedVerified(fresh, step)) {
       writeState(fresh, instId);
-      notify(fresh, `🙋 步骤 \`${step.id}\` 已通过独立验证，停在审查门等你放行。\n\n确认无误运行 \`/ralphflow-continue\` 进入下一步；需要修改就直接说明，改完重新交卷会再次验证。`);
+      notify(fresh, `🙋 步骤 \`${step.id}\` 已通过独立验证，停在审查门等你放行。\n\n确认无误运行 \`/ralphflow-continue\` 进入下一步；需要修改就直接说明，改完重新交卷会再次验证。`, `🙋 步骤 ${step.id} 已通过验证，停在审查门等你放行`);
       return;
     }
     writeState(fresh, instId);
@@ -495,6 +667,13 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   /** 推进（T2）：只有这里改 current_step */
   function advance(instId: string, state: InstanceState, wf: WorkflowDef, step: StepDef): void {
+    // 暂停中绝不推进（防御性护栏）：暂停是「等用户」的状态，
+    // 任何推进都会给模型投递 DO 提示，而暂停时 ralphflow_submit 会被拒绝 → 模型白干。
+    // 正常路径下调用方已保证非暂停；这里只作兜底，不掩盖真实缺陷。
+    if (state.paused) {
+      log("warn", "advance_refused_paused", { instId, step: step.id, reason: state.pause_reason });
+      return;
+    }
     const target = nextStepId(wf, step);
     if (target === "done") { complete(instId, state, wf); return; }
     const next = stepOf(wf, target);
@@ -504,7 +683,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       state.pause_reason = "check_infra";
       pushHistory(state, "advance_target_missing", target);
       writeState(state, instId);
-      notify(state, `⏸ 工作流定义里 on_pass 指向的步骤 \`${target}\` 不存在，已暂停（引擎拒绝跳步）。`);
+      notify(state, `⏸ 工作流定义里 on_pass 指向的步骤 \`${target}\` 不存在，已暂停（引擎拒绝跳步）。`, `⏸ 工作流定义错误（on_pass 指向 ${target} 不存在），已暂停`);
       return;
     }
     state.current_step = next.id;
@@ -512,9 +691,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     state.verdicts = [];
     state.delegations = [];
     state.last_submit_summary = undefined;
+    // 不在这里清 fail_counts：通过时已 `clearFailCount`（该步失败史了结）。
+    // 若用 on_fail 回退到一个「失败过但尚未通过」的步骤，它自己的计数应保留 ——
+    // 这既避免把前一步的失败算到它头上，也让成环的 on_fail 仍能触及 max_fail_count。
     pushHistory(state, "step_start", next.desc ?? "", next.id);
     writeState(state, instId);
-    deliver(state, doPrompt(wf, state, next));
+    deliver(state, doPrompt(wf, state, next), `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（完成后会自动进入独立验证）`);
   }
 
   function complete(instId: string, state: InstanceState, wf: WorkflowDef): void {
@@ -525,17 +707,21 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     state.do_submitted = false;
     writeState(state, instId);
     archiveReport(instId, state, wf, "done");
-    notify(state, `✅ 工作流 \`${wf.name}\` 完成，报告已归档到工作区的 \`ralph-flow/reports/\`。`);
+    notify(state, `✅ 工作流 \`${wf.name}\` 完成，报告已归档到工作区的 \`ralph-flow/reports/\`。`, `✅ 工作流 ${wf.name} 完成（报告已归档 ralph-flow/reports/）`);
   }
 
-  function deliver(state: InstanceState, text: string): void {
+  function deliver(state: InstanceState, text: string, summary?: string): void {
     if (!state.owner_session) return;
-    const ok = ports.deliver(state.owner_session, text);
+    const ok = ports.deliver(state.owner_session, text, summary);
     if (!ok) log("warn", "deliver_failed", { instId: state.owner_session });
   }
 
-  function notify(state: InstanceState, text: string): void {
-    deliver(state, `[ralphflow] ${text}`);
+  /**
+   * 用户可见播报。**必须**给 summary —— 它是用户在时间线上不展开就能读到的那一行；
+   * 不传就等于用户看不到（client 会退化成 opaque 注入行）。
+   */
+  function notify(state: InstanceState, text: string, summary: string): void {
+    deliver(state, `[ralphflow] ${text}`, summary);
   }
 
   // ─── 报告归档 ──────────────────────────────────────────────────────────────
@@ -593,7 +779,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const now = new Date().toISOString();
     const state: InstanceState = {
       active: true, workflow_name: wf.name, current_step: first.id, user_task: task.trim(),
-      fail_count: 0, paused: false, do_submitted: false, owner_session: sessionId,
+      fail_counts: {}, fail_count: 0, paused: false, do_submitted: false, owner_session: sessionId,
       delegations: [], verdicts: [], history: [], started_at: now, updated_at: now,
     };
     registerInstance(instId, workspace);
@@ -611,26 +797,140 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return { ok: true, text: `${text}\n\n---\n\n${doPrompt(wf, state, first)}` };
   }
 
-  /** 主会话交卷（三时刻①）：只观测事实，不产生判定 */
-  function onAssistantMessage(sessionId: string, text: string): void {
-    if (!/<promise>\s*done\s*<\/promise>/i.test(text)) return;
+  /**
+   * 主会话交卷（三时刻①）。
+   *
+   * 交卷 = 模型**调用 `ralphflow_submit` 工具**（dsh 原生的完成方式：工具调用是事实，
+   * 不是对模型自由文本做正则猜测）。宿主自己的结构化输出就是这么做的
+   * （dsh-subagent-in-process-driver 注册 structured_output 工具，模型调用即完成，
+   * 工具结果带 concludesTurn 由机器结束回合）。
+   *
+   * 返回 ToolResult：把「已受理 / 不能重复交卷 / 没有活跃实例」直接回给模型，
+   * 而不是像文本标记那样静默失败。
+   */
+  function onSubmit(sessionId: string, summary?: string): ToolResult {
     const info = activeInstanceOfSession(sessionId);
-    if (!info) return;
+    if (!info) {
+      const others = listInstances().filter((i) => i.state.active);
+      return {
+        ok: false,
+        text: others.length === 0
+          ? "当前会话没有活跃的 ralphflow 实例，这次交卷未被受理。用 `/ralphflow-start <工作流> <任务>` 启动一个。"
+          : `当前会话没有活跃实例，但项目里还有其它活跃实例：\n${others.map((i) => `- \`${i.id}\` — ${i.state.workflow_name} · ${i.state.current_step}`).join("\n")}\n\n交卷只对**本会话**的实例生效；要接管请用 \`/ralphflow-continue <实例ID>\`。`,
+      };
+    }
     const { id: instId, state } = info;
-    if (state.paused || state.do_submitted || state.delegations.length > 0) return;
+    if (state.paused) {
+      return { ok: false, text: `实例 \`${instId}\` 处于暂停状态（${state.pause_reason}），交卷未被受理。先按提示处理，再用 \`/ralphflow-continue\` 恢复。` };
+    }
     const { def: wf } = loadWorkflow(state.workflow_name);
-    if (!wf) { log("warn", "workflow_missing_at_submit", { instId }); return; }
+    if (!wf) {
+      log("warn", "workflow_missing_at_submit", { instId });
+      return { ok: false, text: `工作流 \`${state.workflow_name}\` 已无法加载，交卷未被受理。用 \`/ralphflow-doctor\` 诊断。` };
+    }
     const step = stepOf(wf, state.current_step);
-    if (!step) return;
+    if (!step) return { ok: false, text: `实例状态损坏：当前步骤 \`${state.current_step}\` 不在工作流里。用 \`/ralphflow-cancel\` 结束。` };
+
+    const text = (summary ?? noteTextFor(sessionId) ?? "").slice(-4000).trim();
+    if (state.do_submitted) {
+      // 本步已交卷。区分「门上改稿重交」与「重复交卷」：
+      //   a) 停在审查门（判定已落）→ 用户说「改一下」，改完重交：打回重验（design §5/§6）。
+      //   b) 门开着但验证还在飞 → 抢先重交：同样打回（reopenGate 会中止在飞委派）。
+      //   c) 判定已落地且非门 → 是不必要的重复调用，明确告知模型（不再静默丢弃）。
+      const gateOpen = atOpenGate(wf, state, step);
+      const gatePending = isGate(wf, step) && state.delegations.length > 0;
+      if (!gateOpen && !gatePending) {
+        return {
+          ok: false,
+          text: state.delegations.length > 0
+            ? `步骤 \`${step.id}\` 已交卷，独立验证者正在取证判定 —— **不要重复交卷**，等验证结果即可。`
+            : `步骤 \`${step.id}\` 已经交卷并在处理中，**不需要重复交卷**。用 \`/ralphflow-status\` 查看状态。`,
+        };
+      }
+      // 同一份内容重复交卷 → 不重复烧验证（防止模型一次做完连调两次工具）
+      if (text && text === (state.last_submit_summary ?? "")) {
+        log("info", "gate_resubmit_identical", { instId });
+        return { ok: false, text: "交卷内容与上一次完全相同，未重复验证。若你确实改动了产出，请简述改动后再交卷。" };
+      }
+      reopenGate(state, instId, step, "审查门上重新交卷（改稿）");
+      state.do_submitted = true;
+      state.last_submit_summary = text;
+      pushHistory(state, "do_submitted", undefined, step.id);
+      writeState(state, instId);
+      void launchVerification(instId, state, wf, step);
+      return { ok: true, text: `🔍 已受理重新交卷，正在重新委派独立验证者检查步骤 \`${step.id}\`。` };
+    }
+
     state.do_submitted = true;
-    state.last_submit_summary = stripDoneTag(text).slice(-4000).trim();
+    state.last_submit_summary = text;
     pushHistory(state, "do_submitted", undefined, step.id);
     writeState(state, instId);
     void launchVerification(instId, state, wf, step);
+    return { ok: true, text: `🔍 交卷已受理，独立验证者（独立会话）正在取证判定。等它返回即可，不要重复交卷。` };
   }
 
-  function stripDoneTag(text: string): string {
-    return text.replace(/<promise>\s*done\s*<\/promise>\s*$/i, "").trim();
+  // ─── 交卷上下文捕获（供验证者 prompt 使用；不落盘、不触发任何状态迁移）──────
+  /**
+   * 记下会话最近一条助手文本，供验证者 prompt 的「交卷摘要」用。
+   * 这是**纯上下文捕获**，不再承担「检测交卷」的职责（那已由工具调用承担）。
+   * 只在内存里保留每个会话最后一条，避免无界增长。
+   */
+  const lastText = new Map<string, string>();
+  function noteAssistantText(sessionId: string, text: string): void {
+    if (!text) return;
+    lastText.set(sessionId, text);
+  }
+  function noteTextFor(sessionId: string): string | undefined {
+    return lastText.get(sessionId);
+  }
+
+  // ─── DO 阶段「忘了交卷」兜底（原生 agent/turn-stopping 驱动）─────────────────
+  /**
+   * 回合即将关闭时的判定：该不该提醒模型交卷。
+   *
+   * 文本标记时代这件事是静默的（模型忘了写标记 → 什么都没发生）。
+   * 这里由原生 `agent/turn-stopping`（serial、可 await）在回合关闭前发问：
+   * 有活跃实例、本步未交卷、未暂停、无在飞委派 → 模型干完了却没交卷。
+   *
+   * 提醒次数从 history 派生（不新增状态字段，宪法 §10.4）；达到上限则暂停等用户，
+   * 绝不死循环催促。
+   */
+  function submitReminderCount(state: InstanceState, stepId: string): number {
+    return state.history.filter((h) => h.event === "submit_reminder" && h.step === stepId).length;
+  }
+
+  function remindToSubmit(sessionId: string): { remind: boolean; message?: string; summary?: string } {
+    const info = activeInstanceOfSession(sessionId);
+    if (!info) return { remind: false };
+    const { id: instId, state } = info;
+    if (state.paused || state.do_submitted || state.delegations.length > 0) return { remind: false };
+    const { def: wf } = loadWorkflow(state.workflow_name);
+    const step = wf ? stepOf(wf, state.current_step) : undefined;
+    if (!wf || !step) return { remind: false };
+
+    const max = 2;
+    const used = submitReminderCount(state, step.id);
+    if (used >= max) {
+      // 反复提醒仍不交卷 → 停下来让用户处理，不再自动催（避免死循环）
+      state.paused = true;
+      state.pause_reason = "no_submit";
+      pushHistory(state, "reminder_exhausted", `${used} 次提醒后仍未交卷`, step.id);
+      writeState(state, instId);
+      log("warn", "submit_reminder_exhausted", { instId, step: step.id, used });
+      return {
+        remind: false,
+        summary: `⏸ 步骤 ${step.id} 反复未交卷，已暂停等你处理`,
+        message: `⏸ 步骤 \`${step.id}\` 已提醒 ${used} 次仍未收到交卷，已暂停等你处理。\n\n如果工作其实做完了：让模型调用 \`ralphflow_submit\` 交卷，再 \`/ralphflow-continue\`。\n如果它卡住了：说明情况或 \`/ralphflow-cancel\` 结束。`,
+      };
+    }
+    pushHistory(state, "submit_reminder", `第 ${used + 1} 次`, step.id);
+    writeState(state, instId);
+    const n = used + 1;
+    return {
+      remind: true,
+      summary: `⚠️ 步骤 ${step.id} 尚未交卷（第 ${n}/${max} 次提醒）`,
+      message: `[ralphflow] 提醒（第 ${n}/${max} 次）：本步（\`${step.id}\`）还没交卷，独立验证不会自动开始。\n\n如果任务已完成，请调用 \`ralphflow_submit\` 工具交卷；如果还没做完，继续做。\n如果你正在等用户回答或需要用户介入，请直接说明，不必交卷。`,
+    };
   }
 
   /** 三时刻③：推进的唯一人工入口（fail-closed） */
@@ -669,26 +969,39 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       state.pause_reason = undefined;
       state.verdicts = [];
       state.delegations = [];
+      // 重置当前步失败计数：这是投递给模型的机制说明（tools.ts / SHARED_MECHANISM）明确承诺的
+      // 「重置失败计数并重试」。不清零的话，max_failures 恢复后只要再失败一次就立刻二次暂停，
+      // 用户永远拿不到「修好→重试」的机会。
+      clearFailCount(state, state.current_step);
       pushHistory(state, "resume", `from=${reason}`);
       writeState(state, instId);
       if (state.do_submitted) {
         void launchVerification(instId, state, wf, step);
         return { ok: true, text: `▶️ 已解除暂停（原因：${reason}），正在重新委派独立验证者检查步骤 \`${step.id}\`。` };
       }
-      deliver(state, doPrompt(wf, state, step));
+      deliver(state, doPrompt(wf, state, step), `▶️ 步骤 ${step.id} 继续执行`);
       return { ok: true, text: `▶️ 已解除暂停（原因：${reason}），已让模型继续步骤 \`${step.id}\`。` };
     }
 
     // ② 有在飞委派 → 不重复推进（防重复委派）
     if (state.delegations.length > 0) {
-      return { ok: false, text: `验证正在进行中（步骤 \`${step.id}\`），等它交卷后再 continue。` };
+      return { ok: false, text: `🔍 步骤 \`${step.id}\` 的独立验证者仍在取证判定中，现在不需要你操作——它跑完会自动唤醒本会话并继续。\n\n想了解进度用 \`/ralphflow-status\`；想中止用 \`/ralphflow-cancel\`。` };
     }
 
-    // ③ 判定落地且全 passed（审查门 / 兜底推进）
-    if (allPassed(state)) {
+    // ③ 判定落地且全 passed，且判定属于当前步（审查门 / 兜底推进）
+    if (allPassedVerified(state, step)) {
       if (isGate(wf, step)) pushHistory(state, "gate_released", undefined, step.id);
       advance(instId, state, wf, step);
       return { ok: true, text: `✅ 步骤 \`${step.id}\` 判定通过，已推进。` };
+    }
+
+    // ③b 判定全 passed 但有条目不属于当前步 → 归属校验失败，fail-closed（绝不推进）
+    const foreign = foreignVerdicts(state, step);
+    if (foreign.length > 0) {
+      return {
+        ok: false,
+        text: `步骤 \`${step.id}\` 的判定归属不符，不能推进（判定必须属于当前步）：\n${foreign.map((v) => `- [${v.status}] 判定属于步骤 \`${v.step_id}\`，不是 \`${step.id}\`：${v.reason}`).join("\n")}\n\n这是错位判定，已拒绝复用。重新交卷即可再次验证。`,
+      };
     }
 
     // ④ 有判定但未通过 → 不烧 fail_count，说明原因
@@ -721,7 +1034,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     pushHistory(state, "cancelled", reason);
     writeState(state, instId);
     if (wf) archiveReport(instId, state, wf, "cancelled");
-    notify(state, `🛑 实例 \`${instId}\` 已取消${reason ? `：${reason}` : ""}。报告已归档。`);
+    notify(state, `🛑 实例 \`${instId}\` 已取消${reason ? `：${reason}` : ""}。报告已归档。`, `🛑 ralphflow 实例已取消${reason ? `：${reason}` : ""}`);
     return { ok: true, text: `已取消实例 \`${instId}\`。` };
   }
 
@@ -742,6 +1055,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       `失败 ${state.fail_count} 轮`,
     ];
     const lines = [`**${id}** — ${facts.join(" · ")}`, "", `任务：${state.user_task}`];
+    // 「现在该干什么」——异步验证期间用户最需要的就是这句。
+    const hint = nextActionHint(state);
+    if (hint) lines.push("", hint);
     if (state.verdicts.length > 0) {
       lines.push("", "本轮判定：", ...state.verdicts.map((v) => `- [${v.status}] ${v.reason}`));
     }
@@ -750,6 +1066,26 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       lines.push("", "最近轨迹：", ...tail.map((h) => `- \`${h.ts}\` ${h.event}${h.detail ? ` — ${h.detail.slice(0, 120)}` : ""}`));
     }
     return lines.join("\n");
+  }
+
+  /**
+   * 「现在该干什么」——由派生事实算出，不落盘（宪法 §10.4）。
+   * 异步验证期间这是用户最需要的一句话：说明要不要操作、去哪看、怎么退出。
+   */
+  function nextActionHint(s: InstanceState): string | undefined {
+    if (!s.active) return "工作流已结束。报告在 `ralph-flow/reports/`；要再跑一次用 `/ralphflow-start <工作流> <任务>`。";
+    if (s.paused) {
+      if (s.pause_reason === "max_failures") return "**等你定夺**：修好问题后 `/ralphflow-continue` 重新验证，或 `/ralphflow-cancel` 结束。";
+      if (s.pause_reason === "no_submit") return "**等你处理**：模型反复未交卷。让它调用 `ralphflow_submit`，再 `/ralphflow-continue`；或 `/ralphflow-cancel` 结束。";
+      return "**暂停中**：处理后 `/ralphflow-continue` 恢复（基础设施问题不计失败）。";
+    }
+    if (s.delegations.length > 0) {
+      return "**无需操作**：独立验证者正在取证判定，跑完会自动唤醒本会话继续。可用 `/ralphflow-status` 看进度，`/ralphflow-cancel` 中止。";
+    }
+    if (s.do_submitted) {
+      return "**等你放行**：确认无误运行 `/ralphflow-continue` 进入下一步；要修改就直接说明，改完重新交卷会再次验证。";
+    }
+    return "**执行中**：模型正在做本步任务。不要调用 `ralphflow_continue`（推进是自动的）。";
   }
 
   /** 派生状态标签（无相位字段） */
@@ -858,7 +1194,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     root, instancesDir, workflowsDir, reportsDir, projectDir,
     ensureLayout, listWorkflows, loadWorkflow,
     readState, listInstances, instanceDir, workspaceOf, indexPath,
-    start, onAssistantMessage, continueInstance, cancelInstance, statusOf, listAll, restore, diagnose,
+    start, onSubmit, noteAssistantText, remindToSubmit, continueInstance, cancelInstance, statusOf, listAll, restore, diagnose,
     activeInstanceOfSession,
   };
 }
@@ -866,5 +1202,23 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 export type Engine = ReturnType<typeof createEngine>;
 
 function msg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
+
+/**
+ * 归一化 ports.verify 的返回（判定是不可信的外部输入）。
+ * 缺字段/坏 status 一律按 infra（fail-closed，绝不默认通过）；补齐 step_id/ts/reason，
+ * 避免下游 `verdict.reason.slice()` 之类的访问把 async 链抛成未处理拒绝。
+ */
+function normalizeVerdict(v: Verdict | undefined | null, stepId: string, checkIndex: number): Verdict {
+  const raw = (v ?? {}) as Partial<Verdict>;
+  const status = raw.status === "passed" || raw.status === "failed" || raw.status === "infra" ? raw.status : "infra";
+  return {
+    check_index: typeof raw.check_index === "number" ? raw.check_index : checkIndex,
+    status,
+    reason: typeof raw.reason === "string" ? raw.reason : `验证者未返回可解析的判定（原始 status=${String(raw.status)}）。`,
+    step_id: typeof raw.step_id === "string" && raw.step_id ? raw.step_id : stepId,
+    ts: typeof raw.ts === "string" && raw.ts ? raw.ts : new Date().toISOString(),
+    ...(raw.agent_id !== undefined ? { agent_id: String(raw.agent_id) } : {}),
+  };
+}
 
 export const BUILTIN_WORKFLOWS = ["loop", "spec"];
