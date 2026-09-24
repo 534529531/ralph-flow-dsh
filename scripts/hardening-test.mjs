@@ -40,11 +40,23 @@ const S = () => `hardening-session-${++n}`;
 
 engine.ensureLayout();
 
+/**
+ * spec 是 4 步（explore → propose → implement → archive），审查门在 **propose**（第 2 步）。
+ * 这些用例都针对「门」的行为，所以先让 explore 通过，把实例推到门上。
+ */
+async function reachProposeGate(sid) {
+  scripted.push({ status: "passed", reason: "explore 通过（探索阶段）" });
+  submit(sid, "探索完成，proposal 草稿已出。\n");
+  await sleep();
+  return engine.readState(newestId());
+}
+
 // ── H1【恶性】审查门通过后，用户「改一下」→ 改稿重交必须重新验证 ─────────────
 console.log("\nH1 审查门：门上改稿重交必须重新验证（修复前：永不重验）");
 {
   const s = S();
   const { id } = start("spec", "门上改稿用例", s);
+  await reachProposeGate(s); // explore 通过 → 推到 propose 门
   deliveries.length = 0;
 
   scripted.push({ status: "passed", reason: "第一版提案通过" });
@@ -72,7 +84,7 @@ console.log("\nH1 审查门：门上改稿重交必须重新验证（修复前�
   // 放行后应正常推进
   const c = engine.continueInstance(s);
   st = engine.readState(id);
-  check("放行后推进到 specs", c.ok && st.current_step === "specs", `ok=${c.ok} step=${st.current_step}`);
+  check("放行后推进到 implement", c.ok && st.current_step === "implement", `ok=${c.ok} step=${st.current_step}`);
 }
 
 // ── H2【恶性】门上重复回放同一段文本，不得重复委派验证 ──────────────────────
@@ -80,6 +92,7 @@ console.log("\nH2 审查门：同一段文本重复回放不得重复烧验证")
 {
   const s = S();
   const { id } = start("spec", "门上重复回放用例", s);
+  await reachProposeGate(s); // explore 通过 → 推到 propose 门
   scripted.push({ status: "passed", reason: "提案通过" });
   const text = "提案写好了\n";
   submit(s, text);
@@ -98,9 +111,10 @@ console.log("\nH3 判定归属：错位判定绝不能放行（修复前：只�
 {
   const s = S();
   const { id } = start("spec", "判定归属用例", s);
+  await reachProposeGate(s); // explore 通过 → 推到 propose 门（当前步 = propose）
   const st = engine.readState(id);
   st.do_submitted = true;
-  st.verdicts.push({ check_index: 0, status: "passed", reason: "别的步骤的判定", step_id: "tasks", ts: new Date().toISOString() });
+  st.verdicts.push({ check_index: 0, status: "passed", reason: "别的步骤的判定", step_id: "archive", ts: new Date().toISOString() });
   fs.writeFileSync(path.join(engine.instanceDir(id), "state.json"), JSON.stringify(st, null, 2));
 
   const c = engine.continueInstance(s);
@@ -116,6 +130,7 @@ console.log("\nH4 判定归属：缺 step_id 的判定按当前步处理（不�
 {
   const s = S();
   const { id } = start("spec", "缺 step_id 对照", s);
+  await reachProposeGate(s); // explore 通过 → 推到 propose 门
   const st = engine.readState(id);
   st.do_submitted = true;
   st.verdicts.push({ check_index: 0, status: "passed", reason: "无归属字段的判定", ts: new Date().toISOString() });
@@ -233,6 +248,12 @@ console.log("\nH9 审查门 + 在飞委派：改稿重交必须生效（不得�
   e.start("spec", "门 + 在飞委派", sid);
   const iid = e.listInstances().at(-1).id;
 
+  // spec 是 4 步（门在 propose）：先让 explore 通过，把实例推到门上
+  e.onSubmit(sid, "探索完成");
+  await sleep(40);
+  resolvers.at(-1)({ check_index: 0, step_id: "explore", ts: new Date().toISOString(), status: "passed", reason: "explore 通过" });
+  await sleep(80);
+
   // 让门步通过 → 停在门（判定落地、不在飞）
   e.onSubmit(sid, "第一版提案");
   await sleep(40);
@@ -266,7 +287,7 @@ console.log("\nH9 审查门 + 在飞委派：改稿重交必须生效（不得�
   check("验证返回后重新停在门", st.current_step === "propose" && st.verdicts.length === 1, `step=${st.current_step} verdicts=${st.verdicts.length}`);
   const c = e.continueInstance(sid);
   st = e.readState(iid);
-  check("continue 可正常放行（不再被 delegations 挡住）", c.ok && st.current_step === "specs", `ok=${c.ok} step=${st.current_step}`);
+  check("continue 可正常放行（不再被 delegations 挡住）", c.ok && st.current_step === "implement", `ok=${c.ok} step=${st.current_step}`);
 
   // 清理索引里本用例创建的条目（按 id 精确删除，绝不按路径批量删真实实例）
   try {

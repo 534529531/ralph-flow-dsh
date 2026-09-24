@@ -53,9 +53,16 @@ console.log("V1 迟到判定（run 已被取代）：必须丢弃，不得产生
   e.start("spec", "V1 迟到判定", sid);
   const iid = e.listInstances().at(-1).id;
 
+  // spec 是 4 步（explore → propose → implement → archive），审查门在 propose（第 2 步）。
+  // 先让 explore 通过，把实例推到门上——本用例针对的是门上的判定归属。
+  e.onSubmit(sid, "探索完成");
+  await sleep();
+  resolvers[0]({ check_index: 0, step_id: "explore", ts: new Date().toISOString(), status: "passed", reason: "explore 通过" });
+  await sleep();
+
   e.onSubmit(sid, "v1 提案");
   await sleep();
-  resolvers[0]({ check_index: 0, step_id: "propose", ts: new Date().toISOString(), status: "passed", reason: "第一版通过" });
+  resolvers[1]({ check_index: 0, step_id: "propose", ts: new Date().toISOString(), status: "passed", reason: "第一版通过" });
   await sleep();
   check("① 停在门", e.readState(iid).verdicts.length === 1 && !e.readState(iid).paused);
 
@@ -65,10 +72,10 @@ console.log("V1 迟到判定（run 已被取代）：必须丢弃，不得产生
   // 第二笔在飞时再次交卷 → reopenGate 中止第二笔 → 第三笔
   e.onSubmit(sid, "v3 提案");
   await sleep();
-  check("② 三次交卷三笔委派", resolvers.length === 3, `n=${resolvers.length}`);
+  check("② 三次交卷三笔委派（+1 笔 explore）", resolvers.length === 4, `n=${resolvers.length}`);
 
   // 被中止的第二笔「正常 resolve」成 infra（真实 dsh driver 的 aborted 路径）
-  resolvers[1]({ check_index: 0, step_id: "propose", ts: new Date().toISOString(), status: "infra", reason: "验证已中止" });
+  resolvers[2]({ check_index: 0, step_id: "propose", ts: new Date().toISOString(), status: "infra", reason: "验证已中止" });
   await sleep();
   let st = e.readState(iid);
   check("③ 迟到 infra 被丢弃（未暂停、未落判定）", !st.paused && st.verdicts.length === 0, JSON.stringify({ p: st.paused, v: st.verdicts.map((x) => x.status) }));
@@ -77,14 +84,14 @@ console.log("V1 迟到判定（run 已被取代）：必须丢弃，不得产生
   check("③ 未发出假 check_infra 告警", !notes.some((t) => t.includes("验证未跑成")), notes.at(-1)?.slice(0, 40));
 
   // 第三笔（当轮有效）返回 passed
-  resolvers[2]({ check_index: 0, step_id: "propose", ts: new Date().toISOString(), status: "passed", reason: "最终版通过" });
+  resolvers[3]({ check_index: 0, step_id: "propose", ts: new Date().toISOString(), status: "passed", reason: "最终版通过" });
   await sleep();
   st = e.readState(iid);
   check("④ 有效判定正常落地且门打开", !st.paused && st.verdicts.length === 1 && st.verdicts[0].status === "passed",
     JSON.stringify({ p: st.paused, v: st.verdicts.map((x) => x.status) }));
   const c = e.continueInstance(sid);
   st = e.readState(iid);
-  check("⑤ continue 正常放行（不再退化为「恢复暂停」）", c.ok && st.current_step === "specs", `ok=${c.ok} step=${st.current_step}`);
+  check("⑤ continue 正常放行（不再退化为「恢复暂停」）", c.ok && st.current_step === "implement", `ok=${c.ok} step=${st.current_step}`);
   clean(ws);
 }
 

@@ -367,14 +367,11 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     for (const p of [d.root, d.instancesDir, d.workflowsDir, d.reportsDir, d.artifactsDir]) {
       try { fs.mkdirSync(p, { recursive: true }); } catch {}
     }
-    // 内置工作流落盘为可编辑资产（已存在则不覆盖——用户改动优先）
-    for (const name of BUILTIN_WORKFLOWS) {
-      const dest = path.join(d.workflowsDir, `${name}.yaml`);
-      if (fs.existsSync(dest)) continue;
-      const src = builtinWorkflowPath(name);
-      if (!src) continue;
-      try { fs.copyFileSync(src, dest); } catch {}
-    }
+    // 内置工作流**有意不落盘**（对齐 opencode/claude 的 ensureProjectWorkflows）：
+    // loadWorkflow 会回落到插件目录，所以内置始终解析到**随插件发布的最新版本**。
+    // 播种副本会遮蔽插件目录、并在插件升级后变成陈旧副本——实测踩过：工作区里那份
+    // 7 步 spec 副本把新版 4 步内置整个挡住了，改了内置却"没生效"。
+    // 用户要定制，就在本目录放同名文件（遮蔽是有意的，也是唯一的定制入口）。
   }
 
   function builtinWorkflowPath(name: string): string | undefined {

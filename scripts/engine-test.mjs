@@ -112,21 +112,30 @@ const S = () => `session-${++n}`;
   check("达 2 次上限 → 暂停 max_failures", st.paused && st.pause_reason === "max_failures" && st.fail_count === 2, JSON.stringify({ p: st.pause_reason, f: st.fail_count }));
 }
 
-// ── 5) spec 审查门：pass 停在门，continue 才推进 ─────────────────────────────
+// ── 5) spec 审查门：pass 停在门，continue 才推进（4 步版：门在 propose）──────
 {
   const s = S();
   const { r, id } = start("spec", "做一个用户登录模块", s);
-  check("spec 启动且首步 propose", r.ok && engine.readState(id).current_step === "propose", r.text.slice(0, 100));
+  check("spec 启动且首步 explore", r.ok && engine.readState(id).current_step === "explore", r.text.slice(0, 100));
+  check("spec 是 4 步（explore→propose→implement→archive）", r.text.includes("共 4 步"), r.text.slice(0, 120));
   deliveries.length = 0;
+  // explore 不是门 → 通过后应自动推进到 propose
   scripted.push({ status: "passed", reason: "proposal.md 完备" });
-  submit(s, "proposal 写好了。");
+  submit(s, "proposal 草稿写好了。");
   await settle();
   let st = engine.readState(id);
-  check("pass 后停在审查门（不推进）", st.active && st.current_step === "propose" && st.verdicts.length === 1, `step=${st.current_step}`);
+  check("explore 通过 → 自动推进到 propose", st.active && st.current_step === "propose", `step=${st.current_step}`);
+  // propose 是门 → 通过后停在门，不推进
+  deliveries.length = 0;
+  scripted.push({ status: "passed", reason: "tasks.md 可执行" });
+  submit(s, "提案定稿 + 任务拆解完成。");
+  await settle();
+  st = engine.readState(id);
+  check("propose 通过后停在审查门（不推进）", st.active && st.current_step === "propose" && st.verdicts.length === 1, `step=${st.current_step}`);
   check("门提示 continue", deliveries.some((t) => t.includes("审查门")), deliveries.at(-1)?.slice(0, 60));
   const c = engine.continueInstance(s);
   const after = engine.readState(id);
-  check("continue 放行 → 推进到 specs", c.ok && after.current_step === "specs", `step=${after.current_step}`);
+  check("continue 放行 → 推进到 implement", c.ok && after.current_step === "implement", `step=${after.current_step}`);
 }
 
 // ── 6) continue fail-closed ──────────────────────────────────────────────────
@@ -169,7 +178,9 @@ const S = () => `session-${++n}`;
   const id = newestId();
   check("实例目录落在指定工作区", engine.instanceDir(id).startsWith(path.join(ws, ".dsh", "ralph-flow", "instances")), engine.instanceDir(id));
   check("索引可发现（listInstances 可见）", engine.listInstances().some((i) => i.id === id));
-  check("内置工作流已复制到该工作区", fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "workflows", "loop.yaml")));
+  check("内置工作流**不**播种到工作区（对齐 opencode/claude，避免陈旧副本遮蔽内置）",
+    !fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "workflows", "loop.yaml")));
+  check("但内置仍可加载（回落插件目录，始终取最新发布版）", !!engine.loadWorkflow("loop").def);
   // 完整一轮 + 报告归档位置跟随工作区
   scripted.push({ status: "passed", reason: "报告位置验证" });
   submit(s, "完成。");
