@@ -47,9 +47,11 @@
 5. `try { fs.rmSync(instanceDir(instId), { recursive: true, force: true }) } catch (e) { log("warn", ...) }`。
 6. `try { fs.rmdirSync(artifactsDir) } catch {}`——**非递归**；非空即保留。
 
-返回报告路径。调用点：`complete()`（`engine.ts:983`）与 `cancelInstance()`（`engine.ts:1366`）把现有 `archiveReport(...)` 换成 `destroyInstance(...)`，并**删掉紧随其前的 `writeState`**——报告是用内存里的 `state` 渲染的，落盘再删纯属浪费。
+返回报告路径。调用点：`complete()` 与 `cancelInstance()` 里现有的两处 `archiveReport(instId, state, wf, "done" | "cancelled")` 换成 `destroyInstance(...)`，并**删掉紧随其前的 `writeState`**——报告是用内存里的 `state` 渲染的，落盘再删纯属浪费。
 
-**迟到的验证回调已被现有护栏挡住**：`launchVerification` 落判定前会 `readState(instId)`，实例目录没了即 `fresh === null` → 记 `verdict_discarded/instance_state_missing` 后 `return`，不写盘（`engine.ts:872-884`）。**不要动这条护栏**，它是本改造安全性的前提。
+> **引用约定**：本任务书对**本仓库**只给符号名（函数/字段），不给行号——行号会被其它改动冲掉。仅「附：opencode 依据」表给行号，那是外部仓库、稳定。
+
+**迟到的验证回调已被现有护栏挡住**：`launchVerification` 落判定前会 `readState(instId)`，实例目录没了即 `fresh === null` → 记 `verdict_discarded/instance_state_missing` 后 `return`，不写盘（在 `launchVerification` 内、`ownsRun` 判据那一段）。**不要动这条护栏**，它是本改造安全性的前提。
 
 ### 2. 报告归档失败时**不**销毁
 
