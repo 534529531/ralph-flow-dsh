@@ -29,7 +29,7 @@ provide("tools", {
 provide("commands", { register() {} });
 provide("subagents", {
   list() { return ["spawn"]; },
-  getProvider() { return { capabilities: { outputSchema: false, toolFilter: true } }; },
+  getProvider() { return { capabilities: { outputSchema: false, toolFilter: true, persona: true }, inheritsParentContext: false }; },
   start() { throw new Error("stub: no real subagent in smoke"); },
 });
 provide("agents", { get() { return undefined; } });

@@ -7,16 +7,17 @@
  * 空闲看门狗，默认 5min，收到 chunk 即重新计时）。宿主在迭代（更完善的取消/看门狗），
  * 跟随它才能吃到迭代红利；自造超时反而会与其契约脱节。
  *
- * 本文件断言「我们与原生契约一致」的三件事：
+ * 本文件断言「我们与原生契约一致」的四件事：
  *   1. 委派只传 dsh 要求的取消句柄（signal），不注入自造超时；
  *   2. 取消（cancel/实例结束）能真正中止在飞验证者；
- *   3. 验证者结果原样交给判定解析（structured 优先，文本兜底，fail-closed）。
+ *   3. 验证者结果原样交给判定解析（structured 优先，文本兜底，fail-closed）；
+ *   4. 后端**按能力**选择（全新上下文 + persona/toolFilter），与名字无关，绝不落到 `fork`。
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createEngine } from "../lib/engine.js";
-import { runVerifier, parseVerdict } from "../lib/verify.js";
+import { runVerifier, parseVerdict, VERIFIER_PERSONA } from "../lib/verify.js";
 
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
 // 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
@@ -35,7 +36,7 @@ console.log("D1 委派请求只带 dsh 契约字段，不注入自造超时");
   const ctx = {
     subagents: {
       list: () => ["spawn"],
-      getProvider: () => ({ capabilities: { outputSchema: true } }),
+      getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
       start: async (_n, req) => {
         captured = req;
         return { id: "child", result: Promise.resolve({ output: [], structured: { passed: true, reason: "ok" }, stopReason: "completed" }) };
@@ -129,15 +130,16 @@ console.log("\nD3 判定解析：structured 优先，文本兜底，解析不出
   check("中止/无输出 → infra", v4.status === "infra", v4.status);
 }
 
-console.log("\nD4 验证者判定通道：原生 structured 优先，文本标记仅在降级时要求");
+console.log("\nD4 验证者判定通道：原生 structured 优先，文本标记仅在降级时要求；角色说明只经 persona 传入");
 {
   let captured = null;
-  const mk = (caps) => ({
+  const ALL = { outputSchema: true, persona: true, toolFilter: true };
+  const mk = (caps = ALL) => ({
     subagents: {
       list: () => ["spawn"],
-      getProvider: () => ({ capabilities: caps }),
-      start: async (_n, req) => {
-        captured = req;
+      getProvider: () => ({ capabilities: caps, inheritsParentContext: false }),
+      start: async (name, req) => {
+        captured = { name, req };
         return { id: "c", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) };
       },
     },
@@ -145,18 +147,102 @@ console.log("\nD4 验证者判定通道：原生 structured 优先，文本标�
     agents: { get: () => undefined },
   });
   const wf = { name: "loop", steps: [{ id: "s", check: "核对 X" }], manual_step: [], warnings: [] };
-  const req = () => ({ instId: "t", step: wf.steps[0], workflow: wf, userTask: "u", submitSummary: "", checkIndex: 0, artifactsRelDir: ".dsh/ralph-flow/artifacts/t", signal: new AbortController().signal });
+  const req = () => ({ instId: "t", step: wf.steps[0], workflow: wf, userTask: "u", checkIndex: 0, artifactsRelDir: ".dsh/ralph-flow/artifacts/t", signal: new AbortController().signal });
 
-  await runVerifier({ ctx: mk({ outputSchema: true }) }, req());
-  const p1 = captured.prompt[0].text;
-  check("structured 可用 → 传 outputSchema", !!captured.outputSchema);
+  await runVerifier({ ctx: mk({ outputSchema: true, persona: true, toolFilter: true }) }, req());
+  const p1 = captured.req.prompt[0].text;
+  check("structured 可用 → 传 outputSchema", !!captured.req.outputSchema);
   check("structured 可用 → 要求 structured_output 工具", /structured_output/.test(p1));
   check("structured 可用 → **不再**要求 <promise-check> 文本标记", !/promise-check/.test(p1));
 
   await runVerifier({ ctx: mk({ outputSchema: false, toolFilter: true, persona: true, agentOptions: true, depthLimit: true }) }, req());
-  const p2 = captured.prompt[0].text;
-  check("structured 不可用 → 不传 outputSchema", !captured.outputSchema);
+  const p2 = captured.req.prompt[0].text;
+  check("structured 不可用 → 不传 outputSchema", !captured.req.outputSchema);
   check("structured 不可用 → 降级要求文本标记", /promise-check/.test(p2));
+
+  // 角色说明只有一份、且经 persona 通道传入；任务消息正文只留事实
+  await runVerifier({ ctx: mk() }, req());
+  const p3 = captured.req.prompt[0].text;
+  check("persona 通道承载验证者角色说明（单一来源）", captured.req.persona === VERIFIER_PERSONA, String(captured.req.persona).slice(0, 40));
+  check("任务消息正文不再拼入角色说明（不重复表达）", !p3.includes(VERIFIER_PERSONA) && !p3.includes("你是严格、独立、对抗性的检查者"), p3.slice(0, 100));
+  check("步骤 check 仍完整到达验证者", p3.includes("## 检查依据") && p3.includes("核对 X"), p3.slice(0, 200));
+  check("验证请求不含执行者交卷摘要", !("submitSummary" in captured.req) && !/执行者交卷摘要/.test(p3), JSON.stringify(Object.keys(captured.req)));
+  // 模型覆盖经 DSH 原生 agentOptions 传给验证者；没有覆盖时不传（宿主继承父级 = 发起会话当前模型）
+  await runVerifier({ ctx: mk() }, { ...req(), model: { providerID: "openai", modelID: "gpt-5" } });
+  check("模型覆盖经原生 agentOptions 传递（不由提示词要求模型自切）", captured.req.agentOptions?.provider === "openai" && captured.req.agentOptions?.model === "gpt-5", JSON.stringify(captured.req.agentOptions));
+  await runVerifier({ ctx: mk() }, req());
+  check("没有模型覆盖 → 不传 agentOptions（宿主 resolveChildAgentOptions 继承父级）", !("agentOptions" in captured.req), JSON.stringify(Object.keys(captured.req)));
+}
+
+console.log("\nD5 后端选择按能力判定、与名字无关，且绝不落到继承上下文的后端");
+{
+  const wf = { name: "loop", steps: [{ id: "s", check: "核对 X" }], manual_step: [], warnings: [] };
+  const req = () => ({ instId: "t", step: wf.steps[0], workflow: wf, userTask: "u", checkIndex: 0, artifactsRelDir: ".dsh/ralph-flow/artifacts/t", signal: new AbortController().signal });
+  const ALL = { outputSchema: true, persona: true, toolFilter: true };
+  /** providers: { 名字: provider 描述 } —— list() 返回其键；start 计数用于断言「先委派后判定」不会漏网 */
+  const mk = (providers) => {
+    let startCalls = 0;
+    const started = [];
+    const ctx = {
+      subagents: {
+        list: () => Object.keys(providers),
+        getProvider: (n) => providers[n],
+        start: async (n) => {
+          startCalls++;
+          started.push(n);
+          return { id: "c", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) };
+        },
+      },
+      tools: { schemas: () => [{ name: "read" }] },
+      agents: { get: () => undefined },
+    };
+    return { ctx, startCalls: () => startCalls, started };
+  };
+
+  // ① 只有继承上下文的后端 → infra，且 start **一次都没被调用**
+  {
+    const m = mk({ fork: { capabilities: ALL, inheritsParentContext: true } });
+    const v = await runVerifier({ ctx: m.ctx }, req());
+    check("list=[fork]（inheritsParentContext=true）→ infra", v.status === "infra", JSON.stringify(v));
+    check("list=[fork] → start 一次都没被调用（不是先委派后判定）", m.startCalls() === 0, `startCalls=${m.startCalls()}`);
+    check("infra 理由写明「本部署没有全新上下文的委派后端」", /本部署没有全新上下文的委派后端/.test(v.reason), v.reason);
+  }
+  // ② 判定与名字无关：全新上下文的后端叫什么都行
+  {
+    const m = mk({ fork: { capabilities: ALL, inheritsParentContext: true }, fresh: { capabilities: ALL, inheritsParentContext: false } });
+    const v = await runVerifier({ ctx: m.ctx }, req());
+    check("list=[fork,fresh] → 选中 fresh（跳过继承上下文的 fork）", v.status === "passed" && m.started[0] === "fresh", JSON.stringify({ s: v.status, n: m.started }));
+  }
+  {
+    const m = mk({ fresh: { capabilities: ALL, inheritsParentContext: false } });
+    const v = await runVerifier({ ctx: m.ctx }, req());
+    check("list=[fresh]（不叫 spawn）→ 同样选中 fresh", v.status === "passed" && m.started[0] === "fresh", JSON.stringify({ s: v.status, n: m.started }));
+  }
+  // ③ 全新上下文但缺能力 → infra，理由点名缺哪个，且不调用 start
+  {
+    const m = mk({ fork: { capabilities: ALL, inheritsParentContext: true }, spawn: { capabilities: { outputSchema: true, toolFilter: true }, inheritsParentContext: false } });
+    const v = await runVerifier({ ctx: m.ctx }, req());
+    check("全新后端缺 persona → infra", v.status === "infra", JSON.stringify(v));
+    check("理由点名缺失的能力 persona", /persona/.test(v.reason), v.reason);
+    check("缺能力时不调用 start（不等抛 UNSUPPORTED_CAPABILITY）", m.startCalls() === 0, `startCalls=${m.startCalls()}`);
+  }
+  {
+    const m = mk({ spawn: { capabilities: { outputSchema: true, persona: true }, inheritsParentContext: false } });
+    const v = await runVerifier({ ctx: m.ctx }, req());
+    check("全新后端缺 toolFilter → infra 且理由点名 toolFilter", v.status === "infra" && /toolFilter/.test(v.reason), JSON.stringify(v));
+  }
+  // ④ 现网 list()=["spawn","fork"] 只作正向用例（真实部署里 spawn 永远在，构造不出失败分支）
+  {
+    const m = mk({ spawn: { capabilities: ALL, inheritsParentContext: false }, fork: { capabilities: ALL, inheritsParentContext: true } });
+    const v = await runVerifier({ ctx: m.ctx }, req());
+    check("现网 list=[spawn,fork] → 正向选中 spawn", v.status === "passed" && m.started[0] === "spawn", JSON.stringify({ s: v.status, n: m.started }));
+  }
+  // ⑤ `agent` 字段已从公开契约删除：写进 YAML 也不再影响后端选择
+  {
+    const m = mk({ fork: { capabilities: ALL, inheritsParentContext: true }, fresh: { capabilities: ALL, inheritsParentContext: false } });
+    const v = await runVerifier({ ctx: m.ctx }, { ...req(), workflow: { ...wf, adversarial_check: { agent: "fork" } } });
+    check("adversarial_check.agent 不再影响后端选择（仍选 fresh，绝不落到 fork）", v.status === "passed" && m.started[0] === "fresh", JSON.stringify({ s: v.status, n: m.started }));
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

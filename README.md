@@ -57,8 +57,9 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 
 - **裁判权定理**：判定只可能产生于独立会话（T1）；推进只由机械程序决定（T2）。
 - 状态模型：无相位字段，全部阶段由原始事实派生（交卷了吗 / 判定落地了吗 / 有在飞委派吗 / 暂停了吗）。
-- 验证者：全新独立会话，只见任务 + 检查依据 + 交卷摘要 +（可读的）产出目录，只读工具白名单，结构化判定 + 文本兜底，fail-closed。
-- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；引擎验证测试见 `scripts/engine-test.mjs`（66 项，含布局/产出目录/加载期硬校验/doctor lint/报告统计/索引 GC/CREATE_GUIDE 一致性）。
+- **验证者**：全新独立会话（按能力自动选择全新上下文的后端，与名称无关），只见任务 + 检查依据 +（可读的）产出目录——**看不到执行者的交卷摘要**；只读工具白名单，结构化判定 + 文本兜底，fail-closed。
+- **验证者配置（YAML `adversarial_check`）**：**只接受 `model` 一个字段**（可选，`"provider/model"` 或 `{providerID, modelID}`），步骤级 `check_model` 可覆盖它；都不写就沿用发起会话当前模型。验证者的身份与职责是插件内部定义，工作流不再能配置它。写了其它字段（或 `adversarial_check` 不是对象）会在加载期告警并忽略，`/ralphflow-doctor` 同样报出。
+- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；引擎验证测试见 `scripts/engine-test.mjs`（126 项，含布局/产出目录/加载期硬校验/doctor lint/报告统计/索引 GC/CREATE_GUIDE 一致性）。
 
 ## v0 范围（诚实声明）
 

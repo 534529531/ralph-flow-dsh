@@ -74,6 +74,16 @@ function describeModelRef(v: ModelRef): string {
   return `对象 {providerID: ${JSON.stringify(v.providerID)}, modelID: ${JSON.stringify(v.modelID)}}`;
 }
 
+/** YAML 值的人类可读类型（用于「必须是对象」这类告警，把写错的东西原样说清） */
+function describeValueKind(v: unknown): string {
+  if (Array.isArray(v)) return `列表 [${v.length} 项]`;
+  if (v === null) return "空值 null";
+  if (typeof v === "string") return `字符串 ${JSON.stringify(v)}`;
+  if (typeof v === "boolean") return `布尔值 ${v}`;
+  if (typeof v === "number") return `数字 ${v}`;
+  return typeof v;
+}
+
 export interface StepDef {
   id: string;
   desc?: string;
@@ -92,17 +102,22 @@ export interface StepDef {
   check_model?: ModelRef;
 }
 
+/**
+ * `adversarial_check` 是**可选**对象，**唯一允许的字段是 `model`**。
+ *
+ * 验证者身份与职责是 Ralphflow 的**内部定义**（`verify.ts` 的 `VERIFIER_PERSONA`），
+ * 不是工作流资产的一项配置：同一个职责不该在「Agent 名称 / 工作流提示词 / 步骤检查依据」
+ * 三处重复表达。因此 `agent` / `system_prompt` / `timeout_ms` 已从公开契约中删除——
+ * 它们出现在 YAML 里时 **加载期与 doctor 都告警并忽略**（warn+ignore，与未知键、
+ * `check_voting` 同一条口径，见 design §8 Q13），绝不拒收、不静默、不改作别的含义。
+ */
 export interface AdversarialConfig {
-  model?: ModelRef;
-  system_prompt?: string;
   /**
-   * 本版本未支持（方言容错：警告忽略）。
-   * 验证超时交给宿主 dsh 的原生看门狗，ralphflow 不自设总时长上界。
-   * 字段保留仅为兼容旧 YAML 的读取与告警。
+   * 可选：验证模型。不写 → 验证者沿用**发起会话的当前模型**（宿主
+   * `resolveChildAgentOptions` 继承父级 provider/model）；写了 → 用该模型。
+   * 两形态：`"provider/model"` 字符串或 `{providerID, modelID}` 对象。
    */
-  timeout_ms?: number;
-  /** 验证者 provider 名；缺省用部署里可用的第一个 */
-  agent?: string;
+  model?: ModelRef;
 }
 
 export interface WorkflowDef {
@@ -220,7 +235,8 @@ export interface VerifyRequest {
    * 已归一化的验证模型（优先级：步骤 `check_model` > 全局 `adversarial_check.model`）。
    * 归一化在**引擎**里做（`resolveCheckModel`），验证者只消费结果——与 opencode 的
    * `resolveVerifierModel` 同构，保证三端同一份资产解析出同一个模型。
-   * `undefined` = 用 provider/部署默认。
+   * `undefined` = **不传 `agentOptions`**，由宿主 `resolveChildAgentOptions` 让子代理
+   * 继承**父级** provider/model——即发起会话的当前模型（不是 provider/部署默认）。
    */
   model?: { providerID: string; modelID: string };
   /**
@@ -315,7 +331,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   const reportsDir = path.join(root, "reports");
   const artifactsDir = path.join(root, ARTIFACTS_DIRNAME);
   // 全局工作流目录仍是 `~/.dsh/ralph-flow/workflows`（插件命名空间在全局与工作区同名）
-  const globalWorkflowsDir = path.join(os.homedir(), ".dsh", RALPH_FLOW_NAME, "workflows");
+  const configuredDshHome = process.env.DSH_HOME;
+  const dshHome = configuredDshHome && path.isAbsolute(configuredDshHome) ? path.resolve(configuredDshHome) : path.join(os.homedir(), ".dsh");
+  const globalWorkflowsDir = path.join(dshHome, RALPH_FLOW_NAME, "workflows");
   /** 实例 → 在飞取消信号（取消/暂停时中止验证者，不白烧 token） */
   const aborts = new Map<string, AbortController>();
 
@@ -500,7 +518,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           problems.push(`步骤 \`${s.id}\` 的 \`check_model\` 类型非法（应为 "provider/model" 字符串或 {providerID, modelID} 对象）。`);
         } else if (!resolveCheckModel(parsed)) {
           // 形态合法但解析不出 provider（裸模型名 / 对象缺字段）→ 告警并回退，与 opencode 一致
-          warnings.push(`步骤 \`${s.id}\` 的 \`check_model\` 是${describeModelRef(parsed)}，解析不出 provider/model，该配置被忽略并回退到默认验证模型（需要 "provider/model" 或 {providerID, modelID} 两个非空字符串）。`);
+          warnings.push(`步骤 \`${s.id}\` 的 \`check_model\` 是${describeModelRef(parsed)}，解析不出 provider/model，该配置被忽略并回退（优先全局 \`adversarial_check.model\`，未设则用发起会话当前模型）（需要 "provider/model" 或 {providerID, modelID} 两个非空字符串）。`);
         }
       }
       steps.push({
@@ -550,30 +568,47 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
     // §1.2 doctor 覆盖的 lint：引擎只在运行时（或永远不）暴露的问题，加载成功后补告警。
     warnings.push(...lintWorkflow(steps, new Set(manual)));
-    // 方言容错（design §8 Q13 定案）：timeout_ms 本版本未支持 → 警告忽略，不静默吞掉。
-    // ralphflow 不再自设验证超时，委派生命周期完全交给 dsh 原生能力（见 verify.ts 注释）。
-    if (doc.adversarial_check && typeof doc.adversarial_check === "object"
-      && (doc.adversarial_check as { timeout_ms?: unknown }).timeout_ms !== undefined) {
-      warnings.push("`adversarial_check.timeout_ms` 本版本未支持（验证超时交给宿主 dsh 的原生看门狗），已忽略。");
+    // ── adversarial_check 容错（design §8 Q13 口径：自己不兑现的键一律 warn+ignore）──
+    // 公开契约只允许 `model` 一个字段。其余字段（含已删除的 agent / system_prompt /
+    // timeout_ms）与「整个值不是对象」都在**加载期**告警并忽略：不拒收、不静默、
+    // 不改作别的含义。告警必须在这里出现，不能拖到验证阶段。
+    const acRaw: unknown = doc.adversarial_check;
+    // `undefined` / `null`（YAML 里只写了键名、没写值）= 没写，按缺省处理（与 manual_step 同口径）；
+    // 其余非对象（true / "foo" / [...]）一律告警忽略。
+    const acIsMap = acRaw !== undefined && acRaw !== null && typeof acRaw === "object" && !Array.isArray(acRaw);
+    if (acRaw !== undefined && acRaw !== null && !acIsMap) {
+      warnings.push(`\`adversarial_check\` 必须是对象（当前是${describeValueKind(acRaw)}），已忽略。本版本只支持 \`model\` 一个字段。`);
+    }
+    if (acIsMap) {
+      for (const k of Object.keys(acRaw as Record<string, unknown>)) {
+        if (k === "model") continue;
+        if (k === "agent") {
+          warnings.push("`adversarial_check.agent` 已从公开契约中删除（验证者子代理由 Ralphflow 按能力自动选择），已忽略。");
+        } else if (k === "system_prompt") {
+          warnings.push("`adversarial_check.system_prompt` 已从公开契约中删除（验证者职责是 Ralphflow 的内部定义），已忽略。");
+        } else if (k === "timeout_ms") {
+          warnings.push("`adversarial_check.timeout_ms` 本版本未支持（验证超时交给宿主 dsh 的原生看门狗），已忽略。");
+        } else {
+          warnings.push(`\`adversarial_check.${k}\` 本版本未支持，已忽略。`);
+        }
+      }
     }
     // 全局验证模型（adversarial_check.model）：字符串 "provider/model" 与对象 {providerID, modelID}
-    // 两种形态都支持（对齐 opencode/claude）。解析不出的（裸名 / 对象缺字段）→ 告警并回退默认，
-    // 绝不静默忽略——否则用户以为换了验证模型，实际没换。
-    const globalModel = parseModelRef(doc.adversarial_check?.model);
-    if (globalModel !== undefined && !resolveCheckModel(globalModel)) {
-      warnings.push(`\`adversarial_check.model\` 是${describeModelRef(globalModel)}，解析不出 provider/model，该配置被忽略并回退到默认验证模型（需要 "provider/model" 或 {providerID, modelID} 两个非空字符串）。`);
+    // 两种形态都支持（对齐 opencode/claude）。解析不出的（裸名 / 对象缺字段 / 类型非法）→
+    // 告警并回退到发起会话当前模型，绝不静默忽略——否则用户以为换了验证模型，实际没换。
+    const acModelRaw = acIsMap ? (acRaw as { model?: unknown }).model : undefined;
+    const globalModel = parseModelRef(acModelRaw);
+    if (acModelRaw !== undefined && acModelRaw !== null && globalModel === undefined) {
+      warnings.push(`\`adversarial_check.model\` 类型非法（当前是${describeValueKind(acModelRaw)}），已忽略并回退到发起会话当前模型（需要 "provider/model" 字符串或 {providerID, modelID} 对象）。`);
+    } else if (globalModel !== undefined && !resolveCheckModel(globalModel)) {
+      warnings.push(`\`adversarial_check.model\` 是${describeModelRef(globalModel)}，解析不出 provider/model，该配置被忽略并回退到发起会话当前模型（需要 "provider/model" 或 {providerID, modelID} 两个非空字符串）。`);
     }
     const def: WorkflowDef = {
       name,
       description: typeof doc.description === "string" ? doc.description : "",
       manual_step: manual,
-      adversarial_check: doc.adversarial_check && typeof doc.adversarial_check === "object"
-        ? {
-            model: globalModel,
-            system_prompt: typeof doc.adversarial_check.system_prompt === "string" ? doc.adversarial_check.system_prompt : undefined,
-            agent: typeof doc.adversarial_check.agent === "string" ? doc.adversarial_check.agent : undefined,
-          }
-        : undefined,
+      // 只保留公开契约里的 `model`；其余字段已在上面告警忽略，绝不带进定义。
+      adversarial_check: acIsMap ? { model: globalModel } : undefined,
       steps,
       warnings,
     };
@@ -815,7 +850,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         instId, step, workflow: wf, userTask: state.user_task,
         ownerSession: state.owner_session, checkIndex, artifactsRelDir: artifactsRelDirOf(instId),
         // 验证模型优先级链（对齐 opencode resolveVerifierModel）：
-        //   步骤 check_model  >  全局 adversarial_check.model  >  provider/部署默认
+        //   步骤 check_model  >  全局 adversarial_check.model  >  发起会话当前模型
+        //（没有覆盖时不传 agentOptions，由宿主 resolveChildAgentOptions 继承父级）
         // 归一化在此一次性完成，verify.ts 只消费结果。
         model: resolveCheckModel(step.check_model ?? wf.adversarial_check?.model),
         signal: controller.signal,
@@ -1165,10 +1201,19 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return { ok: true, text: `🔍 交卷已受理，独立验证者（独立会话）正在取证判定。等它返回即可，不要重复交卷。` };
   }
 
-  // ─── 交卷上下文捕获（供验证者 prompt 使用；不落盘、不触发任何状态迁移）──────
+  // ─── 交卷上下文捕获（**只**服务审查门重交去重；不落盘、不触发任何状态迁移）──────
   /**
-   * 记下会话最近一条助手文本，供验证者 prompt 的「交卷摘要」用。
-   * 这是**纯上下文捕获**，不再承担「检测交卷」的职责（那已由工具调用承担）。
+   * 记下会话最近一条助手文本，作为 `ralphflow_submit` 未带 summary 时的兜底文本。
+   *
+   * **唯一用途**：审查门「同一份内容重复交卷 → 不重复烧验证」的去重判据
+   * （见 onSubmit 里的 `state.last_submit_summary` 比较）。
+   *
+   * **T1 硬规则**：这段文本**绝不进入验证者视野**。`VerifyRequest` 里没有
+   * `submitSummary` 字段，验证者 prompt 也不注入任何执行者自述（opencode 与
+   * claude 版同样从不传入，并明令「不要依赖任何外部提供的实现总结」）。
+   * 将来若想给它找新用途，先确认不违反 T1。
+   *
+   * 这是**纯上下文捕获**，不承担「检测交卷」的职责（那由 `ralphflow_submit` 工具承担）。
    * 只在内存里保留每个会话最后一条，避免无界增长。
    */
   const lastText = new Map<string, string>();

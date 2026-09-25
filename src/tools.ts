@@ -124,7 +124,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
       name: "ralphflow_submit",
       description: "【DO 阶段交卷】本步实际工作完成后调用本工具交卷；独立验证者随后取证判定。不交卷则验证不会开始。",
       params: {
-        summary: { type: "string", description: "可选：简述本步做了什么（供验证者参考；验证者仍会独立取证，不会采信自我评价）。" },
+        summary: { type: "string", description: "可选：简述本步做了什么。**验证者看不到它**（T1：验证请求不含执行者自述），它只留在实例状态里；验证者只独立取证。" },
       },
       handler: submitHandler,
       concludeTurn: true,

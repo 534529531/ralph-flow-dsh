@@ -34,13 +34,13 @@ manual_step:            # 可选：对抗验证通过后停下等人放行的步
   - design              # 列表写法；也接受逗号字符串 "design,review"
                         # 引用不存在的步骤 = 硬错误（门会静默失效，绝不放过）
 
-adversarial_check:      # 可选：独立验证者配置
+adversarial_check:      # 可选：独立验证者配置（**只允许 model 一个字段**）
   model: deepseek/deepseek-chat   # 可选：验证模型。两种写法都行：
                         #   "provider/model" 字符串，或对象 { providerID, modelID }（两者都要填）
-                        #   裸模型名（如 sonnet）解析不出 provider → 告警并回退默认
-  # agent: spawn        # 可选：验证者子代理名（默认用部署可用者）
-  # system_prompt: ...  # 可选：给验证者的 system 提示
-  # 注：timeout_ms 本版本未支持（警告忽略）——验证超时交给宿主 dsh 的原生看门狗
+                        #   裸模型名（如 sonnet）解析不出 provider → 告警并回退发起会话当前模型
+                        # 不写则验证者沿用发起会话当前模型；别的字段一律告警忽略，不生效
+                        # 验证者身份/职责是 Ralphflow 内部定义，不需要也**不能**在 YAML 里配置
+                        # 验证超时不在这里设置（交给宿主 dsh 的原生看门狗）
 
 steps:                  # 必填，非空；从第一个元素开始执行
   - id: step-id         # 必填，唯一
@@ -59,11 +59,11 @@ steps:                  # 必填，非空；从第一个元素开始执行
                         # 仅单 check 场景生效：与 check_voting 同写、或本步没有 check = 硬错误
 \`\`\`
 
-**验证模型优先级链**（与 opencode/claude 一致）：步骤 \`check_model\` > 全局 \`adversarial_check.model\` > provider/部署默认。
+**验证模型优先级链**（与 opencode/claude 一致）：步骤 \`check_model\` > 全局 \`adversarial_check.model\` > 发起会话当前模型（都不写时不传模型覆盖，由宿主继承发起会话的 provider/model）。
 
 **硬规则**（违反 → 启动即被拒绝并说人话）：\`do\` 必填且为非空字符串；\`check\` 若出现必须是字符串（\`check: true\` 这类会被拒绝，本意是不检查就删掉该键）；on_pass/on_fail 可省略，但一旦写了必须引用存在的步骤 id（"done" 仅 on_pass 有效）；manual_step 必须引用存在的步骤 id；\`max_fail_count\` 可省略（缺省 3），但一旦写了必须是 ≥1 的整数；\`check_model\` 与 \`check_voting\` 同写、或写了 \`check_model\` 却没有 \`check\`，都是硬错误；steps 非空、id 唯一。
 
-**doctor 告警**（能启动，但会出问题）：不可达步骤（从第一个步骤沿 on_pass/on_fail 走不到）；没有任何可达步骤的 \`on_pass: done\`（工作流永远无法完成）；\`{{...}}\` 模板记号（本版本**不解析任何**模板变量）；非 manual_step 且没有 \`check\` 的步骤；\`model\`/\`check_model\` 解析不出 provider（裸模型名，或对象缺 providerID/modelID）——此时该配置被忽略并回退默认，**不会静默生效**。
+**doctor 告警**（能启动，但会出问题）：不可达步骤（从第一个步骤沿 on_pass/on_fail 走不到）；没有任何可达步骤的 \`on_pass: done\`（工作流永远无法完成）；\`{{...}}\` 模板记号（本版本**不解析任何**模板变量）；非 manual_step 且没有 \`check\` 的步骤；\`model\`/\`check_model\` 解析不出 provider（裸模型名，或对象缺 providerID/modelID）——此时该配置被忽略并回退，**不会静默生效**；\`adversarial_check\` 不是对象、或写了 \`model\` 以外的字段——该字段被忽略（不生效），错误照旧在加载期就报出来，不拖到验证阶段。
 
 **产出目录**：每个实例有隔离的产出目录 \`<workspace>/.dsh/ralph-flow/artifacts/<实例ID>/\`，实例启动时自动建好、完成后保留。DO 与 CHECK 提示词都会自动带上「产出目录」一行，所以在 \`do\`/\`output\` 里**写裸文件名**即可（例如 \`summary.md\`），不用写路径、也不需要任何模板记号。
 

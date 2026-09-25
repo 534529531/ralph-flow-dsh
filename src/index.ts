@@ -113,7 +113,8 @@ export function apply(ctx: Context): void {
 
   try { engine.ensureLayout(); } catch (e) { log("warn", "ensure_layout_failed", { error: String(e) }); }
 
-  // 全局会话事件流 → 引擎：**只做上下文捕获**（给验证者 prompt 用的最近助手文本）。
+  // 全局会话事件流 → 引擎：**只做上下文捕获**（最近一条助手文本，仅作审查门重交去重的
+  // 兜底文本；**不进验证者视野**，T1 说明见 engine.ts 的 lastText 注释）。
   // 交卷检测已不在这里 —— 它由模型调用 ralphflow_submit 工具承担（dsh 原生方式）。
   try {
     const on = (ctx as unknown as { on?: (name: string, listener: (...args: unknown[]) => void) => (() => void) | void }).on;

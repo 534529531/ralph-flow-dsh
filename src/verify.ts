@@ -3,28 +3,36 @@
  *
  * 规则：
  *  - 委派只从引擎发出（主会话没有任何路径影响这里的 prompt 构造或判定解析）。
- *  - 验证者是全新独立会话：只见任务 + 检查依据 + 交卷摘要 +（可读的工作区），
- *    永远看不到主会话对话历史。
+ *  - 验证者是全新独立会话：只见任务 + 检查依据 +（可读的工作区），
+ *    永远看不到主会话对话历史，也**看不到执行者的交卷摘要**（T1 硬规则）。
+ *  - 验证者身份是 Ralphflow 的**内部定义**（`VERIFIER_PERSONA`，单一来源），经 DSH 原生
+ *    子代理 `persona` 通道传入；后端**按能力**选择（全新上下文 + persona/toolFilter），
+ *    工作流不再有任何入口影响它。
  *  - 判定 fail-closed：结构化输出优先，文本标签兜底，两者都解析不出 → infra（不计失败）。
  *  - 只有读工具（含 bash 供取证跑测试）；bash 内的间接写是与其它版本对齐的有意接受的弱点。
  */
 import type { Context } from "@deepseek-ai/cordis";
-import type { AdversarialConfig, StepDef, WorkflowDef, Verdict, VerifyRequest } from "./engine.js";
+import type { StepDef, WorkflowDef, Verdict, VerifyRequest } from "./engine.js";
 
 /**
- * 验证者 system prompt。
+ * 验证者角色说明 —— Ralphflow 的**内部定义，单一来源**。
  *
- * 判定通道**首选 dsh 原生结构化输出**（`outputSchema` → 子代理调用 structured_output 工具，
- * 引擎读 `result.structured`）。文本标签只是 provider 不支持 `outputSchema` 时的降级兜底，
- * 因此这里**不写死**标签格式 —— 由 buildCheckPrompt 按 wantStructured 决定是否要求标签。
+ * 它不再是被拼进任务消息正文的「system prompt」，而是通过 DSH 原生的子代理 `persona`
+ * 传入（在子代理 scope 注册 `deployment:persona-prefix` 系统提示段，是角色说明的正确通道）。
+ *
+ * **切分线**：persona 只承载「你是谁、你的纪律」（独立性、只读取证、不采信自述、只读不改
+ * 文件）；本次任务的事实与**按 `wantStructured` 分支的判定提交方式**（`structured_output`
+ * 工具 / `<promise-check>` 文本标记）由 `buildCheckPrompt` 承载 —— 后者是逐请求状态，
+ * 搬进 persona 会让降级路径失效。
  */
-const DEFAULT_ADVERSARIAL_SYSTEM_PROMPT = `你是一个严格、独立、对抗性的检查者。你的职责是**取证后判定**：根据给定的检查依据，判断执行者声称完成的工作是否真的完成。
+export const VERIFIER_PERSONA = `你是一个严格、独立、对抗性的检查者。你的职责是按给定的检查依据**取证后判定**：执行者声称完成的工作是否真的完成。
 
 纪律：
-- 你与执行者完全隔离：你只看到任务、检查依据和执行者交卷时的摘要。不要相信摘要里的自我评价，一切以你亲自取证为准。
+- 你与执行者完全隔离：你看不到它的对话历史，也看不到它的自我辩护；你只有任务与检查依据。
 - 用工具取证：读文件、跑命令、搜索代码。没有证据的结论无效。
 - 你是只读检查者：不要修改任何文件，不要写任何东西。
-- 判定：给出你的取证过程与结论，并按「检查依据」末尾说明的方式提交判定结果。`;
+- 只看结果：不采信任何执行者自述或实现总结。
+- 按「检查依据」末尾说明的方式提交判定结果。`;
 
 const VERIFIER_TOOL_ALLOW = ["read", "grep", "glob", "bash", "read_image"] as const;
 
@@ -32,14 +40,70 @@ export interface VerifyDeps {
   ctx: Context;
 }
 
+interface ProviderCapabilities {
+  outputSchema?: boolean;
+  toolFilter?: boolean;
+  persona?: boolean;
+}
+
+interface ProviderInfo {
+  capabilities?: ProviderCapabilities;
+  /** provider 原生字段：子代理是否继承父会话的已完成上下文（spawn=false、fork=true） */
+  inheritsParentContext?: boolean;
+}
+
 interface SubagentsFace {
   list(): string[];
-  getProvider(n: string): { capabilities?: { outputSchema?: boolean } } | undefined;
+  getProvider(n: string): ProviderInfo | undefined;
   start(n: string, r: unknown): Promise<unknown>;
 }
 
 function subagents(ctx: Context): SubagentsFace {
   return (ctx as unknown as { subagents: SubagentsFace }).subagents;
+}
+
+export interface BackendSelection {
+  name?: string;
+  reason?: string;
+}
+
+/**
+ * 选择独立验证者后端 —— **按能力判定，不按名字判定**。
+ *
+ * - 只考虑 `inheritsParentContext === false` 的 provider（全新上下文）。**绝不**回退到
+ *   `true` 的 provider：`fork` 会继承主会话历史，T1 会静默失效。未声明该字段的 provider
+ *   同样不选（无法证明是全新上下文 → fail-closed）。
+ * - 候选里优先 `capabilities.persona && capabilities.toolFilter` 都支持的：这两项是
+ *   「独立 + 有纪律的只读裁判」的前置条件，缺失时 `start()` 本就会抛
+ *   `UNSUPPORTED_CAPABILITY`，所以直接选支持的那个，不等到抛错。
+ * - provider 名可配置（`providerName`），**名字不参与判定**。
+ * - 没有可用后端时返回 `reason`，由调用方转成 infra 判定 —— 绝不生成通过判定。
+ */
+export function selectBackend(ctx: Context): BackendSelection {
+  let list: string[];
+  let providerOf: (n: string) => ProviderInfo | undefined;
+  try {
+    const svc = subagents(ctx);
+    list = svc.list() ?? [];
+    providerOf = (n) => { try { return svc.getProvider(n); } catch { return undefined; } };
+  } catch {
+    return { reason: "本部署没有全新上下文的委派后端（读取 subagents 服务失败），无法委派独立验证者。" };
+  }
+  const fresh = (list ?? []).filter((n) => !!n && providerOf(n)?.inheritsParentContext === false);
+  if (fresh.length === 0) {
+    return { reason: "本部署没有全新上下文的委派后端（没有任何 provider 声明 inheritsParentContext === false），无法保证验证者与执行者会话隔离（T1）。" };
+  }
+  const ready = fresh.find((n) => {
+    const c = providerOf(n)?.capabilities;
+    return c?.persona === true && c?.toolFilter === true;
+  });
+  if (ready) return { name: ready };
+  const missing: string[] = [];
+  if (!fresh.some((n) => providerOf(n)?.capabilities?.persona === true)) missing.push("`persona`");
+  if (!fresh.some((n) => providerOf(n)?.capabilities?.toolFilter === true)) missing.push("`toolFilter`");
+  return {
+    reason: `本部署有全新上下文委派后端（${fresh.map((n) => `\`${n}\``).join("、")}），但缺少 ${missing.join("、")} 能力，无法委派「独立 + 有纪律的只读裁判」验证者。`,
+  };
 }
 
 /** 从部署实际工具集求交集（硬编码名单在工具命名不同的部署上会全灭） */
@@ -50,18 +114,6 @@ function resolveToolAllow(ctx: Context): string[] {
     return VERIFIER_TOOL_ALLOW.filter((n) => names.has(n));
   } catch {
     return [...VERIFIER_TOOL_ALLOW];
-  }
-}
-
-function providerName(ctx: Context, config?: AdversarialConfig): string {
-  if (config?.agent?.trim()) return config.agent.trim();
-  try {
-    const list = subagents(ctx).list();
-    if (list.includes("spawn")) return "spawn";
-    const preferred = list.filter((n) => n && n !== "ralphcheck");
-    return preferred[0] ?? list[0] ?? "";
-  } catch {
-    return "spawn";
   }
 }
 
@@ -162,14 +214,22 @@ function extractText(output: unknown): string {
 /** 委派一个独立验证者并返回判定（T1 的唯一入口，由引擎调用） */
 export async function runVerifier(deps: VerifyDeps, req: VerifyRequest): Promise<Verdict> {
   const ctx = deps.ctx;
-  const name = providerName(ctx, req.workflow.adversarial_check);
-  if (!name) {
-    return { check_index: req.checkIndex, status: "infra", reason: "部署里没有任何可用的 subagent provider，无法委派验证者。", step_id: req.step.id, ts: new Date().toISOString() };
+  // 后端选择属于 Ralphflow 内部：按能力判定，工作流没有任何入口影响它（公开契约已无 agent）。
+  // 选不出来 → infra，理由说明缺什么；**绝不**生成通过判定。
+  const backend = selectBackend(ctx);
+  if (!backend.name) {
+    return {
+      check_index: req.checkIndex,
+      status: "infra",
+      reason: backend.reason ?? "本部署没有全新上下文的委派后端，无法委派独立验证者。",
+      step_id: req.step.id,
+      ts: new Date().toISOString(),
+    };
   }
-  const config = req.workflow.adversarial_check;
-  const systemPrompt = config?.system_prompt?.trim() || DEFAULT_ADVERSARIAL_SYSTEM_PROMPT;
+  const name = backend.name;
   // 验证模型由**引擎**归一化后传入（优先级：步骤 check_model > 全局 adversarial_check.model）。
   // 这里不再自己解析 YAML 里的 model 形态——归一化只有一处，三端语义才一致。
+  // 没有覆盖时不传 agentOptions：宿主 resolveChildAgentOptions 继承父级 provider/model。
   const model = req.model;
   const toolAllow = resolveToolAllow(ctx);
   const wantStructured = supportsOutputSchema(ctx, name);
@@ -190,11 +250,14 @@ export async function runVerifier(deps: VerifyDeps, req: VerifyRequest): Promise
   try {
     const startReq: Record<string, unknown> = {
       label: `Ralph Check: ${req.step.id} ${req.userTask.slice(0, 50)}`,
+      // 任务消息正文只保留本次任务、检查依据、产出位置等**事实**；
+      // 通用验证者角色说明走 persona 通道（唯一一份，见 VERIFIER_PERSONA）。
       prompt: [
-        { type: "text", text: `${systemPrompt}\n\n---\n\n${buildCheckPrompt(req, wantStructured)}` },
+        { type: "text", text: buildCheckPrompt(req, wantStructured) },
       ],
       signal: req.signal,
-      persona: "你是一个严格、独立、对抗性的检查者。你只读取证并给出判定，绝不修改任何文件。",
+      // persona 在子代理 scope 注册 `deployment:persona-prefix` 系统提示段 —— 角色说明的正确通道。
+      persona: VERIFIER_PERSONA,
       toolFilter: toolAllow.length > 0 ? { allow: toolAllow } : undefined,
     };
     if (req.ownerSession) {

@@ -345,6 +345,45 @@ const S = () => `session-${++n}`;
   check("未写 check_model 的步骤继承全局 model", second?.providerID === "openai" && second?.modelID === "gpt-5", JSON.stringify(second));
 }
 
+// ── 11d) 验证者配置收敛：`adversarial_check` 只留 model；其余字段/非对象一律告警忽略 ──
+// 口径与未知键、check_voting 统一：warn+ignore（不拒收、不静默、不改作别的含义）。
+// 告警必须在**加载期**出现——doctor 直接读 loadWorkflow 的 warnings。
+{
+  const wfFile = (name, lines) => {
+    fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
+    return engine.loadWorkflow(name);
+  };
+  const steps = ["steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 1"];
+  // 三个已删除字段：各自告警指出该字段，且不进定义（不生效）
+  for (const field of ["agent", "system_prompt", "timeout_ms"]) {
+    const value = field === "timeout_ms" ? "5000" : "whatever";
+    const r = wfFile(`ac-${field}`, ["adversarial_check:", `  ${field}: ${value}`, ...steps]);
+    check(`adversarial_check.${field} 可加载（不拒收）`, !!r.def, JSON.stringify(r.problems));
+    check(`adversarial_check.${field} 加载期告警并指出该字段`, r.warnings.some((w) => w.includes(field)), JSON.stringify(r.warnings));
+    check(`adversarial_check.${field} 不进入定义（不生效）`, !(field in (r.def?.adversarial_check ?? {})), JSON.stringify(r.def?.adversarial_check));
+    check(`adversarial_check.${field} 进入 doctor 告警（同一份 warnings）`, engine.diagnose().text.includes(field));
+  }
+  // 与合法字段同写：model 照常生效，只对已删字段告警
+  const mix = wfFile("ac-mix", ["adversarial_check:", "  model: openai/gpt-5", "  agent: fork", ...steps]);
+  check("model 与已删字段同写：model 照常保留", !!mix.def && resolveCheckModel(mix.def.adversarial_check?.model)?.providerID === "openai", JSON.stringify(mix));
+  check("同写时只对已删字段告警（model 无告警）", mix.warnings.some((w) => w.includes("agent")) && !mix.warnings.some((w) => w.includes("adversarial_check.model")), JSON.stringify(mix.warnings));
+  // adversarial_check 非对象（布尔/字符串/列表）→ 告警「必须是对象」并忽略
+  const nonObj = [
+    ["布尔 true", ["adversarial_check: true", ...steps]],
+    ["字符串", ["adversarial_check: foo", ...steps]],
+    ["列表", ["adversarial_check:", "  - a", ...steps]],
+  ];
+  for (const [label, lines] of nonObj) {
+    const r = wfFile(`ac-nonobj-${label.replace(/\s+/g, "-")}`, lines);
+    check(`adversarial_check 为${label} → 可加载（不拒收）`, !!r.def, JSON.stringify(r.problems));
+    check(`adversarial_check 为${label} → 告警「必须是对象」并忽略`, r.warnings.some((w) => w.includes("adversarial_check") && w.includes("必须是对象")), JSON.stringify(r.warnings));
+    check(`adversarial_check 为${label} → 定义里为 undefined`, r.def?.adversarial_check === undefined, JSON.stringify(r.def?.adversarial_check));
+  }
+  // model 类型非法（数字）→ 告警回退，不静默
+  const badModel = wfFile("ac-model-number", ["adversarial_check:", "  model: 123", ...steps]);
+  check("adversarial_check.model 类型非法 → 告警回退（不静默）", !!badModel.def && badModel.warnings.some((w) => w.includes("adversarial_check.model")), JSON.stringify(badModel.warnings));
+}
+
 // ── 12) §1.2 doctor lint：不可达 / 无 done / 模板记号 / 无 check ───────────────
 {
   const wfFile = (name, lines) => {
@@ -467,6 +506,17 @@ const S = () => `session-${++n}`;
   check("指引所述 check_model 写法确实可加载", !!cmGuide.def && cmGuide.problems.length === 0, JSON.stringify(cmGuide));
   const cmBadGuide = guideFile("guide-cm-bad", ["steps:", "  - id: a", "    do: X", "    check_model: a/b", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
   check("指引所述「无 check 即硬错误」确实成立", !cmBadGuide.def && cmBadGuide.problems.some((p) => p.includes("check_model")), JSON.stringify(cmBadGuide.problems));
+
+  // 行为侧 6：验证者配置收敛 —— 指引只介绍 model，不再出现已删除字段
+  check("指引不再出现 adversarial_check.agent", !CREATE_GUIDE.includes("adversarial_check.agent") && !/\bagent:\s*spawn/.test(CREATE_GUIDE));
+  check("指引不再出现 system_prompt", !CREATE_GUIDE.includes("system_prompt"));
+  check("指引不再出现 timeout_ms", !CREATE_GUIDE.includes("timeout_ms"));
+  check("指引写明 adversarial_check 只允许 model 一个字段", CREATE_GUIDE.includes("只允许 model"), CREATE_GUIDE.slice(0, 500));
+  check("指引写明验证者身份是 Ralphflow 内部定义", CREATE_GUIDE.includes("内部定义"));
+  check("指引写明未覆盖时回退发起会话当前模型", CREATE_GUIDE.includes("发起会话当前模型"));
+  // 行为侧 7：指引示例里的 adversarial_check 确实只写 model 也能加载启动
+  const acGuide = guideFile("guide-ac", ["adversarial_check:", "  model: deepseek/deepseek-chat", "steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
+  check("指引所述 adversarial_check 写法可加载且无告警", !!acGuide.def && acGuide.problems.length === 0 && acGuide.warnings.length === 0, JSON.stringify(acGuide));
 }
 
 // ── 清理（索引在隔离 HOME 里，只删本测试写入的条目）────────────────────────────

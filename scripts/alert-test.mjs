@@ -61,7 +61,7 @@ console.log("A1 正常交卷：受理并开始验证");
   await sleep(80);
   const st = e.readState(iid);
   check("已启动验证并完成", !st.active && st.history.some((h) => h.event === "verify_start"), st.history.map((h) => h.event).join("→"));
-  check("交卷摘要被记入（供验证者参考）", st.last_submit_summary === "我完成了 X 和 Y" || st.verdicts.length === 1);
+  check("交卷摘要被记入实例状态（不流向验证者，仅供审查门去重）", st.last_submit_summary === "我完成了 X 和 Y" || st.verdicts.length === 1);
   cleanup(ws);
 }
 

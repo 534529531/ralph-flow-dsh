@@ -1,8 +1,8 @@
 description: 单步对抗验证循环：实现与验证在同一环节内迭代，直到通过
 
-# 验证者模型可选（"provider/model"）；不填用默认模型。
+# 验证者模型可选（"provider/model" 或 {providerID, modelID}）；不填沿用发起会话当前模型。
 # 验证超时不在 ralphflow 里设置：委派生命周期跟随宿主 dsh 的原生能力
-# （宿主自带的请求级空闲看门狗负责卡死保护）。旧 YAML 里的 timeout_ms 会警告忽略。
+# （宿主自带的请求级空闲看门狗负责卡死保护）。
 # adversarial_check:
 #   model: deepseek/deepseek-chat
 

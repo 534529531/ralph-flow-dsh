@@ -47,7 +47,7 @@
 | Stop hook 见 `<promise>done</promise>` | **模型调用 `ralphflow_submit` 工具**（工具调用是事实；工具结果带 `concludesTurn` 由机器结束回合）。不再对模型自由文本做正则匹配 |
 | 「去验证」宣告（hook 注入） | `agent.steer(userMessage)`（source `{kind:"plugin"}`；v1 `agent.followup` 已实测可用） |
 | `SubagentStop` 记录判定 | **`await subagents.start(...).result`（权威）** + `subagent/end` 事件（审计） |
-| `ralph-check` agent 定义 | `subagents.start` 传 `toolFilter` + `persona` + `outputSchema`（程序级强制） |
+| `ralph-check` agent 定义 | **内部固定 persona**（`VERIFIER_PERSONA`，经 `subagents.start` 的 `persona` 传） + 按能力选出的全新上下文后端 + `toolFilter` + `outputSchema`（程序级强制） |
 | `ralphflow_*` MCP 工具 | `ctx.tools.register` + `ctx.commands.register` |
 | .delegation-in-flight | 内存 `Set` + state.json `delegations[]` |
 
@@ -104,13 +104,17 @@
 
 ## 7. 验证者协议
 
-- **形态**：全新独立会话的子代理；只见「任务 + 检查依据 + 工件」，不见主会话对话历史；跑完即焚。
+- **形态**：全新独立会话的子代理；只见「任务 + 检查依据 + 工件」，不见主会话对话历史，**也看不到执行者的交卷摘要**；跑完即焚。
+- **后端选择（按能力，不按名字）**：验证者后端属于 Ralphflow **内部**，工作流没有任何入口影响它。只考虑 `getProvider(n).inheritsParentContext === false` 的 provider（全新上下文）——**绝不**回退到 `true` 的 provider（`fork` 继承主会话历史，T1 静默失效）；未声明该字段的同样不选（fail-closed）。候选里优先 `capabilities.persona && capabilities.toolFilter` 都支持的（这是「独立 + 有纪律的只读裁判」的前置条件；缺了 `start()` 本就会抛 `UNSUPPORTED_CAPABILITY`）。provider 名可配置（`providerName`），**名字不参与判定**。没有可用后端 → `infra`，理由写明「本部署没有全新上下文的委派后端」或点名缺失的能力；两种情况都**不生成通过判定**。
+- **身份是内部定义（单一来源）**：验证者职责（独立性、只读取证、不采信自述、只读不改文件）收敛为 `verify.ts` 的 `VERIFIER_PERSONA`，经 DSH 原生子代理 `persona` 传入（在子代理 scope 注册 `deployment:persona-prefix` 系统提示段）。**切分线**：persona 只承载「你是谁、你的纪律」；本次任务的事实与**按 `wantStructured` 分支的判定提交方式**（`structured_output` 工具 / `<promise-check>` 文本标记）仍由 `buildCheckPrompt` 承载——后者是逐请求状态，搬进 persona 会让降级路径失效。
 - **判定**：`outputSchema` 结构化 `{ passed: boolean, reason: string }`；reason 必须给证据（读到的文件/跑出的结果）。
 - **只读**：`toolFilter: { allow: [read, grep, glob, bash, read_image] }`。bash 内的间接写（`sed -i`/`tee`）**有意接受**（ADR-0002 同款弱点；将来用 dsh 沙箱收紧，见 §11）。
-- **模型**：默认同主会话模型；YAML 可覆盖（§0 推论：独立性 ≠ 模型隔离）。优先级链**与 opencode/claude 一致**：步骤 `check_model` > 全局 `adversarial_check.model` > provider/部署默认。
-  - 两种形态都支持（三端同解）：`"provider/model"` 字符串、`{ providerID, modelID }` 对象（两者都必须非空）。**裸模型名**（如 `sonnet`）或对象缺字段 → 解析不出 → **告警并回退默认**，绝不静默忽略（否则用户以为换了验证模型，实际没换）。归一化只有一处：引擎的 `resolveCheckModel`（照抄 opencode 语义），验证者只消费结果。
+- **模型**：默认同主会话模型；YAML 可覆盖（§0 推论：独立性 ≠ 模型隔离）。优先级链**与 opencode/claude 一致**：步骤 `check_model` > 全局 `adversarial_check.model` > 发起会话当前模型。
+  - `model` 通过 DSH 原生 `agentOptions` 传给验证者，不由提示词要求模型自行切换。**没有覆盖时不传 `agentOptions`**，由宿主 `resolveChildAgentOptions` 继承**父级** provider/model（即发起会话当前模型）。
+  - 两种形态都支持（三端同解）：`"provider/model"` 字符串、`{ providerID, modelID }` 对象（两者都必须非空）。**裸模型名**（如 `sonnet`）、对象缺字段、或类型非法 → 解析不出 → **告警并回退发起会话当前模型**，绝不静默忽略（否则用户以为换了验证模型，实际没换）。归一化只有一处：引擎的 `resolveCheckModel`（照抄 opencode 语义），验证者只消费结果。
   - `check_model` **仅单 `check` 场景生效**：与 `check_voting` 同写、或本步没有 `check` → **加载期硬错误**（照抄 opencode）。
-- **prompt 由引擎构造**：任务原文 + 本步上下文（`desc`/`do`/`input`/`output`/产出目录）+ 检查依据（来自工作流定义，主会话零输入）+ 工作区可读。验证者 prompt 是 T1 防污染的唯一注入点。
+- **公开配置契约（`adversarial_check`）**：可选对象，**唯一允许的字段是 `model`**。`agent` / `system_prompt` / `timeout_ms` **已从公开契约中删除**——它们（以及任何未知字段、`adversarial_check` 非对象）在**加载期**与 `doctor` 都告警并忽略：不拒收、不静默、不改作别的含义。口径与未知键、`check_voting` 统一为 **warn+ignore**（§8 Q13）：dsh 对「自己不兑现的键」只有这一条规则，忽略后回落到固定的内部验证者正是文档承诺的默认行为。告警必须在加载期出现，不能拖到验证阶段。
+- **prompt 由引擎构造**：任务原文 + 本步上下文（`desc`/`do`/`input`/`output`/产出目录）+ 检查依据（来自工作流定义，主会话零输入）+ 工作区可读。任务消息正文只保留这些**事实**，通用角色说明走 persona 通道（见上）。验证者 prompt 是 T1 防污染的唯一注入点。
 - **绝不注入执行者自述（T1 硬规则）**：验证者**看不到**执行者的交卷摘要/实现总结——它只判「结果是否满足检查依据」，不判「执行者怎么做的、自称做了什么」。自述是**锚点**，会软化独立判定。opencode 与 claude 版同样从不传入，并在提示词里明令"不要依赖任何外部提供的实现总结"。
   - 交卷摘要仍存于 `state.last_submit_summary`，但**唯一消费者是审查门改稿重交去重**（`onSubmit` 里"内容与上次完全相同则不重复验证"），不流向验证者。`VerifyRequest` 类型上**没有** `submitSummary` 字段——从类型层面阻止它被重新引入。
 - **数量**：v0 单验证者。`verdicts[]` 与 `delegations[]` 按数组建模，为将来多票预留，但 v0 恒为 1。
@@ -139,13 +143,13 @@
 
 **v0 有**：YAML 引擎、内置 `loop` + `spec`、审查门、续跑、落盘、失败重试、多实例、报告归档、崩溃 fail-safe。
 
-**方言容错（Q13 定案）**：未知/未支持键（`check_voting`、`timeout_ms` 等）→ **警告该键 v0 未支持已忽略，按默认语义跑**；不做语义降级兼容（不加工作量）。语法错误、`on_pass`/`on_fail` 引用不存在的步骤 → **fail-fast 带人话报错**。
+**方言容错（Q13 定案）**：未知/未支持键（`check_voting`、`adversarial_check` 下 `model` 以外的字段如 `agent`/`system_prompt`/`timeout_ms`、其它未识别键）→ **警告该键 v0 未支持/已删除、已忽略，按默认语义跑**；不做语义降级兼容（不加工作量）。`adversarial_check` 写了非对象（`true`/`"foo"`/`[...]`）同样告警并忽略。语法错误、`on_pass`/`on_fail` 引用不存在的步骤 → **fail-fast 带人话报错**。
 
 **超时不在内核里造（作者定案）**：委派生命周期（含模型卡死/打转等异常）**一律交给宿主 dsh 的原生能力**（请求级空闲看门狗、工具调用时限策略），ralphflow 不自建超时轮询或竞速。理由：这是宿主职责，插件重复实现只会分叉行为、随宿主演进腐化。故 `timeout_ms` 永久 warn+ignore，**不要**在后续轮次重新引入有界竞速（claude 版 ADR 独立得出同一结论：`timeout_ms` 零消费者 → 必须静默忽略）。
 
 ## 9. 工作流文件即资产（Q5 定案）
 
-- YAML 方言跨端共享（opencode/claude/dsh 同一套 `description / manual_step / adversarial_check（含 model 两形态）/ steps / do / check / check_model / input / output / on_pass / on_fail / max_fail_count`），是**硬约束**：同一份资产四端可跑，hub 生态押注于此。**`check_model` 与模型引用两形态（§7）已对齐**，故这三项资产在三端同解。
+- YAML 方言跨端共享（opencode/claude/dsh 同一套 `description / manual_step / adversarial_check（仅 model，两形态）/ steps / do / check / check_model / input / output / on_pass / on_fail / max_fail_count`），是**硬约束**：同一份资产四端可跑，hub 生态押注于此。**`check_model` 与模型引用两形态（§7）已对齐**，故这三项资产在三端同解。dsh 是方言基准：`adversarial_check` 的 `agent`/`system_prompt`/`timeout_ms` 已在 dsh 端删除（opencode/claude 版的对应收敛另行处理），同一份旧 YAML 在 dsh 端 warn+ignore 后仍可跑。
 - 目录：`<workspace>/.dsh/ralph-flow/workflows/` 自定 + 内置 loop/spec；每实例隔离的**产出目录**为 `<workspace>/.dsh/ralph-flow/artifacts/<instId>/`（实例启动时建好、完成后保留，DO/CHECK 提示词各注入一行工作区相对路径）。
 - **工作区运行时目录用 dot-dir**（`<workspace>/.dsh/ralph-flow/`）：与 opencode `.opencode/ralph-flow/`、claude `.claude/ralph-flow/` 形状一致，并与全局 `~/.dsh/ralph-flow/` 对称（同一作用域命名空间 `ralph-flow`）。`.gitignore` 只忽略 `.dsh/ralph-flow/`（精确），不忽略整个 `.dsh/`——将来 dsh 可能往工作区 `.dsh/` 放需要入库的项目配置。
 - 所有者：用户手写（进 git）；`ralphflow_create` 交互式创建器推迟（v0 只声明）。
@@ -194,7 +198,7 @@
   ```
   src/index.ts     入口：Service 注册 / 工具 / 命令 / 事件监听 / 重启扫描   ~90 行
   src/engine.ts    状态机 + 三时刻 + 审查门 + 推进规则 + 崩溃恢复           ~300 行
-  src/verify.ts    ralph-check 委派（toolFilter/persona/outputSchema/打回） ~140 行
+  src/verify.ts    ralph-check 委派（selectBackend 按能力选后端 / persona / toolFilter / outputSchema / 打回） ~170 行
   src/tools.ts     5 工具 + 4 只声明命令                                    ~110 行
   workflows/loop.yaml  spec.yaml   内置工作流（发货）
   ```

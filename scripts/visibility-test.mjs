@@ -40,7 +40,8 @@ function mkEnv(ws, sid) {
   ctx.provide("tools", { register: (d) => registered.tools.push(d), schemas: () => [] });
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
   ctx.provide("subagents", {
-    list: () => ["spawn"], getProvider: () => ({ capabilities: { outputSchema: true } }),
+    list: () => ["spawn"],
+    getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
     start: async () => ({ id: "c", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) }),
   });
   ctx.provide("agents", { get: (id) => agents.get(id) });
@@ -126,7 +127,8 @@ console.log("\nU3 暂停 / 审查门 / 返工：都必须对用户可见");
   ctx.provide("tools", { register: (d) => registered.tools.push(d), schemas: () => [] });
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
   ctx.provide("subagents", {
-    list: () => ["spawn"], getProvider: () => ({ capabilities: { outputSchema: true } }),
+    list: () => ["spawn"],
+    getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
     start: async () => ({ id: "c", result: Promise.resolve({ output: [], stopReason: "aborted" }) }),
   });
   ctx.provide("agents", { get: (id) => (id === sid ? agent : undefined) });
