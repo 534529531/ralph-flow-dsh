@@ -48,6 +48,15 @@ console.log("D1 委派请求只带 dsh 契约字段，不注入自造超时");
   const e = createEngine(ws, { deliver: () => true, verify: (r) => runVerifier({ ctx }, r), log: () => {} });
   e.ensureLayout();
   const startRes = e.start("loop", "原生字段", "d1");
+
+  // ── §1.7 产出目录：DO 与 CHECK 提示词都注入，且验证者按相对路径读得到 ──────
+  // 目录名 = 任务摘要 slug + instId 尾段，可能含中文/emoji，故用宽松的相对路径正则。
+  const relRe = /\.dsh\/ralph-flow\/artifacts\/[^/`\s]+/;
+  check("DO 提示词含产出目录行 + 工作区相对路径", startRes.text.includes("## 产出目录") && relRe.test(startRes.text), startRes.text.slice(-260));
+  const relFromDo = startRes.text.match(relRe)?.[0];
+  // 先把真实产出写进去，再交卷 —— 它必须在实例销毁后原样存活。
+  if (relFromDo) fs.writeFileSync(path.join(ws, relFromDo, "summary.md"), "verified-by-check\n", "utf-8");
+
   e.onSubmit("d1", "完成");
   await sleep(120);
 
@@ -57,21 +66,18 @@ console.log("D1 委派请求只带 dsh 契约字段，不注入自造超时");
     !("timeoutMs" in (captured ?? {})) && !("deadline" in (captured ?? {})) && !("timeout" in (captured ?? {})) && !("controller" in (captured ?? {})),
     JSON.stringify(Object.keys(captured ?? {})));
 
-  // ── §1.7 产出目录：DO 与 CHECK 提示词都注入，且验证者按相对路径读得到 ──────
-  const relRe = /\.dsh\/ralph-flow\/artifacts\/[A-Za-z0-9-]+/;
-  check("DO 提示词含产出目录行 + 工作区相对路径", startRes.text.includes("## 产出目录") && relRe.test(startRes.text), startRes.text.slice(-260));
   const prompt = captured?.prompt?.[0]?.text ?? "";
   check("CHECK 提示词含本步上下文与产出目录行", prompt.includes("## 本步上下文") && prompt.includes("**产出目录**"));
   check("CHECK 提示词含交付物（DO 的 output 承诺）", prompt.includes("交付物") && prompt.includes("summary.md"), prompt.slice(0, 400));
   const rel = prompt.match(relRe)?.[0];
   check("CHECK 提示词含工作区相对产出路径", !!rel, prompt.slice(0, 300));
+  check("DO/CHECK 指向同一个产出目录", !!rel && rel === relFromDo, JSON.stringify({ rel, relFromDo }));
   if (rel) {
     const abs = path.join(ws, rel);
-    fs.writeFileSync(path.join(abs, "summary.md"), "verified-by-check\n", "utf-8");
     const seen = fs.readFileSync(path.join(abs, "summary.md"), "utf-8");
     check("验证者按该相对路径读得到产出（继承会话工作区，无需额外权限）", seen.includes("verified-by-check"));
+    check("实例销毁后非空产出目录与文件原样保留", fs.existsSync(path.join(abs, "summary.md")));
   }
-  check("DO/CHECK 指向同一个产出目录", !!rel && startRes.text.includes(rel), JSON.stringify({ rel }));
   const ip = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
   const idx = JSON.parse(fs.readFileSync(ip, "utf-8"));
   for (const k of Object.keys(idx)) if (idx[k] === ws) delete idx[k];
@@ -103,12 +109,15 @@ console.log("\nD2 取消能真正中止在飞验证者（原生取消语义）")
   e.cancelInstance(sid, undefined, "用户中止");
   await sleep(80);
   check("取消真正传播到在飞验证者（signal aborted）", aborted);
-  const st = e.readState(iid);
-  check("实例已取消且报告归档", !st.active && fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "reports", `${iid}.md`)));
-  check("在飞委派已清空", st.delegations.length === 0);
+  const reportPath = path.join(ws, ".dsh", "ralph-flow", "reports", `${iid}.md`);
+  const report = fs.readFileSync(reportPath, "utf-8");
+  check("实例已取消并销毁", e.readState(iid) === null && !fs.existsSync(e.instanceDir(iid)));
+  check("取消报告已归档且状态为「取消」", /状态：\*\*取消\*\*/.test(report), report.slice(0, 200));
+  check("取消后不再出现在活跃实例列表", !e.listInstances().some((i) => i.id === iid));
   void resolveVerify;
   const ip = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
   const idx = JSON.parse(fs.readFileSync(ip, "utf-8"));
+  check("索引已立即除名", !(iid in idx), JSON.stringify(Object.keys(idx)));
   for (const k of Object.keys(idx)) if (idx[k] === ws) delete idx[k];
   fs.writeFileSync(ip, JSON.stringify(idx, null, 2));
   fs.rmSync(ws, { recursive: true, force: true });

@@ -139,7 +139,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: "ralphflow_status",
-      description: "查看当前会话（或指定实例）的工作流状态、本轮判定与最近轨迹。",
+      description: "查看当前会话（或指定实例）的工作流状态、本轮判定与最近轨迹；实例已结束并销毁时指向它的历史报告。",
       params: {
         instance: { type: "string", description: "实例 ID（可前缀）；缺省看当前会话实例。" },
       },
@@ -147,13 +147,13 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: "ralphflow_list",
-      description: "列出全部实例（活跃/暂停/已结束）与可用工作流。",
+      description: "列出可用工作流、活跃实例与已归档的历史运行（已结束实例从 reports/ 读出）。",
       params: {},
       handler: listHandler,
     },
     {
       name: "ralphflow_cancel",
-      description: "取消当前会话（或指定）的活跃实例：中止在飞验证者并归档报告。",
+      description: "取消当前会话（或指定）的活跃实例：中止在飞验证者、归档报告到精确路径并销毁实例目录（报告归档失败时保留不销毁）。",
       params: {
         instance: { type: "string", description: "实例 ID（可前缀）。" },
         reason: { type: "string", description: "取消原因（可选）。" },
@@ -274,21 +274,21 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
         const instance = parts[0] ? `，instance = \`${parts[0]}\`` : "";
         return {
           kind: "directive",
-          text: `用户执行了 /ralphflow-status，想了解工作流进度。请调用 \`ralphflow_status\` 工具${instance}（不带参数时若本会话无实例，应显示项目里所有活跃实例的概览）。然后向用户清晰说明：工作流与当前步骤、状态（执行中/验证中/待放行/暂停及原因）、失败次数，以及**属主会话**——属于其他或已关闭会话的实例可通过 \`/ralphflow-continue <实例ID>\` 接管。`,
+          text: `用户执行了 /ralphflow-status，想了解工作流进度。请调用 \`ralphflow_status\` 工具${instance}（不带参数时若本会话无实例，应显示项目里所有活跃实例的概览）。然后向用户清晰说明：工作流与当前步骤、状态（执行中/验证中/待放行/暂停及原因）、失败次数，以及**属主会话**——属于其他或已关闭会话的实例可通过 \`/ralphflow-continue <实例ID>\` 接管。若工具说该实例**已结束并销毁**，就把报告路径给用户（历史在报告里，不要在列表里找）。`,
         };
       },
     },
     {
       name: "ralphflow-list",
-      description: "列出全部实例与可用工作流。示例：/ralphflow-list",
+      description: "列出可用工作流、活跃实例与历史运行。示例：/ralphflow-list",
       shim: () => ({
         kind: "directive",
-        text: "用户执行了 /ralphflow-list。请调用 `ralphflow_list` 工具获取数据，然后把「可用工作流」整理成**表格**（列：工作流 | 用途描述），把「工作流实例」按工具返回的字段简要列给用户（实例 id、工作流、任务、步骤、状态、属主）。数据以工具返回为准，不要编造；没有实例就直说。工作流解析顺序：工作区自定义 `.dsh/ralph-flow/workflows/` > 全局 `~/.dsh/ralph-flow/workflows/` > 插件内置。",
+        text: "用户执行了 /ralphflow-list。请调用 `ralphflow_list` 工具获取数据，然后把「可用工作流」整理成**表格**（列：工作流 | 用途描述），把「活跃实例」按工具返回的字段简要列给用户（实例 id、工作流、任务、步骤、状态、属主），把「历史运行（已归档）」按工具返回的字段列出（实例 id、状态、任务、结束时间、报告路径），并告诉用户历史报告目录的路径。数据以工具返回为准，不要编造；没有就直说。工作流解析顺序：工作区自定义 `.dsh/ralph-flow/workflows/` > 全局 `~/.dsh/ralph-flow/workflows/` > 插件内置。",
       }),
     },
     {
       name: "ralphflow-cancel",
-      description: "取消活跃实例并归档报告。示例：/ralphflow-cancel",
+      description: "取消活跃实例：归档报告并销毁实例目录。示例：/ralphflow-cancel",
       input: { hint: "[实例ID] [原因]" },
       shim: (inv) => {
         const parts = inv.rawInput.trim().split(/\s+/).filter(Boolean);
@@ -296,7 +296,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
         const reason = parts.length > 1 ? `，reason = \`${parts.slice(1).join(" ")}\`` : "";
         return {
           kind: "directive",
-          text: `用户执行了 /ralphflow-cancel，要取消工作流实例${instance}。请调用 \`ralphflow_cancel\` 工具${reason}——它会中止任何在飞的独立验证会话、把最终报告归档到 \`.dsh/ralph-flow/reports/\`。然后向用户简短确认已取消（或转达错误）。`,
+          text: `用户执行了 /ralphflow-cancel，要取消工作流实例${instance}。请调用 \`ralphflow_cancel\` 工具${reason}——它会中止任何在飞的独立验证会话、把最终报告归档到精确路径（\`.dsh/ralph-flow/reports/<实例ID>.md\`）并销毁实例目录；产出目录保留。若报告归档失败，它会保留实例目录不销毁并告警，请如实转达。然后向用户简短确认已取消（或转达错误），并把报告路径给用户。`,
         };
       },
     },

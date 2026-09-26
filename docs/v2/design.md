@@ -65,6 +65,7 @@
   "pause_reason": "max_failures | check_infra | user_cancelled",
   "do_submitted": true,
   "owner_session": "<session-id>",
+  "artifacts_dir_name": "修复登录空指针-49lo",
   "delegations": [{ "run_id": "...", "agent_id": "...", "check_index": 0, "ts": "..." }],
   "verdicts": [{ "check_index": 0, "status": "passed | failed | infra",
                  "reason": "...", "agent_id": "...", "step_id": "loop", "ts": "..." }]
@@ -73,7 +74,7 @@
 
 - **不存相位**（ADR-0004）：相位是派生量，存了就有两个写入者。v1 的 34 处文件标记位即此教训。
 - 每次运行一个 JSON，原子写（临时文件 + rename）。
-- 完成/取消后归档报告到 `<workspace>/.dsh/ralph-flow/reports/`，实例转 `active: false`。
+- 完成/取消后：归档报告到 `<workspace>/.dsh/ralph-flow/reports/<instId>.md`，然后**销毁实例目录**（`state.json` 随之消失）。`instances/` 因此只装活跃实例，历史从 `reports/` 读出（`listHistory()`）。`artifacts_dir_name` 是 state 里唯一"非派生"的额外字段：产出目录名在启动时固定，之后无法重算（子工作流会改写 `user_task`）。
 
 **推进规则（T2 的落点，引擎唯一决策）：**
 
@@ -150,7 +151,8 @@
 ## 9. 工作流文件即资产（Q5 定案）
 
 - YAML 方言跨端共享（opencode/claude/dsh 同一套 `description / manual_step / adversarial_check（仅 model，两形态）/ steps / do / check / check_model / input / output / on_pass / on_fail / max_fail_count`），是**硬约束**：同一份资产四端可跑，hub 生态押注于此。**`check_model` 与模型引用两形态（§7）已对齐**，故这三项资产在三端同解。dsh 是方言基准：`adversarial_check` 的 `agent`/`system_prompt`/`timeout_ms` 已在 dsh 端删除（opencode/claude 版的对应收敛另行处理），同一份旧 YAML 在 dsh 端 warn+ignore 后仍可跑。
-- 目录：`<workspace>/.dsh/ralph-flow/workflows/` 自定 + 内置 loop/spec；每实例隔离的**产出目录**为 `<workspace>/.dsh/ralph-flow/artifacts/<instId>/`（实例启动时建好、完成后保留，DO/CHECK 提示词各注入一行工作区相对路径）。
+- 目录：`<workspace>/.dsh/ralph-flow/workflows/` 自定 + 内置 loop/spec；每实例隔离的**产出目录**为 `<workspace>/.dsh/ralph-flow/artifacts/<artifacts_dir_name>/`（目录名 = 任务摘要 slug + 实例 id 尾段，按码点截断；实例启动时建好、终止后**保留**，DO/CHECK 提示词各注入一行工作区相对路径；只有空目录随实例销毁被 `rmdir` 删掉）。
+- **实例生命周期（§4 的落点）**：活跃 vs 历史分两层。工作流完成/取消时 `destroyInstance()` 严格按序执行：① 先 `archiveReport()`，失败则**中止销毁**（保留可见残留 + 告警，绝不静默丢轨迹）；② 先解析出产出目录名；③ 从全局索引除名并落盘；④ `unlink(state.json)`；⑤ 递归删实例目录（失败只告警，实例已除名 → 不会成幽灵）；⑥ 非递归 `rmdir(artifactsDir)`（非空即保留）。`writeState` 会 `mkdirSync` 实例目录，因此**销毁后不得再写 state**——迟到的验证回调由 `launchVerification` 的 `readState === null` 护栏挡下（记 `verdict_discarded/instance_state_missing`）。存量已结束实例**不自动迁移**，由 `doctor` 报出、用户显式决定。
 - **工作区运行时目录用 dot-dir**（`<workspace>/.dsh/ralph-flow/`）：与 opencode `.opencode/ralph-flow/`、claude `.claude/ralph-flow/` 形状一致，并与全局 `~/.dsh/ralph-flow/` 对称（同一作用域命名空间 `ralph-flow`）。`.gitignore` 只忽略 `.dsh/ralph-flow/`（精确），不忽略整个 `.dsh/`——将来 dsh 可能往工作区 `.dsh/` 放需要入库的项目配置。
 - 所有者：用户手写（进 git）；`ralphflow_create` 交互式创建器推迟（v0 只声明）。
 - **内置工作流不落盘**（对齐 opencode/claude 的 `ensureProjectWorkflows`）：`loadWorkflow` 回落插件目录，内置因此**始终是随插件发布的最新版**。播种副本会遮蔽插件目录、并在插件升级后变成陈旧副本——**实测踩过**：工作区里那份 7 步 `spec` 副本把新版 4 步内置整个挡住了，改内置却"没生效"。定制入口是"放同名文件遮蔽内置"（有意行为）。

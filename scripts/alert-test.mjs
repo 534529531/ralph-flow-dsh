@@ -59,9 +59,10 @@ console.log("A1 正常交卷：受理并开始验证");
   const r = e.onSubmit("s1", "我完成了 X 和 Y");
   check("交卷被受理", r.ok, r.text);
   await sleep(80);
-  const st = e.readState(iid);
-  check("已启动验证并完成", !st.active && st.history.some((h) => h.event === "verify_start"), st.history.map((h) => h.event).join("→"));
-  check("交卷摘要被记入实例状态（不流向验证者，仅供审查门去重）", st.last_submit_summary === "我完成了 X 和 Y" || st.verdicts.length === 1);
+  const reportPath = path.join(ws, ".dsh", "ralph-flow", "reports", `${iid}.md`);
+  const report = fs.readFileSync(reportPath, "utf-8");
+  check("已启动验证、通过并归档（实例目录已销毁）", e.readState(iid) === null && /verify_start/.test(report), report.slice(0, 300));
+  check("报告含判定记录", /## 判定/.test(report) && /\[passed\]/.test(report), report.slice(-300));
   cleanup(ws);
 }
 

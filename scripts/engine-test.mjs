@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createEngine, resolveCheckModel } from "../lib/engine.js";
+import { createEngine, resolveCheckModel, makeArtifactsDirName } from "../lib/engine.js";
 import { buildCheckPrompt } from "../lib/verify.js";
 import { CREATE_GUIDE } from "../lib/create.js";
 
@@ -54,7 +54,11 @@ const S = () => `session-${++n}`;
   submit(s, "已完成，创建了 hello.html。");
   await settle();
   const st = engine.readState(id);
-  check("通过后实例完成 + 报告归档", st && !st.active && fs.existsSync(path.join(engine.reportsDir, `${id}.md`)));
+  check("通过后实例目录已销毁（readState 为 null）", st === null, JSON.stringify(st));
+  check("通过后报告归档", fs.existsSync(path.join(engine.reportsDir, `${id}.md`)));
+  check("实例目录物理消失", !fs.existsSync(engine.instanceDir(id)));
+  check("listInstances 不再含已结束实例", !engine.listInstances().some((i) => i.id === id));
+  check("「历史运行」能列出它（从报告解析）", engine.listHistory().some((h) => h.id === id && h.parsed));
 }
 
 // ── 2) 失败 → 返工 ───────────────────────────────────────────────────────────
@@ -153,7 +157,8 @@ const S = () => `session-${++n}`;
   submit(s, "修好了。");
   await settle();
   const st = engine.readState(id);
-  check("通过后推进完成", st && !st.active);
+  check("通过后终止并销毁实例目录", st === null && !fs.existsSync(engine.instanceDir(id)));
+  check("通过后报告存在", fs.existsSync(path.join(engine.reportsDir, `${id}.md`)));
 }
 
 // ── 7) 孤儿委派恢复 ──────────────────────────────────────────────────────────
@@ -186,7 +191,7 @@ const S = () => `session-${++n}`;
   submit(s, "完成。");
   await settle();
   const st = engine.readState(id);
-  check("跨工作区实例通过并完成", st && !st.active);
+  check("跨工作区实例通过并完成（实例目录已销毁）", st === null && !fs.existsSync(engine.instanceDir(id)));
   check("报告归档在相同工作区", fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "reports", `${id}.md`)), `${ws}/.dsh/ralph-flow/reports/${id}.md`);
 }
 
@@ -233,18 +238,22 @@ const S = () => `session-${++n}`;
     check(`新布局 .dsh/ralph-flow/${sub} 齐全`, fs.existsSync(p), p);
   }
   check("旧 ralph-flow/ 不再被创建", !fs.existsSync(path.join(ws, "ralph-flow")));
-  // §1.7 产出目录：实例启动时建好、完成后保留；DO 提示词注入工作区相对路径
-  const artDir = path.join(ws, ".dsh", "ralph-flow", "artifacts", id);
-  check("每实例产出目录已建好", fs.existsSync(artDir), artDir);
+  // §1.7 产出目录：实例启动时建好；完成后**非空即保留**；DO 提示词注入工作区相对路径
+  const artName = makeArtifactsDirName("布局用例", id);
+  const artDir = path.join(ws, ".dsh", "ralph-flow", "artifacts", artName);
+  check("每实例产出目录已建好（任务摘要 slug + id 尾段）", fs.existsSync(artDir), artDir);
   check(
     "DO 提示词含产出目录（工作区相对路径）",
-    r.text.includes("## 产出目录") && r.text.includes(`.dsh/ralph-flow/artifacts/${id}/`),
+    r.text.includes("## 产出目录") && r.text.includes(`.dsh/ralph-flow/artifacts/${artName}/`),
     r.text.slice(-260),
   );
+  fs.writeFileSync(path.join(artDir, "summary.md"), "keep-me\n", "utf-8");
   scripted.push({ status: "passed", reason: "布局 ok" });
   submit(s, "布局完成。");
   await settle();
-  check("完成后产出目录保留（不随实例结束删除）", fs.existsSync(artDir));
+  check("完成后非空产出目录保留（逐字节）",
+    fs.existsSync(artDir) && fs.readFileSync(path.join(artDir, "summary.md"), "utf-8") === "keep-me\n");
+  check("完成后实例目录已销毁", !fs.existsSync(engine.instanceDir(id)));
 }
 
 // ── 11) §1.1 加载期硬校验：写错了必须硬错误（静默 = 缺陷）─────────────────────
@@ -447,12 +456,12 @@ const S = () => `session-${++n}`;
   submit(s, "第二版");
   await settle();
   const st = engine.readState(id);
-  check("失败后重试再通过 → 完成", st && !st.active);
+  check("失败后重试再通过 → 完成并销毁", st === null && !fs.existsSync(engine.instanceDir(id)));
   const report = fs.readFileSync(path.join(engine.reportsDir, `${id}.md`), "utf-8");
   check("报告含总耗时", report.includes("总耗时："), report.slice(0, 400));
   check("报告含每步耗时表", report.includes("## 步骤耗时与重试") && /`loop`：耗时 \S+/.test(report), report.slice(0, 600));
   check("报告含重试次数（fail_counts 派生）", report.includes("失败 1 轮"), report.slice(0, 600));
-  check("报告含产出目录（入库可查）", report.includes(`.dsh/ralph-flow/artifacts/${id}/`));
+  check("报告含产出目录（入库可查）", report.includes(`.dsh/ralph-flow/artifacts/${makeArtifactsDirName("报告统计用例", id)}/`), report.slice(0, 600));
 }
 
 // ── 15) §1.5 restore() 清掉悬挂索引条目（state.json 已不存在）─────────────────

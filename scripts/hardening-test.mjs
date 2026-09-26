@@ -147,13 +147,15 @@ console.log("\nH5 对照：非门的已判定步骤，重复交卷不重复验�
   scripted.push({ status: "passed", reason: "通过并完成" });
   submit(s, "一\n");
   await sleep();
-  const st0 = engine.readState(id);
-  check("loop 单步通过后实例完成", !st0.active);
-  const before = st0.history.filter((h) => h.event === "verify_start").length;
+  const reportPath = path.join(engine.reportsDir, `${id}.md`);
+  const report1 = fs.readFileSync(reportPath, "utf-8");
+  check("loop 单步通过后实例完成并销毁", engine.readState(id) === null && !fs.existsSync(engine.instanceDir(id)));
+  const before = (report1.match(/verify_start/g) ?? []).length;
   submit(s, "二\n");
   await sleep();
-  const after = engine.readState(id).history.filter((h) => h.event === "verify_start").length;
-  check("实例结束后重复交卷不新增验证", after === before, `${before} → ${after}`);
+  const report2 = fs.readFileSync(reportPath, "utf-8");
+  const after = (report2.match(/verify_start/g) ?? []).length;
+  check("实例结束后重复交卷不新增验证（报告未被改写）", after === before && report2 === report1, `${before} → ${after}`);
 }
 
 // ── H6 对照：DO 阶段重复交卷不重复验证（原有去重语义保持不变）───────────────
@@ -171,7 +173,9 @@ console.log("\nH6 对照：DO 阶段未判定时重复交卷不重复验证");
   scripted.push({ status: "passed", reason: "重做后通过" });
   submit(s, "二\n");
   await sleep();
-  const after = engine.readState(id).history.filter((h) => h.event === "verify_start").length;
+  // 通过后实例已销毁 → 验证次数从归档报告里数
+  const report = fs.readFileSync(path.join(engine.reportsDir, `${id}.md`), "utf-8");
+  const after = (report.match(/verify_start/g) ?? []).length;
   check("返工后的新交卷正常触发验证", after === before + 1, `${before} → ${after}`);
 }
 

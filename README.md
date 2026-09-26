@@ -44,12 +44,16 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 ```
 <workspace>/.dsh/ralph-flow/
 ├── workflows/     # 自定义工作流 YAML（内置 loop/spec 不在此，放同名文件即遮蔽内置）
-├── instances/     # 活跃/已结束实例状态（每实例一个目录）
-├── reports/       # 完成/取消后的报告归档
-└── artifacts/     # 每实例隔离的产出目录 <instId>/（启动时建好，完成后保留）
+├── instances/     # **仅活跃**实例的机器状态（每实例一个目录；结束时销毁）
+├── reports/       # 完成/取消后归档的报告（永久保留，历史的唯一入口）
+└── artifacts/     # 每实例隔离的产出目录（永久保留；只有空目录会随实例销毁）
 ```
 
-`artifacts/<instId>/` 是 DO 阶段的交付物落点：DO 与 CHECK 提示词都会自动带上一行「产出目录」，所以工作流里写**裸文件名**（如 `summary.md`）即可落到该实例的目录，跨任务不串味、也不进仓库根。
+**实例是临时的，报告与产出是永久的。** 工作流完成或取消时：报告归档到 `.dsh/ralph-flow/reports/<实例ID>.md` → 从实例列表除名 → 销毁 `.dsh/ralph-flow/instances/<实例ID>/`。产出目录名 = 任务摘要 slug + 实例 id 尾段（按码点截断，中文/emoji 不会被切碎），在 `artifacts/<名字>/` 下；**非空产出目录整个保留**（`rmdir` 拒绝非空目录——真实交付物永远活得比实例久），只有空产出目录才会被删掉。报告归档失败时**不销毁**实例目录（宁可留一个可见残留，也不静默丢掉轨迹），`/ralphflow-doctor` 会报出来。
+
+`artifacts/<产出目录名>/` 是 DO 阶段的交付物落点：DO 与 CHECK 提示词都会自动带上一行「产出目录」，所以工作流里写**裸文件名**（如 `summary.md`）即可落到该实例的目录，跨任务不串味、也不进仓库根。
+
+`/ralphflow-list` 分两节：**活跃实例** + **历史运行（已归档）**。后者扫 `reports/*.md` 现读现解析（实例 id、状态、任务、结束时间、报告路径），不需要任何派生索引——已结束的运行永远不会因为实例目录被销毁而"找不回来"。`/ralphflow-status <实例ID>` 对已销毁实例会直接指向它的报告，而不是谎称"没有实例"。
 
 多工作区各自独立；实例索引在 `~/.dsh/ralphflow-instances-index.json`。`.gitignore` 只忽略 `.dsh/ralph-flow/`（精确），不忽略整个 `.dsh/`。
 
@@ -59,11 +63,12 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 - 状态模型：无相位字段，全部阶段由原始事实派生（交卷了吗 / 判定落地了吗 / 有在飞委派吗 / 暂停了吗）。
 - **验证者**：全新独立会话（按能力自动选择全新上下文的后端，与名称无关），只见任务 + 检查依据 +（可读的）产出目录——**看不到执行者的交卷摘要**；只读工具白名单，结构化判定 + 文本兜底，fail-closed。
 - **验证者配置（YAML `adversarial_check`）**：**只接受 `model` 一个字段**（可选，`"provider/model"` 或 `{providerID, modelID}`），步骤级 `check_model` 可覆盖它；都不写就沿用发起会话当前模型。验证者的身份与职责是插件内部定义，工作流不再能配置它。写了其它字段（或 `adversarial_check` 不是对象）会在加载期告警并忽略，`/ralphflow-doctor` 同样报出。
-- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；引擎验证测试见 `scripts/engine-test.mjs`（126 项，含布局/产出目录/加载期硬校验/doctor lint/报告统计/索引 GC/CREATE_GUIDE 一致性）。
+- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；引擎验证测试见 `scripts/engine-test.mjs`（含布局/产出目录/加载期硬校验/doctor lint/报告统计/索引 GC/CREATE_GUIDE 一致性），实例生命周期验收见 `scripts/lifecycle-test.mjs`。
+- **生命周期不变量**（违反即回退）：实例是临时的、报告与产出是永久的；先除名（`unlink(state.json)`）后删物理文件（否则部分删除失败会留下幽灵实例）；销毁前先写完报告、先读出产出目录名；产出只用非递归 `rmdir`（非空即保留）；销毁后不再写 `state.json`（`writeState` 会 `mkdirSync` 复活的实例目录）。
 
 ## v0 范围（诚实声明）
 
-有：YAML 引擎、loop + spec、审查门、续跑/接管、失败重试、多工作区、崩溃 fail-safe、报告归档（含每步耗时与重试）、产出目录、create/doctor 实现。
+有：YAML 引擎、loop + spec、审查门、续跑/接管、失败重试、多工作区、崩溃 fail-safe、报告归档（含每步耗时与重试）、产出目录、实例生命周期（终止即归档并销毁实例目录 + 历史运行列表 + doctor 实例目录体检）、create/doctor 实现。
 无：多验证者投票（`check_voting` 键会警告忽略）、reset/rewind、子工作流、客户端 UI、系统通知、验证者沙箱、执行日志。每项的准入触发条件见设计文档 §11。
 
 ## 许可

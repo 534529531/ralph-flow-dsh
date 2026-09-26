@@ -115,12 +115,16 @@ opencode 在报告写失败后仍然销毁（审计轨迹随之丢失）。我�
 5. 终止后 `listInstances()` 不含该实例；「历史运行」节能列出它（实例 id、状态、任务、结束时间、报告路径）。
 6. 完成消息与取消消息都含**精确相对路径**，且该路径文件存在（`fs.existsSync` 断言，不靠字符串匹配）。
 7. **报告归档失败 → 不销毁**：构造写失败的 `reports/`（如用同名文件占位使其无法建目录），断言实例目录与 `state.json` **仍在**、索引仍含该条目、且发出了告警。
-8. **幽灵防护的顺序**：注入让递归删除失败的 `fs` 替身，断言 `state.json` 已不在、`listInstances()` 与「历史运行」都不再显示该实例。
+8. **幽灵防护的顺序**：注入让递归删除失败的 `fs` 替身，断言 `state.json` 已不在、`listInstances()` 与「活跃实例」节都不再显示该实例。
+
+   > **不要要求「历史运行」也不显示它。** 报告按不变量 3 已在删除**之前**归档成功，而边界 3 要求 `listHistory()` 扫 `reports/*.md` 且不得静默丢弃，所以它**必然**出现在历史节——这正是验收 5 的要求。幽灵指的是「机器状态里还能被当成活跃实例的东西」，历史条目不是幽灵；残留目录由 doctor 的「已结束但目录未被销毁」报出。
+   >
+   > 本条原始措辞要求「历史运行」也不显示，与验收 5 + 边界 3 自相矛盾；实现按「不丢审计轨迹」一侧处理并如实披露，**属任务书笔误，已按实现反馈修正**。
 9. `doctor` 报出上述三类实例目录异常。
 10. **迟到判定护栏未被破坏**：销毁后到达的验证回调不得写盘、不得复活实例目录（回调跑完后断言 `!fs.existsSync(instanceDir)`）。
 11. 老 `state.json`（无 `artifacts_dir_name`）仍可读，产出目录回退为 `instId`。
 12. 产出目录名：中文 / emoji 任务不被切碎（断言名字不含 U+FFFD、不含 `/`、`\`、`..`）。
-13. `npm run typecheck`、`npm run build`，以及 `scripts/` 下**全部 8 个** `*.mjs` 脚本（`engine-test`、`hardening-test`、`verdict-integrity-test`、`native-delegation-test`、`visibility-test`、`alert-test`、`submit-flow-test`、`verify-activation`）全部通过，无失败、无回归。
+13. `npm run typecheck`、`npm run build`，以及 `scripts/` 下**全部** `*.mjs` 脚本全部通过，无失败、无回归。交付时的基线为 9 个：`engine-test`、`hardening-test`、`verdict-integrity-test`、`native-delegation-test`、`visibility-test`、`alert-test`、`submit-flow-test`、`verify-activation`，以及本任务新增的 `lifecycle-test`（验收 1–12 的端到端断言）。
 
 **测试纪律**（既有陷阱表）：复现脚本一律 `mkdtempSync` 造工作区 + 隔离 `process.env.HOME`；**绝不** `rmSync` 真实工作区或真实 `.dsh/` 路径。
 

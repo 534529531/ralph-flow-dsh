@@ -180,6 +180,16 @@ export interface InstanceState {
   owner_session?: string;
   /** 交卷时的助手回复摘要（验证者 prompt 用） */
   last_submit_summary?: string;
+  /**
+   * 本实例产出目录的**目录名**（`artifacts/<artifacts_dir_name>/`）。
+   *
+   * **不是派生量**（宪法 §10.4 的例外有据）：将来子工作流会改写 `user_task`，
+   * 名字一旦落盘就无法事后重算；且它必须与实例目录同生共死地隔离。
+   * 启动时由 {@link makeArtifactsDirName} 固定。
+   *
+   * 缺该字段（老 `state.json`）→ 读取时回退 `instId`（向后兼容，老产出目录名不变）。
+   */
+  artifacts_dir_name?: string;
   delegations: Delegation[];
   verdicts: Verdict[];
   history: HistoryEntry[];
@@ -190,6 +200,27 @@ export interface InstanceState {
 export interface InstanceInfo {
   id: string;
   state: InstanceState;
+}
+
+/**
+ * 一条**已归档运行**的历史条目（从 `reports/*.md` 的头部字段解析而来）。
+ *
+ * 解析失败的报告**也列出来**（`parsed: false`、`statusLabel: "无法解析"`），
+ * 绝不静默丢弃——用户至少能看到「这里有个报告，我没读懂」。
+ */
+export interface HistoryInfo {
+  id: string;
+  parsed: boolean;
+  statusLabel: string;
+  task?: string;
+  startedAt?: string;
+  endedAt?: string;
+  /** 工作区相对报告路径（正斜杠） */
+  relPath: string;
+  /** 报告里登记的产出目录名（用于「孤儿产出」诊断；老报告可能没有） */
+  artifactsDirName?: string;
+  /** 报告标题里的工作流名（可选，仅用于展示） */
+  workflow?: string;
 }
 
 export interface WorkflowEntry {
@@ -324,6 +355,29 @@ export function formatDuration(ms: number): string {
   return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
 }
 
+/**
+ * 产出目录名 = 任务摘要 slug + 实例 id 尾段（照 opencode `makeArtifactsDirName` 语义）。
+ *
+ * 三条不可退让的细节：
+ *   1. **按码点截断**（`Array.from`）：普通 `slice()` 会把代理对切成半个 UTF-16 单元，
+ *      落成目录名时变成 U+FFFD —— 提示词里的名字与磁盘上的真实目录就指到两个地方。
+ *      先截断再 trim `-`：截断本身可能暴露一个尾随 `-`。
+ *   2. **剥掉路径分隔符与 `.`**：slug 可能来自任意用户任务，绝不能让 `..`、`/`、`\`
+ *      把产出目录带出 `artifacts/`。
+ *   3. 尾段只取 instId 最后一段：同一任务并发跑时 slug 相同、尾段不同 → 不互相覆盖。
+ *
+ * slug 为空（任务全是空白/被剥字符）→ 直接回退整个 `instId`（保证目录名非空且唯一）。
+ */
+export function makeArtifactsDirName(task: string, instId: string): string {
+  const slug = Array.from(
+    String(task || "").trim()
+      .replace(/\s+/g, "-")
+      .replace(/[\\/:*?"'`<>|.$&(){}[\];!#~^]/g, ""),
+  ).slice(0, 30).join("").replace(/^-+|-+$/g, "");
+  const suffix = String(instId).split("-").pop() || "0";
+  return slug ? `${slug}-${suffix}` : String(instId);
+}
+
 export function createEngine(projectDir: string, ports: EnginePorts) {
   const root = path.join(projectDir, RALPH_FLOW_DIR);
   const instancesDir = path.join(root, "instances");
@@ -363,9 +417,21 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     };
   }
 
-  /** 每实例产出目录（§1.7）：`<workspace>/.dsh/ralph-flow/artifacts/<instId>/` */
+  /**
+   * 每实例产出目录（§1.7）：`<workspace>/.dsh/ralph-flow/artifacts/<artifacts_dir_name>/`。
+   *
+   * 目录名来自 `state.artifacts_dir_name`（缺省回退 `instId`，兼容老 `state.json`）。
+   * 注意：销毁流程必须**先**解析出这个路径，再删实例目录（不变量 3）。
+   */
   function artifactsDirOf(workspace: string, instId: string): string {
-    return path.join(dirsOf(workspace).artifactsDir, instId);
+    return path.join(dirsOf(workspace).artifactsDir, artifactsDirNameOf(instId));
+  }
+
+  /** 产出目录的目录名：`state.artifacts_dir_name`，缺省回退 `instId`（向后兼容） */
+  function artifactsDirNameOf(instId: string): string {
+    const s = readState(instId);
+    const n = s?.artifacts_dir_name;
+    return typeof n === "string" && n.trim() ? n : instId;
   }
 
   /**
@@ -373,7 +439,19 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 验证者继承父会话工作区，所以这个路径对它同样可读。
    */
   function artifactsRelDirOf(instId: string): string {
-    return `${RALPH_FLOW_DIR}/${ARTIFACTS_DIRNAME}/${instId}`;
+    return `${RALPH_FLOW_DIR}/${ARTIFACTS_DIRNAME}/${artifactsDirNameOf(instId)}`;
+  }
+
+  /** 报告的**工作区相对路径**（完成/取消消息、历史列表、状态查询共用同一份事实） */
+  function reportRelPathOf(instId: string): string {
+    return `${RALPH_FLOW_DIR}/reports/${instId}.md`;
+  }
+
+  /** 索引里登记的全部工作区 + 当前 projectDir（诊断/发现历史报告时扫，不落盘任何新索引） */
+  function knownWorkspaces(): string[] {
+    const set = new Set<string>([projectDir]);
+    for (const w of Object.values(registry)) if (typeof w === "string" && w.trim()) set.add(w);
+    return [...set];
   }
 
   const log = (level: "info" | "warn" | "error", event: string, data?: unknown) => {
@@ -684,13 +762,79 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     if (state.history.length > 200) state.history.splice(0, state.history.length - 200);
   }
 
+  /**
+   * **只返回活跃实例**（`state.active === true`）：实例是临时的，结束即销毁并从列表消失。
+   * 已结束的运行从 `reports/` 读出来（{@link listHistory}），不再靠 `state.json` 当历史索引。
+   */
   function listInstances(): InstanceInfo[] {
     try {
       return Object.keys(registry)
         .map((id) => ({ id, state: readState(id) }))
-        .filter((x): x is InstanceInfo => !!x.state)
+        .filter((x): x is InstanceInfo => !!x.state && x.state.active === true)
         .sort((a, b) => (a.state.started_at < b.state.started_at ? -1 : 1));
     } catch { return []; }
+  }
+
+  /**
+   * 解析一份归档报告的头部字段（`- 实例：` / `- 状态：` / `- 任务：` / `- 开始：` / `- 结束：`）。
+   *
+   * **不新增派生索引文件**（宪法 §10.4）：报告本身就是唯一的历史事实源，列表每次现读现解析。
+   * 头部字段缺失/格式不对 → `parsed:false`，条目仍会列出（标注「无法解析」），不静默丢弃。
+   */
+  function parseReportHeader(relPath: string, fileId: string, text: string): HistoryInfo {
+    const field = (label: string): string | undefined => {
+      const m = new RegExp(`^- ${label}：\\s*(.*)$`, "m").exec(text);
+      return m ? m[1]!.trim() : undefined;
+    };
+    const strip = (v: string | undefined) => v?.replace(/^`+|`+$/g, "").trim();
+    const rawId = strip(field("实例"));
+    const statusRaw = field("状态") ?? "";
+    const task = field("任务");
+    const startedAt = field("开始");
+    const endedAt = field("结束");
+    const artifactsRel = strip(field("产出目录"));
+    const artifactsDirName = artifactsRel ? artifactsRel.replace(/\/+$/, "").split("/").pop() : undefined;
+    const workflow = /^#\s*ralphflow 报告 ·\s*(.+)$/m.exec(text)?.[1]?.trim();
+    const statusLabel = statusRaw.includes("完成") ? "完成" : statusRaw.includes("取消") ? "取消" : undefined;
+    return {
+      id: rawId || fileId,
+      parsed: !!(rawId && statusLabel && endedAt),
+      statusLabel: statusLabel ?? "无法解析",
+      task,
+      startedAt,
+      endedAt,
+      relPath,
+      artifactsDirName: artifactsDirName || undefined,
+      workflow,
+    };
+  }
+
+  /**
+   * 已归档运行（扫 `reports/*.md`，按「结束」时间倒序）。
+   *
+   * 这是 instance 生命周期改造的**历史入口**：opencode 版没有任何列出已结束实例的入口，
+   * 报告只写不读，消息一丢就再也找不回来；dsh 这里要比它好（边界 3）。
+   */
+  function listHistory(): HistoryInfo[] {
+    let names: string[] = [];
+    try { names = fs.readdirSync(reportsDir).filter((f) => f.endsWith(".md")); } catch { return []; }
+    const out = names.map((f) => {
+      const id = f.replace(/\.md$/, "");
+      let text = "";
+      try { text = fs.readFileSync(path.join(reportsDir, f), "utf-8"); } catch {}
+      return parseReportHeader(`${RALPH_FLOW_DIR}/reports/${f}`, id, text);
+    });
+    const key = (h: HistoryInfo) => {
+      const t = h.endedAt ? new Date(h.endedAt).getTime() : NaN;
+      return Number.isFinite(t) ? t : -Infinity;
+    };
+    return out.sort((a, b) => key(b) - key(a));
+  }
+
+  /** 按 id（支持唯一前缀）在历史报告里找一条 */
+  function findHistory(ref: string): HistoryInfo | undefined {
+    const all = listHistory();
+    return all.find((h) => h.id === ref) ?? all.find((h) => h.id.startsWith(ref));
   }
 
   function newInstId(workflow: string): string {
@@ -981,9 +1125,17 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     state.paused = false;
     state.pause_reason = undefined;
     state.do_submitted = false;
-    writeState(state, instId);
-    archiveReport(instId, state, wf, "done");
-    notify(state, `✅ 工作流 \`${wf.name}\` 完成，报告已归档到工作区的 \`${RALPH_FLOW_DIR}/reports/\`。`, `✅ 工作流 ${wf.name} 完成（报告已归档 ${RALPH_FLOW_DIR}/reports/）`);
+    // 报告用**内存里的 state** 渲染（含刚落账的 complete 事件），落盘再删纯属浪费；
+    // 销毁顺序与失败分支都在 destroyInstance 里（不变量 2/3）。
+    const reportPath = destroyInstance(instId, "done", state);
+    if (reportPath) {
+      const rel = reportRelPathOf(instId);
+      notify(
+        state,
+        `✅ 工作流 \`${wf.name}\` 完成，报告已归档到 \`${rel}\`。\n\n实例目录已销毁、产出目录保留；历史运行可在 \`/ralphflow-list\` 的「历史运行」节里找到。`,
+        `✅ 工作流 ${wf.name} 完成（报告 ${rel}）`,
+      );
+    }
   }
 
   function deliver(state: InstanceState, text: string, summary?: string): void {
@@ -1042,7 +1194,14 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       .map(([step, v]) => ({ step, ms: v.ms, retries: Math.max(state.fail_counts?.[step] ?? 0, v.failed) }));
   }
 
-  function archiveReport(instId: string, state: InstanceState, wf: WorkflowDef, status: "done" | "cancelled"): void {
+  /**
+   * 归档最终报告到 `<workspace>/.dsh/ralph-flow/reports/<instId>.md`。
+   *
+   * 返回**绝对路径**；写失败返回 `null`（**绝不吞掉失败**）：调用方
+   * {@link destroyInstance} 依赖这个 `null` 决定「不销毁实例」——宁可留一个
+   * doctor 能报出来、可人工抢救的可见残留，也不能静默丢掉全部轨迹。
+   */
+  function archiveReport(instId: string, state: InstanceState, wf: WorkflowDef, status: "done" | "cancelled"): string | null {
     try {
       // 报告与实例同属一个工作区（实例目录在哪，报告就归档到哪）
       const target = dirsOf(workspaceOf(instId)).reportsDir;
@@ -1081,10 +1240,67 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           ? state.verdicts.map((v) => `- [${v.status}] ${v.step_id}: ${v.reason}`)
           : ["- （无判定记录）"]),
       ];
-      fs.writeFileSync(path.join(target, `${instId}.md`), lines.join("\n"), "utf-8");
+      const file = path.join(target, `${instId}.md`);
+      fs.writeFileSync(file, lines.join("\n"), "utf-8");
+      return file;
     } catch (e) {
       log("warn", "report_write_failed", { instId, error: msg(e) });
+      return null;
     }
+  }
+
+  /**
+   * 销毁一个已终止的实例：归档报告 → 除名 → 删实例目录 → 删**空**产出目录。
+   *
+   * 顺序本身是正确性的一部分（不变量 2）：`unlink(state.json)` 必须**先于**递归删目录，
+   * 否则部分删除失败（Windows EBUSY 等）会留下一个「列表里看不到、磁盘上还在」的幽灵；
+   * 反过来先除名，实例在任何失败下都不会复活成幽灵。
+   *
+   * 返回报告绝对路径；归档失败返回 `null` 且**不销毁**（见不变量 3 与边界 2）。
+   * `state` 缺省从磁盘读；调用方（complete/cancel）传内存里的 state，这样报告里带着
+   * 刚落账的最终事件，且不必为了渲染报告再落一次盘。
+   */
+  function destroyInstance(instId: string, status: "done" | "cancelled", state?: InstanceState): string | null {
+    const s = state ?? readState(instId);
+    // 工作流加载不出来时也要能出报告：用 state 里的名字兜底，绝不让坏 YAML 变成「永不销毁」。
+    const wf: WorkflowDef = s ? (loadWorkflow(s.workflow_name).def ?? { name: s.workflow_name, steps: [], warnings: [] }) : { name: instId, steps: [], warnings: [] };
+
+    // 1) 销毁前抢救：报告必须在销毁前写完。写不出来就中止销毁。
+    const reportPath = s ? archiveReport(instId, s, wf, status) : null;
+    if (!reportPath) {
+      log("warn", "report_archive_failed", { instId, status });
+      if (s) {
+        // 保留一个**可见**残留：把「已结束」写回磁盘，doctor 才能按「已结束但未销毁」报出来。
+        // （这一步写 state 是安全的：实例目录本就存在且不打算删。）
+        s.active = false;
+        writeState(s, instId);
+        notify(
+          s,
+          `⚠️ 实例 \`${instId}\` 的报告归档失败，已**保留**实例目录与 \`state.json\`，未销毁。\n\n` +
+          `请检查工作区 \`${RALPH_FLOW_DIR}/reports/\` 是否可写（例如被同名文件占位）。\n` +
+          `报告不会自动补写；残留可用 \`/ralphflow-doctor\` 查看，确认无需保留后可手动删除该实例目录。`,
+          `⚠️ 报告归档失败，实例 ${instId} 未销毁`,
+        );
+      }
+      return null;
+    }
+
+    // 2) 销毁前把产出目录解析出来 —— 之后实例目录就没了（名字存在 state.json 里）。
+    const artifactsDir = artifactsDirOf(workspaceOf(instId), instId);
+    // 3) 立即从全局索引除名，不等下次 restore() 的 GC。
+    delete registry[instId];
+    saveRegistry();
+    // 4) 物理除名：即使第 5 步部分失败，实例也已从列表消失，不会变成幽灵。
+    try { fs.unlinkSync(statePath(instId)); } catch {}
+    // 5) 递归删实例目录（失败只告警，因为实例已经除名）。
+    try {
+      fs.rmSync(instanceDir(instId), { recursive: true, force: true });
+    } catch (e) {
+      log("warn", "instance_dir_remove_failed", { instId, error: msg(e) });
+    }
+    // 6) 产出目录**非递归**删除：rmdir 拒绝非空目录，真实交付物永远活得比实例久。
+    try { fs.rmdirSync(artifactsDir); } catch {}
+    return reportPath;
   }
 
   // ─── 对外动作 ──────────────────────────────────────────────────────────────
@@ -1107,16 +1323,21 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const first = wf.steps[0]!;
     const instId = newInstId(wf.name);
     const now = new Date().toISOString();
+    // 产出目录名在启动时**固定并落盘**：它不是派生量（子工作流将来会改写 user_task，
+    // 名字事后无法重算），且必须与实例目录隔离（实例销毁后产出仍在）。
+    const artifactsDirName = makeArtifactsDirName(task.trim(), instId);
     const state: InstanceState = {
       active: true, workflow_name: wf.name, current_step: first.id, user_task: task.trim(),
       fail_counts: {}, fail_count: 0, paused: false, do_submitted: false, owner_session: sessionId,
       delegations: [], verdicts: [], history: [], started_at: now, updated_at: now,
+      artifacts_dir_name: artifactsDirName,
     };
     registerInstance(instId, workspace);
     pushHistory(state, "start", `workflow=${wf.name}`, first.id);
     writeState(state, instId);
     // §1.7 产出目录：实例启动时建好，完成后**保留**（不随实例结束删除）。
-    try { fs.mkdirSync(artifactsDirOf(workspace, instId), { recursive: true }); } catch {}
+    // 用刚算出的名字直接建，避免依赖已落盘的状态。
+    try { fs.mkdirSync(path.join(dirsOf(workspace).artifactsDir, artifactsDirName), { recursive: true }); } catch {}
     log("info", "instance_start", { instId, workflow: wf.name, workspace });
     const warnText = warnings.length > 0 ? `\n\n⚠️ 工作流定义告警：\n${warnings.map((w) => `- ${w}`).join("\n")}` : "";
     const text = [
@@ -1367,24 +1588,49 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const { id: instId, state } = info;
     try { aborts.get(instId)?.abort(); } catch {}
     aborts.delete(instId);
-    const { def: wf } = loadWorkflow(state.workflow_name);
     state.active = false;
     state.paused = false;
     state.pause_reason = "user_cancelled";
     state.delegations = [];
     pushHistory(state, "cancelled", reason);
-    writeState(state, instId);
-    if (wf) archiveReport(instId, state, wf, "cancelled");
-    notify(state, `🛑 实例 \`${instId}\` 已取消${reason ? `：${reason}` : ""}。报告已归档。`, `🛑 ralphflow 实例已取消${reason ? `：${reason}` : ""}`);
-    return { ok: true, text: `已取消实例 \`${instId}\`。` };
+    // 取消 = 与完成同一条销毁路径（归档报告 → 销毁实例目录 → 删空产出目录）。
+    const reportPath = destroyInstance(instId, "cancelled", state);
+    if (reportPath) {
+      const rel = reportRelPathOf(instId);
+      notify(state, `🛑 实例 \`${instId}\` 已取消${reason ? `：${reason}` : ""}。报告已归档到 \`${rel}\`。`, `🛑 ralphflow 实例已取消（报告 ${rel}）`);
+      return { ok: true, text: `已取消实例 \`${instId}\`。报告已归档：\`${rel}\`。` };
+    }
+    // 归档失败时 destroyInstance 已保留实例目录并发出告警；这里只补交卷结果。
+    return { ok: true, text: `已取消实例 \`${instId}\`，但**报告归档失败**，实例目录与 state.json 已保留未销毁。请按告警处理（\`/ralphflow-doctor\` 可查看残留）。` };
   }
 
   function statusOf(sessionId: string, instanceRef?: string): ToolResult {
     const info = instanceRef
       ? listInstances().find((i) => i.id === instanceRef || i.id.startsWith(instanceRef))
-      : activeInstanceOfSession(sessionId) ?? listInstances().filter((i) => i.state.active).at(-1);
-    if (!info) return { ok: true, text: "没有实例。用 `/ralphflow-start <工作流> <任务>` 启动。" };
-    return { ok: true, text: renderInstance(info) };
+      : activeInstanceOfSession(sessionId) ?? listInstances().at(-1);
+    if (info) return { ok: true, text: renderInstance(info) };
+    // 实例可能是**已结束并销毁**的：必须去历史报告里找，绝不能因为查不到就说「没有实例」
+    // ——那会让用户以为跑丢了（边界 4）。
+    if (instanceRef) {
+      const hit = findHistory(instanceRef);
+      if (hit) {
+        return {
+          ok: true,
+          text: [
+            `**${hit.id}** — ✅ 实例已结束并销毁，历史在报告里`,
+            "",
+            hit.parsed ? `- 状态：${hit.statusLabel}` : "- 状态：无法解析报告头部",
+            hit.task ? `- 任务：${hit.task}` : "",
+            hit.endedAt ? `- 结束：${hit.endedAt}` : "",
+            `- 报告：\`${hit.relPath}\``,
+            "",
+            `要再跑一次用 \`/ralphflow-start <工作流> <任务>\`；活跃实况看 \`/ralphflow-list\`。`,
+          ].filter(Boolean).join("\n"),
+        };
+      }
+      return { ok: true, text: `找不到活跃实例 \`${instanceRef}\`，也没有与它匹配的历史报告。用 \`/ralphflow-list\` 查看活跃实例与「历史运行」。` };
+    }
+    return { ok: true, text: "当前没有活跃实例。用 `/ralphflow-start <工作流> <任务>` 启动；已结束的运行见 `/ralphflow-list` 的「历史运行」节。" };
   }
 
   function renderInstance(info: InstanceInfo): string {
@@ -1397,7 +1643,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     ];
     const lines = [`**${id}** — ${facts.join(" · ")}`, "", `任务：${state.user_task}`];
     // 「现在该干什么」——异步验证期间用户最需要的就是这句。
-    const hint = nextActionHint(state);
+    const hint = nextActionHint(state, id);
     if (hint) lines.push("", hint);
     if (state.verdicts.length > 0) {
       lines.push("", "本轮判定：", ...state.verdicts.map((v) => `- [${v.status}] ${v.reason}`));
@@ -1413,8 +1659,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 「现在该干什么」——由派生事实算出，不落盘（宪法 §10.4）。
    * 异步验证期间这是用户最需要的一句话：说明要不要操作、去哪看、怎么退出。
    */
-  function nextActionHint(s: InstanceState): string | undefined {
-    if (!s.active) return `工作流已结束。报告在 \`${RALPH_FLOW_DIR}/reports/\`；要再跑一次用 \`/ralphflow-start <工作流> <任务>\`。`;
+  function nextActionHint(s: InstanceState, instId?: string): string | undefined {
+    if (!s.active) {
+      // 基本不可达：实例一旦结束就被销毁。保留但改为**指向精确报告路径**。
+      const rel = instId ? `\`${reportRelPathOf(instId)}\`` : "`" + RALPH_FLOW_DIR + "/reports/`";
+      return `工作流已结束，历史在报告里：${rel}；要再跑一次用 \`/ralphflow-start <工作流> <任务>\`。`;
+    }
     if (s.paused) {
       if (s.pause_reason === "max_failures") return "**等你定夺**：修好问题后 `/ralphflow-continue` 重新验证，或 `/ralphflow-cancel` 结束。";
       if (s.pause_reason === "no_submit") return "**等你处理**：模型反复未交卷。让它调用 `ralphflow_submit`，再 `/ralphflow-continue`；或 `/ralphflow-cancel` 结束。";
@@ -1453,6 +1703,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   function listAll(): ToolResult {
     const all = listInstances();
+    const history = listHistory();
     const wfs = listWorkflows();
     const head: string[] = ["## 可用工作流", ""];
     if (wfs.length === 0) head.push("没有找到工作流。");
@@ -1461,9 +1712,11 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         head.push(`- **${w.name}**: ${w.desc || "(无描述)"}${w.invalid ? "（定义无效）" : ""}`);
       }
     }
-    const body: string[] = ["", `## 工作流实例（${all.length} 个）`, ""];
+
+    // 「活跃实例」节：实例是临时的，这里只列还在跑的（边界 3）。
+    const body: string[] = ["", `## 活跃实例（${all.length} 个）`, ""];
     if (all.length === 0) {
-      body.push("（暂无实例）");
+      body.push("（暂无活跃实例）");
     } else {
       for (const i of all) {
         const s = i.state;
@@ -1479,7 +1732,84 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       }
     }
     body.push("接管无属主实例：`/ralphflow-continue <实例ID>`。");
+
+    // 「历史运行」节：从 reports/ 现读现解析（不新增派生索引）。报告只写不读会让
+    // 完成消息一丢就再也找不回来——这里就是找回来的入口。
+    body.push("", `## 历史运行（已归档）（${history.length} 个）`, "");
+    if (history.length === 0) {
+      body.push("（暂无归档报告）");
+    } else {
+      for (const h of history) {
+        body.push(`### \`${h.id}\``);
+        body.push(`- **状态**: ${h.statusLabel}`);
+        if (h.workflow) body.push(`- **工作流**: ${h.workflow}`);
+        if (h.task) body.push(`- **任务**: ${h.task.replace(/\s+/g, " ").slice(0, 60)}${h.task.length > 60 ? "…" : ""}`);
+        if (h.endedAt) body.push(`- **结束**: ${h.endedAt}`);
+        body.push(`- **报告**: \`${h.relPath}\``);
+        if (!h.parsed) body.push("- ⚠️ 无法解析报告头部字段");
+        body.push("");
+      }
+    }
+    body.push(`历史报告目录：\`${RALPH_FLOW_DIR}/reports/\`（报告与产出永久保留，只能由你显式删除）。`);
     return { ok: true, text: head.concat(body).join("\n") };
+  }
+
+  /**
+   * `doctor`：扫每个已知工作区的 `instances/`，报出实例目录异常。**只报不删。**
+   *
+   * 注意别把正常状态当异常：改造后「报告存在 + 产出存在 + 实例目录不存在」正是
+   * 终止后的**正常终态**，不是异常。只有"三者对不上"才算异常。
+   */
+  function diagnoseInstanceDirs(): string[] {
+    const issues: string[] = [];
+    const seen = new Set<string>();
+    for (const ws of knownWorkspaces()) {
+      const d = dirsOf(ws);
+      let entries: Array<{ name: string; isDirectory(): boolean }> = [];
+      try { entries = fs.readdirSync(d.instancesDir, { withFileTypes: true }); } catch { continue; }
+      for (const e of entries) {
+        if (!e.isDirectory()) continue;
+        const id = e.name;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const label = ws === projectDir ? `instances/${id}/` : `${ws}/${RALPH_FLOW_DIR}/instances/${id}/`;
+        const sp = path.join(d.instancesDir, id, "state.json");
+        if (!fs.existsSync(sp)) {
+          issues.push(`实例目录 \`${label}\` 缺少 state.json —— 所有工具都看不到它。若是残留目录可直接删除`);
+          continue;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(fs.readFileSync(sp, "utf-8"));
+          if (!parsed || typeof parsed !== "object") throw new Error("不是 JSON 对象");
+        } catch (err) {
+          issues.push(`实例 \`${id}\` 的 state.json 损坏（${msg(err)}）—— 该实例无法恢复，确认无需保留后可删除整个目录`);
+          continue;
+        }
+        if ((parsed as { active?: unknown }).active === false) {
+          issues.push(`实例 \`${id}\` 已结束但目录未被销毁（可能是报告归档失败）。先确认报告是否已生成，再决定是否删除该目录`);
+        }
+      }
+    }
+    return issues;
+  }
+
+  /** 孤儿产出：`artifacts/<name>/` 既无对应报告、也无对应活跃实例（通常来自被手动清理的实例）。同样只报不删。 */
+  function diagnoseOrphanArtifacts(): string[] {
+    const issues: string[] = [];
+    const claimed = new Set<string>();
+    for (const { state } of listInstances()) if (state.artifacts_dir_name) claimed.add(state.artifacts_dir_name);
+    for (const h of listHistory()) if (h.artifactsDirName) claimed.add(h.artifactsDirName);
+    for (const ws of knownWorkspaces()) {
+      const d = dirsOf(ws);
+      let entries: Array<{ name: string; isDirectory(): boolean }> = [];
+      try { entries = fs.readdirSync(d.artifactsDir, { withFileTypes: true }); } catch { continue; }
+      for (const e of entries) {
+        if (!e.isDirectory() || claimed.has(e.name)) continue;
+        issues.push(`产出目录 \`artifacts/${e.name}/\` 既无对应报告、也无对应实例目录（通常来自被手动清理的实例）—— 只报告，不删除`);
+      }
+    }
+    return issues;
   }
 
   /** 诊断（ralphflow_doctor）：工作流定义 + 实例状态，坏文件 fail-fast 说人话 */
@@ -1511,6 +1841,17 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       if (!s.owner_session) flags.push("无属主");
       if (s.delegations.length > 0) flags.push(`${s.delegations.length} 笔在飞委派`);
       lines.push(`- \`${i.id}\` — ${s.workflow_name} · ${flags.join(" · ")}`);
+    }
+    // 实例目录异常（缺 state.json / 损坏 / 已结束但未销毁）：只报不删（边界 5）。
+    const dirIssues = diagnoseInstanceDirs();
+    if (dirIssues.length > 0) {
+      lines.push("", "## 实例目录异常", "");
+      for (const it of dirIssues) lines.push(`- ⚠️ ${it}`);
+    }
+    const orphanArtifacts = diagnoseOrphanArtifacts();
+    if (orphanArtifacts.length > 0) {
+      lines.push("", "## 孤儿产出目录", "");
+      for (const it of orphanArtifacts) lines.push(`- ⚠️ ${it}`);
     }
     lines.push("", "结论：所有 ❌ 项即阻塞项，修复后重跑本命令直至全部 ✅。");
     return { ok: true, text: lines.join("\n") };
@@ -1549,7 +1890,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   return {
     root, instancesDir, workflowsDir, reportsDir, projectDir,
     ensureLayout, listWorkflows, loadWorkflow,
-    readState, listInstances, instanceDir, workspaceOf, indexPath,
+    readState, listInstances, listHistory, instanceDir, workspaceOf, indexPath,
+    artifactsDirOf, artifactsRelDirOf, reportRelPathOf, destroyInstance,
     start, onSubmit, noteAssistantText, remindToSubmit, continueInstance, cancelInstance, statusOf, listAll, restore, diagnose,
     activeInstanceOfSession,
   };
