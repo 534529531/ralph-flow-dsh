@@ -112,7 +112,7 @@
 - **只读**：`toolFilter: { allow: [read, grep, glob, bash, read_image] }`。bash 内的间接写（`sed -i`/`tee`）**有意接受**（ADR-0002 同款弱点；将来用 dsh 沙箱收紧，见 §11）。
 - **模型**：默认同主会话模型；YAML 可覆盖（§0 推论：独立性 ≠ 模型隔离）。优先级链**与 opencode/claude 一致**：步骤 `check_model` > 全局 `adversarial_check.model` > 发起会话当前模型。
   - `model` 通过 DSH 原生 `agentOptions` 传给验证者，不由提示词要求模型自行切换。**没有覆盖时不传 `agentOptions`**，由宿主 `resolveChildAgentOptions` 继承**父级** provider/model（即发起会话当前模型）。
-  - 两种形态都支持（三端同解）：`"provider/model"` 字符串、`{ providerID, modelID }` 对象（两者都必须非空）。**裸模型名**（如 `sonnet`）、对象缺字段、或类型非法 → 解析不出 → **告警并回退发起会话当前模型**，绝不静默忽略（否则用户以为换了验证模型，实际没换）。归一化只有一处：引擎的 `resolveCheckModel`（照抄 opencode 语义），验证者只消费结果。
+  - 两种形态都支持（四端同解）：`"provider/model"` 字符串、`{ providerID, modelID }` 对象（两者都必须非空）。**裸模型名**（如 `sonnet`）、对象缺字段、或类型非法 → 解析不出 → **告警并回退发起会话当前模型**，绝不静默忽略（否则用户以为换了验证模型，实际没换）。归一化只有一处：引擎的 `resolveCheckModel`（照抄 opencode 语义），验证者只消费结果。
   - `check_model` **仅单 `check` 场景生效**：与 `check_voting` 同写、或本步没有 `check` → **加载期硬错误**（照抄 opencode）。
 - **公开配置契约（`adversarial_check`）**：可选对象，**唯一允许的字段是 `model`**。`agent` / `system_prompt` / `timeout_ms` **已从公开契约中删除**——它们（以及任何未知字段、`adversarial_check` 非对象）在**加载期**与 `doctor` 都告警并忽略：不拒收、不静默、不改作别的含义。口径与未知键、`check_voting` 统一为 **warn+ignore**（§8 Q13）：dsh 对「自己不兑现的键」只有这一条规则，忽略后回落到固定的内部验证者正是文档承诺的默认行为。告警必须在加载期出现，不能拖到验证阶段。
 - **prompt 由引擎构造**：任务原文 + 本步上下文（`desc`/`do`/`input`/`output`/产出目录）+ 检查依据（来自工作流定义，主会话零输入）+ 工作区可读。任务消息正文只保留这些**事实**，通用角色说明走 persona 通道（见上）。验证者 prompt 是 T1 防污染的唯一注入点。

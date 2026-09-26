@@ -22,6 +22,10 @@
 
 ## 1. 三端真相（我原来的框架错在哪）
 
+> **范围声明**：本章只考察了 **opencode / claude / dsh 三端**。本家族还有**第四端** `ralph-flow-pi`（Pi SDK 的独立 CLI，npm v0.2.1），**本章未考察它**——事后才注意到它存在。
+> 已核实的两点（供将来补全）：pi 的验证是 `await adversarialCheck(...)`，即**同步**（CLI 能阻塞，无宿主回合概念）；且 pi 同样支持 `adversarial_check.agent` / `system_prompt` / `timeout_ms`。
+> 这不影响本文件的定案（§7 保持异步），但它意味着「同步只 dsh 能做」这类说法**不成立**——pi 本来就是同步的。
+
 ### 1.1 opencode：驱动器同步，回合不阻塞
 
 | 事实 | 证据 |
