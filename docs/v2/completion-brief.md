@@ -64,7 +64,7 @@
 |---|---|---|
 | DO 交卷 | `<promise>done</promise>` 文本标签 | `ralphflow_submit` 工具（已定案，不改） |
 | 判定 | 文本解析 | `outputSchema` 结构化 |
-| **无 `check` 的步骤** | **跳过验证直接推进** | **不可照搬**：design §12.1 要求「跳过验证推进必须被拒」→ 保留通用兜底 + doctor 告警 |
+| **无 `check` 的步骤** | **跳过验证直接推进** | ~~**不可照搬**：design §12.1 要求「跳过验证推进必须被拒」→ 保留通用兜底 + doctor 告警~~ **本行已作废（2026-09，作者定案）**：改为**与 opencode 对齐**。原顾虑已由 design §12.1 的措辞精修解决（「跳过验证推进」→「**执行者自行**跳过验证推进」），见 `docs/v2/no-check-semantics-brief.md` |
 | 缺必填字段 | 静默丢弃该步 | 按 design §8 → 硬错误说人话 |
 | `extra_dirs` 项目外源材料 | 有 | 不做（dsh 无对应权限模型） |
 | **产出目录位置** | `.opencode/ralph-flow/artifacts/<任务摘要>-<后缀>/` | `<workspace>/.dsh/ralph-flow/artifacts/<instId>/`。dsh **没有**工作区级 dot-dir 惯例（它的 home 是全局 `~/.dsh`，且不往项目里写东西），所以这是**我们的选择**；用 `instId` 免去给中文任务造 slug |
