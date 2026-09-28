@@ -377,5 +377,126 @@ console.log("\nL11 产出目录名 slug：码点截断 + 路径安全（验收 1
   forget(ws);
 }
 
+// ── 12) 跨工作区销毁：引擎 projectDir ≠ 实例工作区时，终止必须真的删掉实例目录 ──────
+// 曾经的缺陷：destroyInstance 先 `delete registry[instId]`，再调 instanceDir()/statePath()，
+// 而它们经 workspaceOf() = registry[instId] ?? projectDir → 回落到引擎的 projectDir →
+// 删除打到不存在的路径（unlink 的 catch 是空的、rmSync 带 force）→ **静默残留**。
+// 注意断言必须用**真实工作区路径**：engine.instanceDir(id) 走同一回落逻辑，跨工作区时是空转的。
+console.log("\nL12 跨工作区销毁：projectDir ≠ 实例工作区（静默残留回归）");
+{
+  const engineRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rf-lc12-engine-"));
+  const sessionWs = fs.mkdtempSync(path.join(os.tmpdir(), "rf-lc12-session-"));
+  const notes = [];
+  const engine = mkEngine(engineRoot, [{ status: "passed", reason: "ok" }], [], notes);
+  const sid = `lc12-${RUN}`;
+  const r = engine.start("loop", "跨工作区销毁用例", sid, sessionWs);
+  const id = engine.listInstances().at(-1).id;
+  const realInstDir = path.join(sessionWs, RF, "instances", id);
+  const realStateFile = path.join(realInstDir, "state.json");
+  const ghostDir = path.join(engineRoot, RF, "instances", id); // 引擎 projectDir 下的错误落点
+  check("实例真实落在会话工作区（前置条件）", r.ok && fs.existsSync(realStateFile), realInstDir);
+  engine.onSubmit(sid, "完成");
+  await sleep();
+  check("完成后**真实工作区**的实例目录消失（不再静默残留）", !fs.existsSync(realInstDir), realInstDir);
+  check("state.json 一并消失（先 unlink 后删目录）", !fs.existsSync(realStateFile));
+  check("readState 为 null 且索引已除名", engine.readState(id) === null && !(id in readIndex()));
+  check("报告归档在实例所属工作区", fs.existsSync(reportPathOf(sessionWs, id)));
+  check("引擎 projectDir 下没有幽灵拷贝", !fs.existsSync(ghostDir), ghostDir);
+  check("完成播报说「实例目录已销毁」（与事实一致）", notes.some((t) => t.includes("实例目录已销毁")), notes.at(-1)?.slice(0, 200));
+  forget(sessionWs);
+  forget(engineRoot);
+}
+
+// ── 13) 销毁失败必须诚实：删不掉就别说「已销毁」，且 doctor 要报得出残留 ──────────
+console.log("\nL13 销毁失败：播报不得谎称已销毁（+ 删除失败不静默）");
+{
+  // 13a) 确定性注入：把 state.json 占位成**目录** → unlinkSync 必失败（EISDIR，任何权限下都失败）。
+  // 直接驱动导出的 destroyInstance（传内存 state）：若走 onSubmit，readState 会因 EISDIR 读不出实例，
+  // 交卷根本不受理 —— 那样测的就不是 unlink 失败分支了。
+  const wsA = fs.mkdtempSync(path.join(os.tmpdir(), "rf-lc13a-"));
+  const notesA = [], logsA = [];
+  const engineA = mkEngine(wsA, [], logsA, notesA);
+  engineA.ensureLayout();
+  const sidA = `lc13a-${RUN}`;
+  const { id: idA } = start(engineA, "loop", "unlink 失败用例", sidA);
+  const savedA = engineA.readState(idA);
+  fs.rmSync(stateFileOf(wsA, idA), { force: true });
+  fs.mkdirSync(stateFileOf(wsA, idA)); // 目录占位 → unlinkSync 必 EISDIR
+  const resA = engineA.destroyInstance(idA, "done", savedA);
+  check("state.json 删除失败**不静默**（记 state_unlink_failed）",
+    logsA.some((l) => l.ev === "state_unlink_failed"), JSON.stringify(logsA.map((l) => l.ev)));
+  check("返回结构如实说明目录已删（instanceDirRemoved=true）",
+    !!resA && resA.instanceDirRemoved === true, JSON.stringify(resA));
+  check("实例目录仍被递归删掉（该失败不阻断销毁）", !fs.existsSync(path.join(wsA, RF, "instances", idA)));
+  check("报告仍已归档", fs.existsSync(reportPathOf(wsA, idA)));
+  forget(wsA);
+
+  // 13b) 注入「目录删不掉」：instances 父目录不可写（非高权限运行时 EACCES）
+  const wsB = fs.mkdtempSync(path.join(os.tmpdir(), "rf-lc13b-"));
+  const notesB = [], logsB = [];
+  const engineB = mkEngine(wsB, [{ status: "passed", reason: "ok" }], logsB, notesB);
+  engineB.ensureLayout();
+  const sidB = `lc13b-${RUN}`;
+  const { id: idB } = start(engineB, "loop", "销毁失败用例", sidB);
+  const instDirB = path.join(wsB, RF, "instances", idB);
+  const parentB = path.join(wsB, RF, "instances");
+  fs.chmodSync(parentB, 0o500);
+  try {
+    engineB.onSubmit(sidB, "完成");
+    await sleep();
+    if (fs.existsSync(instDirB)) {
+      // 注入生效：删除确实失败 → 播报必须诚实
+      check("播报不谎称「实例目录已销毁」", !notesB.some((t) => t.includes("实例目录已销毁")), notesB.at(-1)?.slice(0, 240));
+      check("播报如实说明未销毁 + 指向 doctor",
+        notesB.some((t) => t.includes("实例目录未能删除") && t.includes("ralphflow-doctor")), notesB.at(-1)?.slice(0, 320));
+      check("失败留下可诊断日志（instance_dir_remove_failed / instance_dir_not_removed）",
+        logsB.some((l) => l.ev === "instance_dir_remove_failed" || l.ev === "instance_dir_not_removed"), JSON.stringify(logsB.map((l) => l.ev)));
+      check("报告仍已归档（归档与删除解耦）", fs.existsSync(reportPathOf(wsB, idB)));
+      check("doctor 报出该残留（缺 state.json 的实例目录）",
+        engineB.diagnose().text.includes(idB), engineB.diagnose().text.slice(-260));
+      check("索引已除名（不复活成幽灵活跃实例）", !(idB in readIndex()));
+    } else {
+      // 高权限环境（root）下 chmod 挡不住删除：改为断言成功路径的自洽性，并明确标注
+      console.log("  ⚠️  本环境无法注入删除失败（权限过高），13b 改为断言成功路径的自洽性");
+      check("高权限下删除成功且播报与事实一致", notesB.some((t) => t.includes("实例目录已销毁")));
+    }
+  } finally {
+    fs.chmodSync(parentB, 0o700);
+  }
+  fs.rmSync(instDirB, { recursive: true, force: true });
+  forget(wsB);
+
+  // 13c) 取消路径同样诚实：删不掉时回执与通知都不得说「已销毁」
+  const wsC = fs.mkdtempSync(path.join(os.tmpdir(), "rf-lc13c-"));
+  const notesC = [], logsC = [];
+  const engineC = mkEngine(wsC, [], logsC, notesC);
+  engineC.ensureLayout();
+  const sidC = `lc13c-${RUN}`;
+  const { id: idC } = start(engineC, "loop", "取消失败用例", sidC);
+  const instDirC = path.join(wsC, RF, "instances", idC);
+  const parentC = path.join(wsC, RF, "instances");
+  fs.chmodSync(parentC, 0o500);
+  try {
+    const res = engineC.cancelInstance(sidC, undefined, "测试取消");
+    await sleep();
+    if (fs.existsSync(instDirC)) {
+      check("取消回执不谎称已销毁、如实说明残留",
+        res.ok && !res.text.includes("已销毁") && res.text.includes("实例目录未能删除"), res.text);
+      check("取消通知同样诚实（含 doctor 指引）",
+        notesC.some((t) => t.includes("实例目录未能删除") && t.includes("ralphflow-doctor")), notesC.at(-1)?.slice(0, 300));
+      check("取消也留下可诊断日志",
+        logsC.some((l) => l.ev === "instance_dir_remove_failed" || l.ev === "instance_dir_not_removed"), JSON.stringify(logsC.map((l) => l.ev)));
+      check("取消报告仍已归档", fs.existsSync(reportPathOf(wsC, idC)));
+    } else {
+      console.log("  ⚠️  本环境无法注入删除失败（权限过高），13c 改为断言成功路径的自洽性");
+      check("高权限下取消删除成功且回执不谎称残留", res.ok && !res.text.includes("未能删除"), res.text);
+    }
+  } finally {
+    fs.chmodSync(parentC, 0o700);
+  }
+  fs.rmSync(instDirC, { recursive: true, force: true });
+  forget(wsC);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

@@ -344,5 +344,66 @@ console.log("\nV8 state.json：老格式可读（迁移）+ 派生量不落盘�
   clean(ws);
 }
 
+// ── V9【§12.1 精修】推进判据的两支：定义未声明免验证 → 无判定一律拒；已声明 → 免判定推进 ──
+// 攻击向量「无判定且定义未声明免验证时的推进」必须仍被拒（**不放宽**）；
+// 正向：`stepHasCheck(step) === false`（工作流定义声明本步免验证）时推进不需要判定，
+//       且**不产生 verdicts[] 条目**——判据只读 StepDef，执行者在运行期无法影响。
+console.log("\nV9 推进判据（§12.1 精修）：有 check 无判定绝不推进；无 check = 定义声明免验证");
+{
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-v9-"));
+  const log = [];
+  const { e, resolvers, notes } = mkPending(ws, log);
+  fs.writeFileSync(path.join(e.workflowsDir, "mixed.yaml"), [
+    "description: 有 check 步 + 无 check 步", "steps:",
+    "  - id: a", "    do: A", "    check: ca", "    on_pass: b", "    on_fail: a", "    max_fail_count: 3",
+    "  - id: b", "    do: B", "    on_pass: done", "    on_fail: b", "    max_fail_count: 3",
+  ].join("\n"));
+  const sid = sidOf("v9");
+  e.start("mixed", "V9 推进判据", sid);
+  const iid = e.listInstances().at(-1).id;
+  const stateFile = path.join(e.instanceDir(iid), "state.json");
+  const stepNow = () => e.readState(iid)?.current_step;
+
+  // ① 定义未声明免验证（a 有 check）+ 未交卷 → 推进被拒（fail-closed，一字不放宽）
+  const c1 = e.continueInstance(sid);
+  check("① 有 check 且未交卷 → 推进被拒", !c1.ok && c1.text.includes("还没交卷") && !c1.text.includes("跳过"), c1.text);
+  check("① 步骤未动", stepNow() === "a", `step=${stepNow()}`);
+
+  // ② 有 check + 验证在飞（无判定）→ 不推进
+  e.onSubmit(sid, "a 交卷");
+  await sleep();
+  const c2 = e.continueInstance(sid);
+  check("② 验证在飞（无判定）→ 不推进", !c2.ok && stepNow() === "a", `ok=${c2.ok} step=${stepNow()}`);
+
+  // ③ 模拟「判定丢失」（崩溃恢复清了记账）：无判定 + 定义未声明免验证 → 重新取证，绝不放行
+  const lost = e.readState(iid);
+  lost.delegations = [];
+  fs.writeFileSync(stateFile, JSON.stringify(lost, null, 2));
+  const c3 = e.continueInstance(sid);
+  await sleep();
+  check("③ 无判定且定义未声明免验证 → 不推进（改为重新委派取证）",
+    c3.ok && stepNow() === "a" && resolvers.length === 2, `ok=${c3.ok} step=${stepNow()} n=${resolvers.length}`);
+
+  // ④ a 的判定（第二笔）通过 → 才推进到 b；advance 清空 verdicts[]
+  resolvers[1]({ check_index: 0, step_id: "a", ts: new Date().toISOString(), status: "passed", reason: "a 通过" });
+  await sleep();
+  check("④ 判定齐且全 passed → 推进到 b", stepNow() === "b", `step=${stepNow()}`);
+  check("④ 换步后 verdicts[] 已清空（b 不继承 a 的判定）", e.readState(iid).verdicts.length === 0);
+
+  // ⑤ 正向：b 无 check（定义已声明免验证）→ **不需要判定**即可推进，且不产生 verdicts[]
+  const callsBefore = resolvers.length;
+  notes.length = 0;
+  const c4 = e.continueInstance(sid);
+  await sleep();
+  check("⑤ 定义声明免验证 → 无判定即可推进（实例完成销毁）", c4.ok && e.readState(iid) === null, `ok=${c4.ok}`);
+  check("⑤ 该步验证端口零调用（定义声明免验证 ⇒ 不委派验证者）", resolvers.length === callsBefore, `n=${resolvers.length - callsBefore}`);
+  check("⑤ 放行回执写明「跳过对抗性验证」", c4.text.includes("跳过对抗性验证"), c4.text);
+  const report = fs.readFileSync(path.join(e.reportsDir, `${iid}.md`), "utf-8");
+  check("⑤ 报告有 check_skipped（b）且**无**任何 b 的判定条目",
+    report.includes("check_skipped") && report.includes("（无判定记录）"), report.slice(0, 700));
+  check("⑤ 报告不出现「检查通过」", !report.includes("检查通过"), report.slice(0, 700));
+  clean(ws);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

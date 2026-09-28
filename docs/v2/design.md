@@ -100,6 +100,7 @@
 ## 6. 审查门（manual_step，v0 就要）
 
 - YAML 步骤 `manual_step: true` → 该步对抗验证通过后停在门状态，等 `continue`。
+- **无 `check` 的门 = 纯人工审查**：该步**不叠加机器验证**——交卷后跳过对抗性验证，直接停在门等放行。门的判据是 `isGate(wf, step) && (!stepHasCheck(step) || 判定齐且全 passed)`：「本步免验」由**工作流定义**声明，执行者在运行期无法影响（§12.1 精修）。
 - `loop` 不设门（自动循环）；`spec` 的 propose 步设门（内置集与 claude/opencode 一致）。
 - 门是**步骤级开关**，由工作流表达，不是全局总闸。
 
@@ -154,8 +155,9 @@
 
 - YAML 方言跨端共享（opencode/claude/dsh/pi 同一套 `description / manual_step / adversarial_check（仅 model，两形态）/ steps / do / check / check_model / input / output / on_pass / on_fail / max_fail_count`），是**硬约束**：同一份资产四端可跑，hub 生态押注于此。**`check_model` 与模型引用两形态（§7）已对齐**，故这三项资产在四端同解。dsh 是方言基准：`adversarial_check` 的 `agent`/`system_prompt`/`timeout_ms` 已在 dsh 端删除（opencode/claude 版的对应收敛另行处理），同一份旧 YAML 在 dsh 端 warn+ignore 后仍可跑。
   **维护与收敛范围 = dsh / opencode / claude 三端**（作者定案）。第四端 `ralph-flow-pi`（Pi SDK 的独立 CLI，npm v0.2.1，最后更新 2026-07）**已搁置，不纳入范围**——它的方言事实相同（已核实同样支持被删的三个字段，且验证是同步的 `await adversarialCheck`），但不再维护、不做收敛。上文「四端可跑」是对**既有事实**的陈述，不是维护承诺。
+- **`check` 是可选语义键（缺 = 免验证，与 opencode 对齐）**：步骤不写 `check` → 该步**跳过对抗性验证**，DO 完成直接按 `on_pass` 推进；是 `manual_step` 时则**纯人工审查**（停在门等 `continue`）。判据 `stepHasCheck(step)` 只读 `StepDef`（工作流定义的属性，不是运行事实，故不落状态）。`check` 写了但**非字符串**（如 `check: true`）仍是**加载期硬错误**——绝不把「想要 check」误读成「不想 check」（本意是免验证请直接删掉该键）。`check_voting` 未支持（warn+ignore），不参与此判据。
 - 目录：`<workspace>/.dsh/ralph-flow/workflows/` 自定 + 内置 loop/spec；每实例隔离的**产出目录**为 `<workspace>/.dsh/ralph-flow/artifacts/<artifacts_dir_name>/`（目录名 = 任务摘要 slug + 实例 id 尾段，按码点截断；实例启动时建好、终止后**保留**，DO/CHECK 提示词各注入一行工作区相对路径；只有空目录随实例销毁被 `rmdir` 删掉）。
-- **实例生命周期（§4 的落点）**：活跃 vs 历史分两层。工作流完成/取消时 `destroyInstance()` 严格按序执行：① 先 `archiveReport()`，失败则**中止销毁**（保留可见残留 + 告警，绝不静默丢轨迹）；② 先解析出产出目录名；③ 从全局索引除名并落盘；④ `unlink(state.json)`；⑤ 递归删实例目录（失败只告警，实例已除名 → 不会成幽灵）；⑥ 非递归 `rmdir(artifactsDir)`（非空即保留）。`writeState` 会 `mkdirSync` 实例目录，因此**销毁后不得再写 state**——迟到的验证回调由 `launchVerification` 的 `readState === null` 护栏挡下（记 `verdict_discarded/instance_state_missing`）。存量已结束实例**不自动迁移**，由 `doctor` 报出、用户显式决定。
+- **实例生命周期（§4 的落点）**：活跃 vs 历史分两层。工作流完成/取消时 `destroyInstance()` 严格按序执行：① 先 `archiveReport()`，失败则**中止销毁**（保留可见残留 + 告警，绝不静默丢轨迹）；② **先把工作区与全部路径解析并固定**（产出目录名、实例目录、`state.json` 路径 —— 除名之后 `workspaceOf()` 会回落到 `projectDir`，跨工作区时销毁会打空）；③ 从全局索引除名并落盘；④ `unlink(state.json)`（失败记 `state_unlink_failed`，ENOENT 除外）；⑤ 递归删实例目录（失败记 `instance_dir_remove_failed`，实例已除名 → 不会成幽灵）；⑥ 非递归 `rmdir(artifactsDir)`（非空即保留）；⑦ **复查**实例目录是否真的没了（`instanceDirRemoved`），没删掉就记 `instance_dir_not_removed` 并让完成/取消播报**如实说残留**、指向 `doctor`（绝不谎称"已销毁"）。`writeState` 会 `mkdirSync` 实例目录，因此**销毁后不得再写 state**——迟到的验证回调由 `launchVerification` 的 `readState === null` 护栏挡下（记 `verdict_discarded/instance_state_missing`）。存量已结束实例**不自动迁移**，由 `doctor` 报出、用户显式决定。
 - **工作区运行时目录用 dot-dir**（`<workspace>/.dsh/ralph-flow/`）：与 opencode `.opencode/ralph-flow/`、claude `.claude/ralph-flow/` 形状一致，并与全局 `~/.dsh/ralph-flow/` 对称（同一作用域命名空间 `ralph-flow`）。`.gitignore` 只忽略 `.dsh/ralph-flow/`（精确），不忽略整个 `.dsh/`——将来 dsh 可能往工作区 `.dsh/` 放需要入库的项目配置。
 - 所有者：用户手写（进 git）；`ralphflow_create` 交互式创建器推迟（v0 只声明）。
 - **内置工作流不落盘**（对齐 opencode/claude 的 `ensureProjectWorkflows`）：`loadWorkflow` 回落插件目录，内置因此**始终是随插件发布的最新版**。播种副本会遮蔽插件目录、并在插件升级后变成陈旧副本——**实测踩过**：工作区里那份 7 步 `spec` 副本把新版 4 步内置整个挡住了，改内置却"没生效"。定制入口是"放同名文件遮蔽内置"（有意行为）。
@@ -195,7 +197,7 @@
    - **2026-09 精修（作者批准）**：原措辞「跳过验证推进」收窄为「**执行者自行**跳过验证推进」。判据是机械可判的两支：`可推进 ⇔ stepHasCheck(step) ? (判定齐 ∧ 全 passed ∧ 归属本步) : 定义已声明本步免验证`。
    - **为什么仍是 fail-closed**：决策输入是**工作流定义**（作者所有），不是执行者——`stepHasCheck` 只读 `StepDef`，与 state、与模型输出无关，执行者在运行期无法影响它。故「无 `check` 的步骤跳过验证」是**作者声明的机械推进**，不是执行者绕过裁判。同类先例：审查门的放行本就是「无机器判定即推进」（由人决定）。
    - **不得放宽的攻击向量**：伪造判定、**无判定且定义未声明免验证时的推进**、过旧判定复用、主会话试图委派。
-   - 落地任务书：`docs/v2/no-check-semantics-brief.md`（待实现；精修后的措辞在实现落地前**已成立**——现行代码从不无判定推进，是精修版的一个子集）。
+   - 落地任务书：`docs/v2/no-check-semantics-brief.md`（**已实现**：`stepHasCheck(step)` 只读 `StepDef`；无 `check` 的步骤不委派验证者、不写 `verdicts[]`，DO 完成直接推进 / `manual_step` 停在门等放行；跳过一律诚实标注「跳过对抗性验证」，通用兜底配方已退役）。
 2. **loop 完美符合要求**：作者用它在真实需求开发任务上跑通（含失败重试、审查门、续跑）。
 3. **坏 YAML fail-fast 说人话**；未知键警告忽略。
 4. 安装进作者日常使用的 web profile，明日起即用。

@@ -12,6 +12,7 @@
  *  - 只有读工具（含 bash 供取证跑测试）；bash 内的间接写是与其它版本对齐的有意接受的弱点。
  */
 import type { Context } from "@deepseek-ai/cordis";
+import { stepHasCheck } from "./engine.js";
 import type { StepDef, WorkflowDef, Verdict, VerifyRequest } from "./engine.js";
 
 /**
@@ -127,6 +128,15 @@ function supportsOutputSchema(ctx: Context, name: string): boolean {
 
 /** CHECK 提示词构造（导出供测试直接断言 §1.3 的 desc/交付物/产出目录） */
 export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): string {
+  // 通用兜底配方已随「无 check = 跳过对抗性验证」退役（no-check-semantics-brief §7）。
+  // 本函数**只在有 check 时被调用**：传入无 check 的步骤是引擎缺陷，必须明确失败，
+  // 绝不静默产出兜底配方 —— 那等于把已删除的行为留成暗门（校验形同虚设且不可见）。
+  if (!stepHasCheck(req.step)) {
+    throw new Error(
+      `buildCheckPrompt 拒绝无 \`check\` 的步骤 \`${req.step.id}\`：无 check 的步骤跳过对抗性验证，` +
+      `不应委派验证者（兜底配方已退役，不再静默生成）。`,
+    );
+  }
   const rel = req.artifactsRelDir;
   // §1.3：CHECK 必须拿到与 DO 同等的承诺上下文（desc + 交付物 + 产出目录），
   // 否则验证者不知道本步承诺交付什么，只能泛泛核对。
@@ -149,7 +159,7 @@ export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): s
     stepFacts.join("\n"),
     "",
     "## 检查依据",
-    req.step.check?.trim() || "（本步未声明检查依据，请按任务的每一条要求严格核对：是否落实、是否真实可用、有无遗漏。）",
+    req.step.check!.trim(),
     "",
     "## 取证要求",
     "在**当前工作区**里取证（读文件、跑命令、搜索），逐条核对检查依据。",

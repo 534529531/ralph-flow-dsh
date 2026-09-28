@@ -120,6 +120,22 @@ export interface AdversarialConfig {
   model?: ModelRef;
 }
 
+/**
+ * 本步是否配置了对抗性检查 —— **纯函数谓词，只读 `StepDef`**（design §12.1 精修）。
+ *
+ * 这是「本步是否需要独立验证」的**唯一判据**，与 state、与模型输出无关：
+ * 判据来自**工作流定义**（作者所有），执行者在运行期无法影响它。因此
+ * 「无 `check` 的步骤跳过对抗性验证」是**作者声明的机械推进**，不是执行者绕过裁判。
+ *
+ * **零新状态字段**（宪法 §10.4）：某步有没有 `check` 是工作流定义的属性、不是运行事实，
+ * 需要时现算即可 —— 绝不往 `InstanceState` 里加 `skipped_steps[]` 之类的派生量。
+ *
+ * `check_voting` 本版本未支持（warn+ignore），不参与此判据。
+ */
+export function stepHasCheck(step: Pick<StepDef, "check">): boolean {
+  return typeof step.check === "string" && step.check.trim() !== "";
+}
+
 export interface WorkflowDef {
   name: string;
   description?: string;
@@ -292,7 +308,7 @@ export interface VerifyRequest {
  *   · 不可达步骤静默不执行；
  *   · 没有可达步骤能到 `done` → 工作流永远不完成（旧版 doctor 还报 ✅，运行时无限循环）；
  *   · 未解析的 `{{...}}` 原样进入提示词；
- *   · 非 manual 步没写 check → 只有通用兜底配方，验收形同虚设。
+ *   · 非 manual 步没写 check → 该步**跳过对抗性验证**、直接推进（必须让作者知道）。
  */
 export function lintWorkflow(steps: StepDef[], manual: Set<string>): string[] {
   const warnings: string[] = [];
@@ -334,12 +350,13 @@ export function lintWorkflow(steps: StepDef[], manual: Set<string>): string[] {
       }
     }
   }
-  // 非 manual 且无 check：DO 完成后只会按通用兜底配方验证（**不会跳过验证**），
-  // 但没有针对本步的验收配方 → 验证形同虚设，必须醒目告警。
+  // 无 check 的步骤**跳过对抗性验证**（与 opencode 对齐）：
+  //   · 非 manual 步 → DO 完成后直接进入下一步，不会被独立验证 —— 作者必须知道（告警）；
+  //   · manual 步 → 纯人工审查是**刻意的默认**，不是问题（不告警）。
+  // 通用兜底配方已随本语义退役（见 verify.ts buildCheckPrompt），文案不得再提它。
   for (const s of steps) {
-    const hasCheck = typeof s.check === "string" && s.check.trim() !== "";
-    if (!hasCheck && !manual.has(s.id) && s.manual_step !== true) {
-      warnings.push(`步骤 \`${s.id}\` 未配置对抗检查（无 \`check\`）：DO 完成后只会按通用兜底配方验证，建议补上针对本步的验收配方；确为人工审查步请加进 \`manual_step\`。`);
+    if (!stepHasCheck(s) && !manual.has(s.id) && s.manual_step !== true) {
+      warnings.push(`步骤 \`${s.id}\` 未配置对抗性检查（无 \`check\`），DO 完成后直接进入下一步，不会被独立验证。`);
     }
   }
   return warnings;
@@ -563,7 +580,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         if (!KNOWN_STEP_KEYS.has(k)) warnings.push(`步骤 \`${s.id}\` 的键 \`${k}\` 本版本未支持，已忽略。`);
       }
       if (s.check_voting !== undefined) {
-        warnings.push(`步骤 \`${s.id}\` 用了 \`check_voting\`（多验证者投票）：本版本未支持，已忽略并按通用对抗检查执行。`);
+        warnings.push(`步骤 \`${s.id}\` 用了 \`check_voting\`（多验证者投票）：本版本未支持，已忽略；本步有 \`check\` 时按单验证者执行，没有 \`check\` 时跳过对抗性验证。`);
       }
       // ── §1.1 加载期硬校验：写错了却没有任何信号 = 缺陷（要么硬错误，要么 doctor 告警）
       // do 缺失：没有可执行的指令，整步无意义 → 硬错误（不再静默接受空步）。
@@ -571,9 +588,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         problems.push(`步骤 \`${s.id}\` 缺少 \`do\`（必填：主会话执行的指令；缺失、非字符串或空串都不接受）。`);
       }
       // check 存在但非字符串（如 `check: true`）：几乎一定是漏写正文。
-      // 硬错误，不静默当成「本步不做检查」——避免把「想要 check」误读成「不想 check」。
+      // 硬错误，不静默当成「本步不做检查」——避免把「想要 check」误读成「不想 check」
+      // （照 opencode：非字符串会被视为未配置检查并跳过验证；本意是跳过请直接删掉该字段）。
       if (s.check !== undefined && s.check !== null && typeof s.check !== "string") {
-        problems.push(`步骤 \`${s.id}\` 的 \`check\` 必须是字符串（当前是 ${typeof s.check}）。本意是不做对抗检查就删掉该键。`);
+        problems.push(`步骤 \`${s.id}\` 的 \`check\` 必须是字符串（当前是 ${typeof s.check}）：非字符串会被视为未配置检查并跳过验证；若你本意是跳过请直接删掉该字段。`);
       }
       // max_fail_count 给了就必须是 ≥1 的整数（0/负数以前被静默接受 → 首次失败即暂停，用户看不懂）。
       if (s.max_fail_count !== undefined
@@ -881,9 +899,14 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return !v.step_id || v.step_id === stepId;
   }
 
-  /** 当前步是否已停下等放行的审查门（判定齐且全 passed，且判定属于本步） */
+  /**
+   * 当前步是否已停下等放行的审查门。
+   *
+   * 无 `check` 的步骤（`!stepHasCheck`）**不叠加机器验证**：交卷/放行后直接停在门，
+   * 是**纯人工审查** —— 判据来自工作流定义（design §12.1 精修后的机械判据）。
+   */
   function atOpenGate(wf: WorkflowDef, state: InstanceState, step: StepDef): boolean {
-    return isGate(wf, step) && allPassedVerified(state, step);
+    return isGate(wf, step) && (!stepHasCheck(step) || allPassedVerified(state, step));
   }
 
   /**
@@ -936,6 +959,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   function doPrompt(instId: string, wf: WorkflowDef, state: InstanceState, step: StepDef, rework?: string): string {
     const idx = wf.steps.findIndex((s) => s.id === step.id) + 1;
     const rel = artifactsRelDirOf(instId);
+    const hasCheck = stepHasCheck(step);
     const parts = [
       `[ralphflow] 工作流 \`${wf.name}\` · 步骤 ${idx}/${wf.steps.length}：**${step.id}**${step.desc ? ` — ${step.desc}` : ""}`,
       "",
@@ -958,12 +982,72 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       "## 交卷方式",
       "完成实际工作后，按顺序做两件事：",
       "",
-      "1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（异步，通常 1–5 分钟，**不需要用户做任何操作**）→ 期间用户可以做什么（补充信息或纠正方向 / 用 `/ralphflow-status` 看进度 / 用 `/ralphflow-cancel` 中止）。用用户的语言写，不要把它埋进技术叙述里。",
-      "2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。独立验证者会立刻检查你的产出。",
+      // 有无 check 决定「交卷之后发生什么」：有 → 独立验证；无 → 跳过对抗性验证。
+      // 绝不预告一个不会发生的验证（省 token 不能以伪造事实为代价）。
+      // 有 check 的两条与改造前**逐字相同**（回归基线）。
+      hasCheck
+        ? "1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（异步，通常 1–5 分钟，**不需要用户做任何操作**）→ 期间用户可以做什么（补充信息或纠正方向 / 用 `/ralphflow-status` 看进度 / 用 `/ralphflow-cancel` 中止）。用用户的语言写，不要把它埋进技术叙述里。"
+        : "1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 本步**不配置对抗性检查**，会**跳过对抗性验证**（不会有独立验证进程来复核）→ 接下来自动进入下一步（`manual_step` 步骤则停在审查门等你放行，**不需要用户做任何操作**）。用用户的语言写，不要把它埋进技术叙述里。",
+      hasCheck
+        ? "2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。独立验证者会立刻检查你的产出。"
+        : "2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。本步不委派独立验证者，交卷即生效。",
       "",
-      "不要只在回复里说「完成了」——那样不会触发验证。**必须调用工具**。",
+      hasCheck
+        ? "不要只在回复里说「完成了」——那样不会触发验证。**必须调用工具**。"
+        : "不要只在回复里说「完成了」——那样不会触发推进。**必须调用工具**。",
     );
+    if (!hasCheck) {
+      // 照 opencode 的措辞（`opencode/src/engine.ts:1565`）
+      parts.push(
+        "",
+        `ℹ️ 本步骤**不配置对抗性检查**：完成即可，不会有独立的验证进程来复核。请务必自查产出是否满足任务要求（manual_step 步骤则由你审查后运行 \`/ralphflow-continue\` 放行）。`,
+      );
+    }
     return parts.join("\n");
+  }
+
+  /**
+   * 记「本步跳过对抗性验证」到轨迹（**只记一次**：门上改稿重交 / 放行推进不重复记）。
+   *
+   * 用词是硬要求：只能写「跳过对抗性验证」，**绝不**写「检查通过」——
+   * 没有验证者就没有判定，省 token 不能以伪造事实为代价。
+   * 「是否已记过」从 `history` 现算（零新状态字段，宪法 §10.4）。
+   */
+  function noteCheckSkipped(instId: string, state: InstanceState, step: StepDef): void {
+    if (state.history.some((h) => h.event === "check_skipped" && h.step === step.id)) return;
+    pushHistory(state, "check_skipped", `步骤 \`${step.id}\` 未配置 \`check\`，跳过对抗性验证`, step.id);
+    log("info", "check_skipped", { instId, step: step.id, reason: "no_check" });
+  }
+
+  /**
+   * 无 `check` 的步骤：**不委派验证者**，按工作流定义声明直接推进或停在审查门。
+   *
+   * 判据是 `stepHasCheck(step)`（只读 `StepDef`，见 design §12.1 精修）：这不是
+   * 「执行者跳过验证」，而是**作者已声明本步免验证**的机械推进。
+   *
+   * **两个分支都不写 `verdicts[]`** —— 没有验证者就没有判定（也不写 `delegations[]`）。
+   * 诚实标注：轨迹与通知一律写「跳过对抗性验证」，**绝不**写「检查通过」。
+   *
+   * 返回是否停在了审查门（供调用方组织交卷回执文案）。
+   */
+  function skipVerification(instId: string, state: InstanceState, wf: WorkflowDef, step: StepDef): boolean {
+    noteCheckSkipped(instId, state, step);
+    writeState(state, instId);
+    if (isGate(wf, step)) {
+      notify(
+        state,
+        `🙋 步骤 \`${step.id}\` 未配置对抗性检查（无 \`check\`），已**跳过对抗性验证**，停在审查门等你放行（纯人工审查，不叠加机器验证）。\n\n确认无误运行 \`/ralphflow-continue\` 进入下一步；需要修改就直接说明，改完重新交卷仍会停在这里。`,
+        `🙋 步骤 ${step.id} 已跳过对抗性验证，停在审查门等你放行`,
+      );
+      return true;
+    }
+    notify(
+      state,
+      `⏭ 步骤 \`${step.id}\` 未配置对抗性检查（无 \`check\`），已**跳过对抗性验证**，直接进入下一步。`,
+      `⏭ 步骤 ${step.id} 已跳过对抗性验证（未配置 check），直接推进`,
+    );
+    advance(instId, state, wf, step);
+    return false;
   }
 
   async function launchVerification(instId: string, state: InstanceState, wf: WorkflowDef, step: StepDef): Promise<void> {
@@ -1116,7 +1200,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     // 这既避免把前一步的失败算到它头上，也让成环的 on_fail 仍能触及 max_fail_count。
     pushHistory(state, "step_start", next.desc ?? "", next.id);
     writeState(state, instId);
-    deliver(state, doPrompt(instId, wf, state, next), `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（完成后会自动进入独立验证）`);
+    // 播报必须诚实：下一步没有 check 时不得宣称「会自动进入独立验证」（有 check 的分支逐字不变）
+    deliver(state, doPrompt(instId, wf, state, next), stepHasCheck(next)
+      ? `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（完成后会自动进入独立验证）`
+      : `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（未配置 check：完成后跳过对抗性验证）`);
   }
 
   function complete(instId: string, state: InstanceState, wf: WorkflowDef): void {
@@ -1127,14 +1214,23 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     state.do_submitted = false;
     // 报告用**内存里的 state** 渲染（含刚落账的 complete 事件），落盘再删纯属浪费；
     // 销毁顺序与失败分支都在 destroyInstance 里（不变量 2/3）。
-    const reportPath = destroyInstance(instId, "done", state);
-    if (reportPath) {
+    const destroyed = destroyInstance(instId, "done", state);
+    if (destroyed) {
       const rel = reportRelPathOf(instId);
-      notify(
-        state,
-        `✅ 工作流 \`${wf.name}\` 完成，报告已归档到 \`${rel}\`。\n\n实例目录已销毁、产出目录保留；历史运行可在 \`/ralphflow-list\` 的「历史运行」节里找到。`,
-        `✅ 工作流 ${wf.name} 完成（报告 ${rel}）`,
-      );
+      // 诚实播报：只有**复查确认**实例目录真没了，才说「已销毁」；否则如实说残留并指向 doctor。
+      if (destroyed.instanceDirRemoved) {
+        notify(
+          state,
+          `✅ 工作流 \`${wf.name}\` 完成，报告已归档到 \`${rel}\`。\n\n实例目录已销毁、产出目录保留；历史运行可在 \`/ralphflow-list\` 的「历史运行」节里找到。`,
+          `✅ 工作流 ${wf.name} 完成（报告 ${rel}）`,
+        );
+      } else {
+        notify(
+          state,
+          `✅ 工作流 \`${wf.name}\` 完成，报告已归档到 \`${rel}\`。\n\n⚠️ 但**实例目录未能删除**（残留 \`${destroyed.instanceDir}\`），未销毁：请检查该目录是否被占用/权限是否可写；\`/ralphflow-doctor\` 会把它报出来，确认无需保留后可手动删除。产出目录保留。`,
+          `⚠️ 工作流 ${wf.name} 完成，但实例目录未销毁（残留，见 doctor）`,
+        );
+      }
     }
   }
 
@@ -1256,11 +1352,19 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 否则部分删除失败（Windows EBUSY 等）会留下一个「列表里看不到、磁盘上还在」的幽灵；
    * 反过来先除名，实例在任何失败下都不会复活成幽灵。
    *
-   * 返回报告绝对路径；归档失败返回 `null` 且**不销毁**（见不变量 3 与边界 2）。
-   * `state` 缺省从磁盘读；调用方（complete/cancel）传内存里的 state，这样报告里带着
-   * 刚落账的最终事件，且不必为了渲染报告再落一次盘。
+   * **路径必须在除名之前解析并固定**（曾经的缺陷）：`instanceDir()` / `statePath()` 都经
+   * `workspaceOf(instId) = registry[instId] ?? projectDir`；先 `delete registry[instId]` 会让它们
+   * 回落到引擎的 `projectDir`。当**实例工作区 ≠ 引擎 projectDir**（GUI 会话就是：会话工作区是
+   * 仓库，dsh 进程 cwd 在别处）时，删除会打到不存在的路径 —— `unlink` 的 catch 是空的、
+   * `rmSync` 带 `force` —— 于是**静默残留**：报告有了、索引除名了，实例目录还在。
+   *
+   * 返回 `{ reportPath, instanceDirRemoved }`；归档失败返回 `null` 且**不销毁**
+   * （见不变量 3 与边界 2）。`state` 缺省从磁盘读；调用方（complete/cancel）传内存里的 state，
+   * 这样报告里带着刚落账的最终事件，且不必为了渲染报告再落一次盘。
+   * `instanceDirRemoved` 让调用方能**诚实播报**：只有真删掉了才说「实例目录已销毁」。
    */
-  function destroyInstance(instId: string, status: "done" | "cancelled", state?: InstanceState): string | null {
+  function destroyInstance(instId: string, status: "done" | "cancelled", state?: InstanceState):
+    { reportPath: string; instanceDirRemoved: boolean; instanceDir: string } | null {
     const s = state ?? readState(instId);
     // 工作流加载不出来时也要能出报告：用 state 里的名字兜底，绝不让坏 YAML 变成「永不销毁」。
     const wf: WorkflowDef = s ? (loadWorkflow(s.workflow_name).def ?? { name: s.workflow_name, steps: [], warnings: [] }) : { name: instId, steps: [], warnings: [] };
@@ -1285,22 +1389,34 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       return null;
     }
 
-    // 2) 销毁前把产出目录解析出来 —— 之后实例目录就没了（名字存在 state.json 里）。
-    const artifactsDir = artifactsDirOf(workspaceOf(instId), instId);
+    // 2) **先把所有路径解析出来并固定**（工作区必须在这里定下来，除名之后 workspaceOf 会回落）：
+    //    · 产出目录名存在 state.json 里，销毁后就查不到了；
+    //    · 实例目录/state.json 的路径一旦除名就再也解析不对（就是这条曾让销毁静默打空）。
+    const workspace = workspaceOf(instId);
+    const artifactsDir = artifactsDirOf(workspace, instId);
+    const instDir = path.join(dirsOf(workspace).instancesDir, instId);
+    const stPath = path.join(instDir, "state.json");
     // 3) 立即从全局索引除名，不等下次 restore() 的 GC。
     delete registry[instId];
     saveRegistry();
     // 4) 物理除名：即使第 5 步部分失败，实例也已从列表消失，不会变成幽灵。
-    try { fs.unlinkSync(statePath(instId)); } catch {}
-    // 5) 递归删实例目录（失败只告警，因为实例已经除名）。
+    //    失败**不静默**（ENOENT 例外：文件本来就不在，不是异常）。
+    try { fs.unlinkSync(stPath); }
+    catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") log("warn", "state_unlink_failed", { instId, path: stPath, error: msg(e) });
+    }
+    // 5) 递归删实例目录（失败告警：实例已经除名，但要留下可诊断痕迹，且播报不得谎称已销毁）。
     try {
-      fs.rmSync(instanceDir(instId), { recursive: true, force: true });
+      fs.rmSync(instDir, { recursive: true, force: true });
     } catch (e) {
-      log("warn", "instance_dir_remove_failed", { instId, error: msg(e) });
+      log("warn", "instance_dir_remove_failed", { instId, dir: instDir, error: msg(e) });
     }
     // 6) 产出目录**非递归**删除：rmdir 拒绝非空目录，真实交付物永远活得比实例久。
     try { fs.rmdirSync(artifactsDir); } catch {}
-    return reportPath;
+    // 7) 复查：销毁必须是**事实**，而不只是"调用过删除"（播报要诚实，doctor 也要能报出残留）。
+    const instanceDirRemoved = !fs.existsSync(instDir);
+    if (!instanceDirRemoved) log("warn", "instance_dir_not_removed", { instId, dir: instDir });
+    return { reportPath, instanceDirRemoved, instanceDir: instDir };
   }
 
   // ─── 对外动作 ──────────────────────────────────────────────────────────────
@@ -1343,7 +1459,13 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const text = [
       `🚀 已启动工作流 **${wf.name}**（实例 \`${instId}\`，共 ${wf.steps.length} 步）。${warnText}`,
       "",
-      "接下来：模型执行本步 → 交卷 → **独立验证者**（独立会话，看不到本对话）取证判定 → 通过则推进，不通过自动返工。",
+      // 诚实标注：首步没有 check 时**不得预告一次不会发生的独立验证**（与 doPrompt / advance 播报同一口径）。
+      // 有 check 的分支与改造前**逐字相同**（回归基线）。
+      stepHasCheck(first)
+        ? "接下来：模型执行本步 → 交卷 → **独立验证者**（独立会话，看不到本对话）取证判定 → 通过则推进，不通过自动返工。"
+        : isGate(wf, first)
+          ? "接下来：模型执行本步 → 交卷 → 本步**不配置对抗性检查**，会**跳过对抗性验证**（纯人工审查），停在审查门等你 `/ralphflow-continue` 放行。"
+          : "接下来：模型执行本步 → 交卷 → 本步**不配置对抗性检查**，会**跳过对抗性验证**，直接进入下一步。",
       "",
       "请现在开始执行上面的任务。",
     ].join("\n");
@@ -1403,12 +1525,28 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       // 同一份内容重复交卷 → 不重复烧验证（防止模型一次做完连调两次工具）
       if (text && text === (state.last_submit_summary ?? "")) {
         log("info", "gate_resubmit_identical", { instId });
-        return { ok: false, text: "交卷内容与上一次完全相同，未重复验证。若你确实改动了产出，请简述改动后再交卷。" };
+        // 无 check 的步骤本来就没有验证：「未重复验证」会读成"验证发生过" → 分文本书写
+        return {
+          ok: false,
+          text: stepHasCheck(step)
+            ? "交卷内容与上一次完全相同，未重复验证。若你确实改动了产出，请简述改动后再交卷。"
+            : "交卷内容与上一次完全相同，未重复受理。若你确实改动了产出，请简述改动后再交卷。",
+        };
       }
       reopenGate(state, instId, step, "审查门上重新交卷（改稿）");
       state.do_submitted = true;
       state.last_submit_summary = text;
       pushHistory(state, "do_submitted", undefined, step.id);
+      // 无 check 的步骤：不委派验证者，按定义声明（停门 / 直接推进）；skipVerification 内落盘
+      if (!stepHasCheck(step)) {
+        const atGate = skipVerification(instId, state, wf, step);
+        return {
+          ok: true,
+          text: atGate
+            ? `⏭ 已受理重新交卷：步骤 \`${step.id}\` 未配置 \`check\`，已跳过对抗性验证（纯人工审查），仍停在审查门等你放行。`
+            : `⏭ 已受理重新交卷：步骤 \`${step.id}\` 未配置 \`check\`，已跳过对抗性验证，直接推进。`,
+        };
+      }
       writeState(state, instId);
       void launchVerification(instId, state, wf, step);
       return { ok: true, text: `🔍 已受理重新交卷，正在重新委派独立验证者检查步骤 \`${step.id}\`。` };
@@ -1417,6 +1555,15 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     state.do_submitted = true;
     state.last_submit_summary = text;
     pushHistory(state, "do_submitted", undefined, step.id);
+    if (!stepHasCheck(step)) {
+      const atGate = skipVerification(instId, state, wf, step);
+      return {
+        ok: true,
+        text: atGate
+          ? `⏭ 交卷已受理：步骤 \`${step.id}\` 未配置 \`check\`，已跳过对抗性验证（纯人工审查），停在审查门等你放行。`
+          : `⏭ 交卷已受理：步骤 \`${step.id}\` 未配置 \`check\`，已跳过对抗性验证，直接进入下一步。`,
+      };
+    }
     writeState(state, instId);
     void launchVerification(instId, state, wf, step);
     return { ok: true, text: `🔍 交卷已受理，独立验证者（独立会话）正在取证判定。等它返回即可，不要重复交卷。` };
@@ -1491,7 +1638,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return {
       remind: true,
       summary: `⚠️ 步骤 ${step.id} 尚未交卷（第 ${n}/${max} 次提醒）`,
-      message: `[ralphflow] 提醒（第 ${n}/${max} 次）：本步（\`${step.id}\`）还没交卷，独立验证不会自动开始。\n\n如果任务已完成，请调用 \`ralphflow_submit\` 工具交卷；如果还没做完，继续做。\n如果你正在等用户回答或需要用户介入，请直接说明，不必交卷。`,
+      // 诚实标注：无 check 的步骤本就不验证，不能说「独立验证不会自动开始」（那是另一回事）。
+      message: `[ralphflow] 提醒（第 ${n}/${max} 次）：本步（\`${step.id}\`）还没交卷，${stepHasCheck(step) ? "独立验证不会自动开始" : "工作流不会推进（本步未配置 `check`，交卷后跳过对抗性验证直接继续）"}。\n\n如果任务已完成，请调用 \`ralphflow_submit\` 工具交卷；如果还没做完，继续做。\n如果你正在等用户回答或需要用户介入，请直接说明，不必交卷。`,
     };
   }
 
@@ -1538,6 +1686,16 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       pushHistory(state, "resume", `from=${reason}`);
       writeState(state, instId);
       if (state.do_submitted) {
+        // 无 check 的步骤从不委派验证者（否则会为一步「作者已声明免验证」的步骤凭空造出判定）
+        if (!stepHasCheck(step)) {
+          const atGate = skipVerification(instId, state, wf, step);
+          return {
+            ok: true,
+            text: atGate
+              ? `▶️ 已解除暂停（原因：${reason}）。步骤 \`${step.id}\` 未配置 \`check\`，已跳过对抗性验证，停在审查门等你放行。`
+              : `▶️ 已解除暂停（原因：${reason}）。步骤 \`${step.id}\` 未配置 \`check\`，已跳过对抗性验证，直接进入下一步。`,
+          };
+        }
         void launchVerification(instId, state, wf, step);
         return { ok: true, text: `▶️ 已解除暂停（原因：${reason}），正在重新委派独立验证者检查步骤 \`${step.id}\`。` };
       }
@@ -1550,11 +1708,21 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       return { ok: false, text: `🔍 步骤 \`${step.id}\` 的独立验证者仍在取证判定中，现在不需要你操作——它跑完会自动唤醒本会话并继续。\n\n想了解进度用 \`/ralphflow-status\`；想中止用 \`/ralphflow-cancel\`。` };
     }
 
-    // ③ 判定落地且全 passed，且判定属于当前步（审查门 / 兜底推进）
-    if (allPassedVerified(state, step)) {
+    // ③ 放行判据（design §12.1 精修后的两支，机械可判）：
+    //    有 check → 判定齐 ∧ 全 passed ∧ 归属本步；
+    //    无 check → **工作流定义已声明本步免验证**（`stepHasCheck` 只读 StepDef，执行者无法影响）。
+    //    （审查门 / 普通步共用这一条：无 check 的普通步在交卷时已直接推进，走到这里的是门。）
+    if (allPassedVerified(state, step) || !stepHasCheck(step)) {
+      const byDefinition = !stepHasCheck(step);
+      if (byDefinition) noteCheckSkipped(instId, state, step);
       if (isGate(wf, step)) pushHistory(state, "gate_released", undefined, step.id);
       advance(instId, state, wf, step);
-      return { ok: true, text: `✅ 步骤 \`${step.id}\` 判定通过，已推进。` };
+      return {
+        ok: true,
+        text: byDefinition
+          ? `⏭ 步骤 \`${step.id}\` 未配置 \`check\`（定义已声明免验证），已跳过对抗性验证并推进。`
+          : `✅ 步骤 \`${step.id}\` 判定通过，已推进。`,
+      };
     }
 
     // ③b 判定全 passed 但有条目不属于当前步 → 归属校验失败，fail-closed（绝不推进）
@@ -1577,8 +1745,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       return { ok: true, text: `🔍 步骤 \`${step.id}\` 已交卷但无判定记录，正在重新委派独立验证者。` };
     }
 
-    // ⑥ 还没交卷 → fail-closed
-    return { ok: false, text: `步骤 \`${step.id}\` 还没交卷，无法推进（本版本没有跳过验证的路径）。已完成工作就交卷，或让模型继续。` };
+    // ⑥ 还没交卷 → fail-closed（只对**有 check** 的步骤可达：无 check 已被 ③ 按定义声明放行）
+    return { ok: false, text: `步骤 \`${step.id}\` 还没交卷，无法推进（本步配置了 \`check\`，没有判定不能推进）。已完成工作就交卷，或让模型继续。` };
   }
 
   function cancelInstance(sessionId: string, instanceRef?: string, reason?: string): ToolResult {
@@ -1594,11 +1762,21 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     state.delegations = [];
     pushHistory(state, "cancelled", reason);
     // 取消 = 与完成同一条销毁路径（归档报告 → 销毁实例目录 → 删空产出目录）。
-    const reportPath = destroyInstance(instId, "cancelled", state);
-    if (reportPath) {
+    const destroyed = destroyInstance(instId, "cancelled", state);
+    if (destroyed) {
       const rel = reportRelPathOf(instId);
-      notify(state, `🛑 实例 \`${instId}\` 已取消${reason ? `：${reason}` : ""}。报告已归档到 \`${rel}\`。`, `🛑 ralphflow 实例已取消（报告 ${rel}）`);
-      return { ok: true, text: `已取消实例 \`${instId}\`。报告已归档：\`${rel}\`。` };
+      const head = `🛑 实例 \`${instId}\` 已取消${reason ? `：${reason}` : ""}。报告已归档到 \`${rel}\`。`;
+      if (destroyed.instanceDirRemoved) {
+        notify(state, head, `🛑 ralphflow 实例已取消（报告 ${rel}）`);
+        return { ok: true, text: `已取消实例 \`${instId}\`。报告已归档：\`${rel}\`。` };
+      }
+      // 诚实播报：实例目录没删掉就说清楚（绝不谎称已销毁）
+      notify(
+        state,
+        `${head}\n\n⚠️ 但**实例目录未能删除**（残留 \`${destroyed.instanceDir}\`），未销毁：\`/ralphflow-doctor\` 可查看，确认无需保留后可手动删除。`,
+        `⚠️ ralphflow 实例已取消，但实例目录未销毁（残留，见 doctor）`,
+      );
+      return { ok: true, text: `已取消实例 \`${instId}\`。报告已归档：\`${rel}\`。⚠️ 但**实例目录未能删除**（残留 \`${destroyed.instanceDir}\`），\`/ralphflow-doctor\` 可查看。` };
     }
     // 归档失败时 destroyInstance 已保留实例目录并发出告警；这里只补交卷结果。
     return { ok: true, text: `已取消实例 \`${instId}\`，但**报告归档失败**，实例目录与 state.json 已保留未销毁。请按告警处理（\`/ralphflow-doctor\` 可查看残留）。` };
@@ -1643,7 +1821,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     ];
     const lines = [`**${id}** — ${facts.join(" · ")}`, "", `任务：${state.user_task}`];
     // 「现在该干什么」——异步验证期间用户最需要的就是这句。
-    const hint = nextActionHint(state, id);
+    // 传入本步有无 check（从 StepDef 现算，零新状态字段）：无 check 的步骤不得宣称「会再次验证」。
+    const wf = loadWorkflow(state.workflow_name).def;
+    const hint = nextActionHint(state, id, wf ? stepOf(wf, state.current_step) : undefined);
     if (hint) lines.push("", hint);
     if (state.verdicts.length > 0) {
       lines.push("", "本轮判定：", ...state.verdicts.map((v) => `- [${v.status}] ${v.reason}`));
@@ -1659,7 +1839,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 「现在该干什么」——由派生事实算出，不落盘（宪法 §10.4）。
    * 异步验证期间这是用户最需要的一句话：说明要不要操作、去哪看、怎么退出。
    */
-  function nextActionHint(s: InstanceState, instId?: string): string | undefined {
+  function nextActionHint(s: InstanceState, instId?: string, step?: StepDef): string | undefined {
     if (!s.active) {
       // 基本不可达：实例一旦结束就被销毁。保留但改为**指向精确报告路径**。
       const rel = instId ? `\`${reportRelPathOf(instId)}\`` : "`" + RALPH_FLOW_DIR + "/reports/`";
@@ -1674,6 +1854,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       return "**无需操作**：独立验证者正在取证判定，跑完会自动唤醒本会话继续。可用 `/ralphflow-status` 看进度，`/ralphflow-cancel` 中止。";
     }
     if (s.do_submitted) {
+      // 无 check 的步骤（纯人工审查/免验证）：不得写「会再次验证」——本步没有独立验证
+      if (step && !stepHasCheck(step)) {
+        return "**等你放行**：本步未配置 `check`（已**跳过对抗性验证**，纯人工审查）。确认无误运行 `/ralphflow-continue` 进入下一步；要修改就直接说明，改完重新交卷仍会停在这里。";
+      }
       return "**等你放行**：确认无误运行 `/ralphflow-continue` 进入下一步；要修改就直接说明，改完重新交卷会再次验证。";
     }
     return "**执行中**：模型正在做本步任务。不要调用 `ralphflow_continue`（推进是自动的）。";

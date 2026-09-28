@@ -2,7 +2,7 @@
 
 > **npm:** [`ralphflow-dsh`](https://www.npmjs.com/package/ralphflow-dsh) · **源码:** [github.com/534529531/ralph-flow-dsh](https://github.com/534529531/ralph-flow-dsh)
 
-**执行者/验证者模式的具象化**：主会话执行任务，独立验证者（全新会话，不可见主会话自辩）取证判定，失败自动返工；**是否推进只由机械程序决定**（裁判权定理，见 [docs/v2/design.md](docs/v2/design.md)）。这是 v2 原生重做版（旧版在 `archive/v1` 分支）。
+**执行者/验证者模式的具象化**：主会话执行任务，**有 `check` 的步骤**由独立验证者（全新会话，不可见主会话自辩）取证判定，失败自动返工（**没有 `check` 的步骤跳过对抗性验证**，见下文）；**是否推进只由机械程序决定**（裁判权定理，见 [docs/v2/design.md](docs/v2/design.md)）。这是 v2 原生重做版（旧版在 `archive/v1` 分支）。
 
 ## 安装
 
@@ -22,7 +22,7 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 
 | 命令 | 工具 | 用途 |
 |---|---|---|
-| `/ralphflow-start` | `ralphflow_start` | 启动工作流（模型执行 → 独立验证 → 失败自动返工） |
+| `/ralphflow-start` | `ralphflow_start` | 启动工作流（模型执行 → 有 `check` 的步骤独立验证 → 失败自动返工） |
 | `/ralphflow-continue` | `ralphflow_continue` | 放行审查门 / 解除暂停 / 接管实例 |
 | `/ralphflow-status` | `ralphflow_status` | 查看实例状态与判定 |
 | `/ralphflow-list` | `ralphflow_list` | 列出实例与工作流（表格） |
@@ -34,6 +34,8 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 `reset / rewind` 已声明未实现（涉及上下文管理，暂缓）；其余命令与 opencode 版功能看齐。命令语义 = **触发词**：`/ralphflow-*` **一律**由模型自然语言回复（含用法错误与未实现命令），**零程序化卡片返回**，行为与 claude code/opencode 完全一致。
 
 内置工作流：`loop`（单步对抗验证循环）、`spec`（探索→提案→逐任务实现→归档，propose 步带审查门）。自定义工作流按同一方言放到 `<workspace>/.dsh/ralph-flow/workflows/`。
+
+**`check` 决定本步是否被独立验证（与 opencode 一致）**：写了 `check` → 交卷后由独立验证者取证判定；**不写 `check` → 该步跳过对抗性验证**，DO 完成直接进入下一步（`manual_step` 的这类步骤则是**纯人工审查**：停在审查门等你 `/ralphflow-continue` 放行）。跳过时通知、轨迹与归档报告一律写「跳过对抗性验证」——绝不会写成「检查通过」。非 `manual_step` 的无 `check` 步骤会在加载期与 `/ralphflow-doctor` 告警（提醒它不会被独立验证）；`check` 写了但非字符串（如 `check: true`）仍是加载期硬错误（本意是免验证请直接删掉该键）。内置 `loop`/`spec` 四步全有 `check`，行为不受影响。
 
 > **内置工作流不落盘**（对齐 opencode/claude）：它们只存在于插件目录，加载时回落取用，因此**始终是随插件发布的最新版本**。要定制，就在 `<workspace>/.dsh/ralph-flow/workflows/` 放一个同名文件——它会遮蔽内置（这是唯一的定制入口，也是有意行为）。
 
@@ -49,7 +51,7 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 └── artifacts/     # 每实例隔离的产出目录（永久保留；只有空目录会随实例销毁）
 ```
 
-**实例是临时的，报告与产出是永久的。** 工作流完成或取消时：报告归档到 `.dsh/ralph-flow/reports/<实例ID>.md` → 从实例列表除名 → 销毁 `.dsh/ralph-flow/instances/<实例ID>/`。产出目录名 = 任务摘要 slug + 实例 id 尾段（按码点截断，中文/emoji 不会被切碎），在 `artifacts/<名字>/` 下；**非空产出目录整个保留**（`rmdir` 拒绝非空目录——真实交付物永远活得比实例久），只有空产出目录才会被删掉。报告归档失败时**不销毁**实例目录（宁可留一个可见残留，也不静默丢掉轨迹），`/ralphflow-doctor` 会报出来。
+**实例是临时的，报告与产出是永久的。** 工作流完成或取消时：报告归档到 `.dsh/ralph-flow/reports/<实例ID>.md` → 从实例列表除名 → 销毁 `.dsh/ralph-flow/instances/<实例ID>/`。产出目录名 = 任务摘要 slug + 实例 id 尾段（按码点截断，中文/emoji 不会被切碎），在 `artifacts/<名字>/` 下；**非空产出目录整个保留**（`rmdir` 拒绝非空目录——真实交付物永远活得比实例久），只有空产出目录才会被删掉。报告归档失败时**不销毁**实例目录（宁可留一个可见残留，也不静默丢掉轨迹），`/ralphflow-doctor` 会报出来。**销毁失败也不会谎称成功**：实例目录没删掉时，完成/取消播报会如实说明残留并指向 `/ralphflow-doctor`（残留目录缺 `state.json`，doctor 报「缺少 state.json」）；实例与报告都落在**发起会话的工作区**，与引擎进程的 cwd 无关。
 
 `artifacts/<产出目录名>/` 是 DO 阶段的交付物落点：DO 与 CHECK 提示词都会自动带上一行「产出目录」，所以工作流里写**裸文件名**（如 `summary.md`）即可落到该实例的目录，跨任务不串味、也不进仓库根。
 

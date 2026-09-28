@@ -254,5 +254,31 @@ console.log("\nD5 后端选择按能力判定、与名字无关，且绝不落�
   }
 }
 
+console.log("\nD6 兜底配方退役：无 check 的步骤不得被委派（fail-closed，绝不静默生成通用配方）");
+{
+  const ALL = { outputSchema: true, persona: true, toolFilter: true };
+  let startCalls = 0;
+  const ctx = {
+    subagents: {
+      list: () => ["fresh"],
+      getProvider: () => ({ capabilities: ALL, inheritsParentContext: false }),
+      start: async () => {
+        startCalls++;
+        return { id: "c", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) };
+      },
+    },
+    tools: { schemas: () => [{ name: "read" }] },
+    agents: { get: () => undefined },
+  };
+  const wf = { name: "skip", steps: [{ id: "a", do: "X" }], manual_step: [], warnings: [] };
+  const v = await runVerifier({ ctx }, {
+    instId: "t", step: wf.steps[0], workflow: wf, userTask: "u", checkIndex: 0,
+    artifactsRelDir: ".dsh/ralph-flow/artifacts/t", signal: new AbortController().signal,
+  });
+  check("无 check 的步骤 → 判定为 infra（fail-closed，绝不是 passed）", v.status === "infra", JSON.stringify(v));
+  check("infra 理由点名 check（明确失败，不静默）", /check/.test(v.reason), v.reason);
+  check("无 check 的步骤 → 委派一次都没发生（start 调用为 0）", startCalls === 0, `startCalls=${startCalls}`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

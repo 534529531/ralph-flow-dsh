@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createEngine, resolveCheckModel, makeArtifactsDirName } from "../lib/engine.js";
+import { createEngine, resolveCheckModel, makeArtifactsDirName, stepHasCheck } from "../lib/engine.js";
 import { buildCheckPrompt } from "../lib/verify.js";
 import { CREATE_GUIDE } from "../lib/create.js";
 
@@ -18,9 +18,12 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-test-"));
 const deliveries = [];
 
 let scripted = [];
+/** 验证端口调用计数：无 check 的步骤必须**一次都不调用**（验收 2 要求用计数器断言，不能只看返回值） */
+let verifyCalls = 0;
 const engine = createEngine(dir, {
   deliver: (_sid, text) => { deliveries.push(text); return true; },
   verify: async (req) => {
+    verifyCalls++;
     const v = scripted.shift();
     if (!v) throw new Error("no scripted verdict");
     return { check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), ...v };
@@ -50,6 +53,10 @@ const S = () => `session-${++n}`;
   check("内置 loop/spec 可加载", wfs.length >= 2 && wfs.every((w) => !w.invalid), JSON.stringify(wfs.map((w) => w.name)));
   const { r, id } = start("loop", "写一个 hello.html", s);
   check("start 成功且 DO prompt 完整", r.ok && r.text.includes("写一个 hello.html") && r.text.includes("ralphflow_submit"));
+  // 有 check 的首步：start 回执的前导句与改造前**逐字相同**（回归基线）
+  check("有 check 的首步：start 回执仍是原文的独立验证预告",
+    r.text.includes("接下来：模型执行本步 → 交卷 → **独立验证者**（独立会话，看不到本对话）取证判定 → 通过则推进，不通过自动返工。"),
+    r.text.slice(0, 320));
   scripted.push({ status: "passed", reason: "文件存在且内容正确" });
   submit(s, "已完成，创建了 hello.html。");
   await settle();
@@ -181,7 +188,10 @@ const S = () => `session-${++n}`;
   const r = engine.start("loop", "工作区用例", s, ws);
   check("显式工作区 start 成功", r.ok);
   const id = newestId();
-  check("实例目录落在指定工作区", engine.instanceDir(id).startsWith(path.join(ws, ".dsh", "ralph-flow", "instances")), engine.instanceDir(id));
+  // 真实工作区路径（不经过 engine.instanceDir 的回落）：跨工作区用例里后者在销毁后指向 projectDir，
+  // 用它断言「已销毁」是**空转**的（本工程曾因此漏掉「终止不销毁实例目录」缺陷）。
+  const wsInstDir = path.join(ws, ".dsh", "ralph-flow", "instances", id);
+  check("实例目录落在指定工作区", fs.existsSync(path.join(wsInstDir, "state.json")), wsInstDir);
   check("索引可发现（listInstances 可见）", engine.listInstances().some((i) => i.id === id));
   check("内置工作流**不**播种到工作区（对齐 opencode/claude，避免陈旧副本遮蔽内置）",
     !fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "workflows", "loop.yaml")));
@@ -191,7 +201,7 @@ const S = () => `session-${++n}`;
   submit(s, "完成。");
   await settle();
   const st = engine.readState(id);
-  check("跨工作区实例通过并完成（实例目录已销毁）", st === null && !fs.existsSync(engine.instanceDir(id)));
+  check("跨工作区实例通过并完成（**真实工作区**实例目录已销毁）", st === null && !fs.existsSync(wsInstDir), wsInstDir);
   check("报告归档在相同工作区", fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "reports", `${id}.md`)), `${ws}/.dsh/ralph-flow/reports/${id}.md`);
 }
 
@@ -253,7 +263,8 @@ const S = () => `session-${++n}`;
   await settle();
   check("完成后非空产出目录保留（逐字节）",
     fs.existsSync(artDir) && fs.readFileSync(path.join(artDir, "summary.md"), "utf-8") === "keep-me\n");
-  check("完成后实例目录已销毁", !fs.existsSync(engine.instanceDir(id)));
+  // 同 §8：跨工作区用例必须用**真实工作区路径**断言，engine.instanceDir 在销毁后会回落到 projectDir
+  check("完成后实例目录已销毁（真实工作区路径）", !fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "instances", id)));
 }
 
 // ── 11) §1.1 加载期硬校验：写错了必须硬错误（静默 = 缺陷）─────────────────────
@@ -413,7 +424,22 @@ const S = () => `session-${++n}`;
   check("未解析模板变量 → 告警", !!r3.def && r3.warnings.some((w) => w.includes("{{output_dir}}")), JSON.stringify(r3.warnings));
 
   const r4 = wfFile("lint-nocheck", ["steps:", "  - id: a", "    do: X", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
-  check("非 manual 且无 check → 告警", !!r4.def && r4.warnings.some((w) => w.includes("对抗检查")), JSON.stringify(r4.warnings));
+  check("非 manual 且无 check → 告警「不会被独立验证」",
+    !!r4.def && r4.warnings.some((w) => w.includes("对抗性检查") && w.includes("不会被独立验证")), JSON.stringify(r4.warnings));
+  check("无 check 告警不再提「兜底配方」（已退役）", !!r4.def && !r4.warnings.some((w) => w.includes("兜底")), JSON.stringify(r4.warnings));
+
+  // 新增：manual 且无 check → **不告警**（纯人工审查是刻意默认，不是问题，照 opencode lint）
+  const r5 = wfFile("lint-nocheck-manual", ["manual_step: [a]", "steps:", "  - id: a", "    do: X", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
+  check("manual 且无 check → 不告警", !!r5.def && r5.warnings.length === 0, JSON.stringify(r5.warnings));
+
+  // doctor（工具）与 loadWorkflow 共用同一份 warnings：告警必须在 doctor 的数据源里可见，
+  // 且 manual 的无 check 步骤不得出现（验收 8 的端到端断言）。
+  const wfEntries = engine.listWorkflows();
+  const entryOf = (n) => wfEntries.find((w) => w.name === n) ?? { warnings: [] };
+  check("doctor 数据源里非 manual 无 check → 告警「不会被独立验证」",
+    entryOf("lint-nocheck").warnings.some((w) => w.includes("不会被独立验证")), JSON.stringify(entryOf("lint-nocheck").warnings));
+  check("doctor 数据源里 manual 无 check → 零告警", entryOf("lint-nocheck-manual").warnings.length === 0, JSON.stringify(entryOf("lint-nocheck-manual").warnings));
+  check("doctor 文本里可见该告警", engine.diagnose().text.includes("不会被独立验证"));
 
   // 不误伤：既有 loop/spec 与现有夹具照常加载、无 lint 误报
   for (const n of ["loop", "spec"]) {
@@ -526,6 +552,217 @@ const S = () => `session-${++n}`;
   // 行为侧 7：指引示例里的 adversarial_check 确实只写 model 也能加载启动
   const acGuide = guideFile("guide-ac", ["adversarial_check:", "  model: deepseek/deepseek-chat", "steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
   check("指引所述 adversarial_check 写法可加载且无告警", !!acGuide.def && acGuide.problems.length === 0 && acGuide.warnings.length === 0, JSON.stringify(acGuide));
+}
+
+// ── 17) 无 check 的步骤：跳过对抗性验证（与 opencode 对齐；design §12.1 精修）──────
+// 四格真值表的**后两格**：无 check + 非 manual → 直接 on_pass；
+//                    无 check + manual   → 停在审查门（纯人工审查）。
+// 前两格（有 check）是回归基线，本文件其它小节已覆盖（#5/#6 的 spec 门、#1/#2 的 loop）。
+{
+  const wfFile = (name, lines) => {
+    fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
+    return engine.loadWorkflow(name);
+  };
+
+  // ── 判据谓词本身（纯函数，只读 StepDef）──
+  check("stepHasCheck: 非空字符串 → true", stepHasCheck({ check: "核对 X" }) === true);
+  check("stepHasCheck: 缺省/空串/空白 → false",
+    stepHasCheck({}) === false && stepHasCheck({ check: "" }) === false && stepHasCheck({ check: "   \n " }) === false);
+  check("stepHasCheck: 非字符串（YAML 写错）→ false（加载期另有硬错误）", stepHasCheck({ check: true }) === false);
+
+  // ── 17a) 无 check + 非 manual → 跳过验证，直接 on_pass 推进 ──
+  const plain = wfFile("skip-plain", [
+    "description: 无 check 直接推进", "steps:",
+    "  - id: a", "    desc: 免验证步", "    do: 做 A", "    output: a.md",
+    "    on_pass: b", "    on_fail: a", "    max_fail_count: 3",
+    "  - id: b", "    desc: 有验证步", "    do: 做 B", "    check: 检查 B",
+    "    on_pass: done", "    on_fail: b", "    max_fail_count: 3",
+  ]);
+  check("17a 无 check 工作流可加载（不拒收；lint 提醒该步不被独立验证）",
+    !!plain.def && plain.warnings.some((w) => w.includes("`a`") && w.includes("不会被独立验证")), JSON.stringify(plain.warnings));
+  {
+    const s = S();
+    deliveries.length = 0;
+    const { r, id } = start("skip-plain", "跳过验证用例", s);
+    check("17a 无 check 的 DO 提示词含「不配置对抗性检查」说明",
+      r.ok && r.text.includes("不配置对抗性检查") && r.text.includes("跳过对抗性验证"), r.text.slice(-400));
+    check("17a 无 check 的 DO 提示词不预告「独立验证者会立刻检查你的产出」",
+      !r.text.includes("独立验证者会立刻检查你的产出"), r.text.slice(-300));
+    // 首步无 check 时，start 回执的前导句也不得预告一次不会发生的独立验证（诚实标注）
+    check("17a start 回执不预告独立验证（不出现「取证判定」）",
+      !r.text.includes("取证判定") && r.text.includes("跳过对抗性验证"), r.text.slice(0, 320));
+    check("17a start 回执写明「直接进入下一步」",
+      r.text.includes("会**跳过对抗性验证**，直接进入下一步"), r.text.slice(0, 320));
+    const callsBefore = verifyCalls;
+    const sub = submit(s, "A 做完了。");
+    await settle();
+    const st = engine.readState(id);
+    check("17a 验证端口零调用（计数器断言，不是看返回值）", verifyCalls === callsBefore, `calls=${verifyCalls - callsBefore}`);
+    check("17a 不写 verdicts[] / 不写 delegations[]", st.verdicts.length === 0 && st.delegations.length === 0, JSON.stringify({ v: st.verdicts.length, d: st.delegations.length }));
+    check("17a 直接推进到 on_pass 目标 b", st.current_step === "b" && st.do_submitted === false, `step=${st.current_step}`);
+    check("17a 轨迹里有 check_skipped（含步骤 id 与该步未配置 check）",
+      st.history.some((h) => h.event === "check_skipped" && h.step === "a" && (h.detail ?? "").includes("未配置")), JSON.stringify(st.history.map((h) => h.event)));
+    check("17a 轨迹写明「跳过对抗性验证」且不出现「检查通过」",
+      st.history.some((h) => (h.detail ?? "").includes("跳过对抗性验证")) && !JSON.stringify(st.history).includes("检查通过"),
+      JSON.stringify(st.history.filter((h) => h.step === "a").map((h) => h.detail)));
+    check("17a 交卷回执写明「跳过对抗性验证」", sub.ok && sub.text.includes("跳过对抗性验证"), sub.text);
+    check("17a 通知写明「跳过对抗性验证」", deliveries.some((t) => t.includes("跳过对抗性验证")), deliveries.at(-1)?.slice(-200));
+    // 推进到 b 的 DO 提示词是**有 check** 的：不得含无 check 的说明（验收 7 的反向断言）
+    check("17a 有 check 的步骤 DO 提示词不含「不配置对抗性检查」",
+      deliveries.some((t) => t.includes("有验证步")) && !deliveries.filter((t) => t.includes("有验证步")).some((t) => t.includes("不配置对抗性检查")),
+      deliveries.filter((t) => t.includes("有验证步")).at(-1)?.slice(-200));
+    // 未交卷提醒（模型可见）在有 check 的步骤上**逐字不变**（回归基线）
+    const remCheck = engine.remindToSubmit(s);
+    check("17a 有 check 的未交卷提醒仍是原文（回归）",
+      remCheck.remind === true && remCheck.message.includes("独立验证不会自动开始"), remCheck.message);
+    // 诚实标注：任何通知都不得出现「检查通过」
+    check("17a 通知里不出现「检查通过」", !deliveries.some((t) => t.includes("检查通过")), deliveries.find((t) => t.includes("检查通过"))?.slice(0, 120));
+    // b 步照常验证通过 → 完成并归档
+    scripted.push({ status: "passed", reason: "b 独立取证通过" });
+    submit(s, "B 做完了。");
+    await settle();
+    check("17a 后续有 check 的步骤照常验证并完成（实例销毁）", engine.readState(id) === null && !fs.existsSync(engine.instanceDir(id)));
+    const report = fs.readFileSync(path.join(engine.reportsDir, `${id}.md`), "utf-8");
+    check("17a 归档报告含 check_skipped 与「跳过对抗性验证」", report.includes("check_skipped") && report.includes("跳过对抗性验证"), report.slice(0, 800));
+    check("17a 归档报告不出现「检查通过」", !report.includes("检查通过"), report.slice(0, 800));
+  }
+
+  // ── 17b) 无 check + manual → 纯人工审查门（停在门，continue 放行）──
+  const gate = wfFile("skip-gate", [
+    "description: 无 check 的纯人工审查门", "manual_step: [g]", "steps:",
+    "  - id: g", "    desc: 纯人工审查步", "    do: 做 G",
+    "    on_pass: h", "    on_fail: g", "    max_fail_count: 3",
+    "  - id: h", "    desc: 收尾步", "    do: 做 H", "    check: 检查 H",
+    "    on_pass: done", "    on_fail: h", "    max_fail_count: 3",
+  ]);
+  check("17b manual + 无 check → 加载不告警（纯人工审查是刻意默认）",
+    !!gate.def && !gate.warnings.some((w) => w.includes("`g`")), JSON.stringify(gate.warnings));
+  {
+    const s = S();
+    deliveries.length = 0;
+    const { r, id } = start("skip-gate", "纯人工审查用例", s);
+    check("17b 门的 DO 提示词含「不配置对抗性检查」与 continue 放行说明",
+      r.ok && r.text.includes("不配置对抗性检查") && r.text.includes("/ralphflow-continue"), r.text.slice(-400));
+    // 首步是"无 check 的门"时，start 回执必须说「停在审查门等放行」，不得预告独立验证
+    check("17b start 回执不预告独立验证、写明停在审查门",
+      !r.text.includes("取证判定") && r.text.includes("停在审查门等你 `/ralphflow-continue` 放行"), r.text.slice(0, 360));
+    // 未交卷提醒（模型可见）不得谎称「独立验证不会自动开始」——本步本来就不验证
+    const remGate = engine.remindToSubmit(s);
+    check("17b 无 check 的未交卷提醒写明跳过对抗性验证",
+      remGate.remind === true && remGate.message.includes("跳过对抗性验证") && !remGate.message.includes("独立验证不会自动开始"), remGate.message);
+    const callsBefore = verifyCalls;
+    submit(s, "G 做完了。");
+    await settle();
+    let st = engine.readState(id);
+    check("17b 验证端口零调用", verifyCalls === callsBefore, `calls=${verifyCalls - callsBefore}`);
+    check("17b 不写 verdicts[]（没有验证者就没有判定）", st.verdicts.length === 0, JSON.stringify(st.verdicts));
+    check("17b 停在审查门（步骤不变、已交卷、待在飞委派也没有）",
+      st.current_step === "g" && st.do_submitted === true && st.delegations.length === 0,
+      JSON.stringify({ step: st.current_step, sub: st.do_submitted, d: st.delegations.length }));
+    check("17b 轨迹写明「跳过对抗性验证」且不出现「检查通过」",
+      st.history.some((h) => h.event === "check_skipped" && (h.detail ?? "").includes("跳过对抗性验证")) && !JSON.stringify(st.history).includes("检查通过"),
+      JSON.stringify(st.history.filter((h) => h.step === "g").map((h) => h.detail)));
+    check("17b 门提示写明「跳过对抗性验证」+ 纯人工审查",
+      deliveries.some((t) => t.includes("跳过对抗性验证") && t.includes("审查门") && t.includes("纯人工审查")), deliveries.at(-1)?.slice(-260));
+    check("17b 通知里不出现「检查通过」", !deliveries.some((t) => t.includes("检查通过")));
+
+    // 同一份内容重复交卷（无 check）：回执必须说「未重复受理」，不能说「未重复验证」（本步没有验证）
+    const callsBeforeIdentical = verifyCalls;
+    const dup = submit(s, "G 做完了。");
+    check("17b 重复交卷回执不谎称「未重复验证」（无 check 用「未重复受理」）",
+      !dup.ok && dup.text.includes("未重复受理") && !dup.text.includes("未重复验证"), dup.text);
+    check("17b 重复交卷未改状态、未验证",
+      verifyCalls === callsBeforeIdentical && engine.readState(id).current_step === "g" && engine.readState(id).verdicts.length === 0,
+      JSON.stringify({ calls: verifyCalls - callsBeforeIdentical }));
+
+    // 零新状态字段：InstanceState 的落盘字段集合与改造前完全相同（宪法 §10.4）
+    const PRE_CHANGE_PERSISTED_FIELDS = [
+      "active", "artifacts_dir_name", "current_step", "delegations", "do_submitted", "fail_counts", "history",
+      "last_submit_summary", "owner_session", "paused", "pause_reason", "started_at", "updated_at", "user_task",
+      "verdicts", "workflow_name",
+    ];
+    const rawKeys = Object.keys(JSON.parse(fs.readFileSync(path.join(engine.instanceDir(id), "state.json"), "utf-8")));
+    check("17b 零新状态字段：落盘键全属改造前集合", rawKeys.every((k) => PRE_CHANGE_PERSISTED_FIELDS.includes(k)), rawKeys.join(","));
+    check("17b 零新状态字段：没有 skipped_steps / 任何 skip 派生字段", !rawKeys.some((k) => /skip/i.test(k)), rawKeys.join(","));
+    check("17b 零新状态字段：改造前的字段一个不少（除未触发的可选 pause_reason）",
+      PRE_CHANGE_PERSISTED_FIELDS.filter((k) => k !== "pause_reason").every((k) => rawKeys.includes(k)), rawKeys.join(","));
+
+    // 用户可见的状态提示也必须诚实（不得宣称「会再次验证」）
+    const stText = engine.statusOf(s).text;
+    check("17b status 提示写明跳过对抗性验证且不谎称会再次验证",
+      stText.includes("跳过对抗性验证") && !stText.includes("再次验证") && !stText.includes("检查通过"), stText.slice(-300));
+
+    // 门上改稿重交（无 check）：仍停在门、仍不验证、仍不产生判定
+    const callsBeforeResubmit = verifyCalls;
+    const sub2 = submit(s, "G 改了一版。");
+    await settle();
+    const st2 = engine.readState(id);
+    check("17b 门上重交仍停在门、仍不验证、仍不产生判定",
+      sub2.ok && verifyCalls === callsBeforeResubmit && st2.current_step === "g" && st2.do_submitted === true && st2.verdicts.length === 0,
+      JSON.stringify({ ok: sub2.ok, calls: verifyCalls - callsBeforeResubmit, step: st2.current_step, v: st2.verdicts.length }));
+    check("17b 重交回执写明「跳过对抗性验证」", sub2.text.includes("跳过对抗性验证"), sub2.text);
+
+    const c = engine.continueInstance(s);
+    st = engine.readState(id);
+    check("17b /ralphflow-continue 放行推进到 h（不需要判定）", c.ok && st.current_step === "h", `ok=${c.ok} step=${st.current_step}`);
+    check("17b 放行回执写明「跳过对抗性验证」", c.text.includes("跳过对抗性验证"), c.text);
+    check("17b 放行后仍未产生任何判定", st.verdicts.length === 0, JSON.stringify(st.verdicts));
+    check("17b 放行记入轨迹（gate_released + check_skipped）",
+      st.history.some((h) => h.event === "gate_released" && h.step === "g") && st.history.some((h) => h.event === "check_skipped" && h.step === "g"),
+      st.history.map((h) => h.event).join("→"));
+    scripted.push({ status: "passed", reason: "h 独立取证通过" });
+    submit(s, "H 做完了。");
+    await settle();
+    check("17b 后续有 check 的步骤照常验证并完成（实例销毁）", engine.readState(id) === null && !fs.existsSync(engine.instanceDir(id)));
+    const report = fs.readFileSync(path.join(engine.reportsDir, `${id}.md`), "utf-8");
+    check("17b 归档报告含「跳过对抗性验证」", report.includes("跳过对抗性验证"), report.slice(0, 800));
+    check("17b 归档报告不出现「检查通过」", !report.includes("检查通过"), report.slice(0, 800));
+  }
+
+  // ── 17c) 兜底配方退役：buildCheckPrompt 收到无 check 的步骤必须明确失败 ──
+  const wfStub = { name: "w", steps: [], manual_step: [], warnings: [] };
+  const reqOf = (step) => ({
+    instId: "x", step, workflow: wfStub, userTask: "任务",
+    checkIndex: 0, artifactsRelDir: ".dsh/ralph-flow/artifacts/x", signal: new AbortController().signal,
+  });
+  let threw = null;
+  try { buildCheckPrompt(reqOf({ id: "a", do: "X" }), true); } catch (e) { threw = e; }
+  check("17c 无 check 的步骤 → buildCheckPrompt 明确抛错（不静默产出兜底配方）",
+    !!threw && String(threw.message).includes("check"), String(threw));
+  const okPrompt = buildCheckPrompt(reqOf({ id: "a", do: "X", check: "检查 x.md" }), true);
+  check("17c 有 check 的步骤照常构造 CHECK 提示词（回归）",
+    okPrompt.includes("## 检查依据") && okPrompt.includes("检查 x.md"));
+  const verifySrc = fs.readFileSync(new URL("../src/verify.ts", import.meta.url), "utf-8");
+  check("17c 兜底配方文案已从 verify.ts 退役（不可达即删除）", !verifySrc.includes("未声明检查依据"), verifySrc.length);
+
+  // ── 17d) 全无 check 的单步工作流：整个生命周期（start→交卷→完成→报告）零独立验证承诺 ──
+  // 这是「诚实标注」的**类级断言**：不只查某个字符串，而是查这条路径上每一处用户/模型可见输出都
+  // 不得出现「取证判定」（独立验证的承诺）或「检查通过」（伪造的事实）。
+  wfFile("skip-only", [
+    "description: 单步无 check（全程免验证）", "steps:",
+    "  - id: only", "    desc: 唯一一步", "    do: 做唯一的事",
+    "    on_pass: done", "    on_fail: only", "    max_fail_count: 3",
+  ]);
+  {
+    const s = S();
+    deliveries.length = 0;
+    const { r, id } = start("skip-only", "全程免验证用例", s);
+    const startText = r.text;
+    const callsBefore = verifyCalls;
+    const sub = submit(s, "唯一的事做完了。");
+    await settle();
+    const allTexts = [startText, sub.text, ...deliveries];
+    check("17d start 回执不出现「取证判定」（不预告不会发生的独立验证）", !startText.includes("取证判定"), startText.slice(0, 300));
+    check("17d 交卷回执与全部通知都不出现「取证判定」", !allTexts.slice(1).some((t) => t.includes("取证判定")), allTexts.slice(1).find((t) => t.includes("取证判定"))?.slice(0, 200));
+    check("17d 全生命周期零「检查通过」", !allTexts.some((t) => t.includes("检查通过")));
+    check("17d 全生命周期至少一处写明「跳过对抗性验证」", allTexts.some((t) => t.includes("跳过对抗性验证")));
+    check("17d 验证端口零调用", verifyCalls === callsBefore, `calls=${verifyCalls - callsBefore}`);
+    check("17d 单步免验证 → 直接完成并销毁实例", engine.readState(id) === null && !fs.existsSync(engine.instanceDir(id)));
+    const report = fs.readFileSync(path.join(engine.reportsDir, `${id}.md`), "utf-8");
+    check("17d 归档报告：有 check_skipped、无判定、无独立验证承诺、无「检查通过」",
+      report.includes("check_skipped") && report.includes("（无判定记录）") && !report.includes("取证判定") && !report.includes("检查通过"),
+      report.slice(0, 800));
+  }
 }
 
 // ── 清理（索引在隔离 HOME 里，只删本测试写入的条目）────────────────────────────

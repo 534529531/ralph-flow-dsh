@@ -23,23 +23,25 @@ const SHARED_MECHANISM = `## 工作流机制（每次启动都会生效）
 - 按收到的提示执行当前步骤的任务，完成实际工作（写代码、创建文件、运行命令）。
 - 所有任务要求满足后，**调用 \`ralphflow_submit\` 工具交卷**（可在 \`summary\` 参数里简述做了什么）。
 - 只在回复里说「完成了」**不会**触发验证——必须调用工具。
-- 普通步骤到此为止——你空闲时系统会**自动**运行独立 CHECK，**不需要**调用其它工具。
+- 有 \`check\` 的普通步骤到此为止——你空闲时系统会**自动**运行独立 CHECK，**不需要**调用其它工具。
 
-**CHECK 阶段（自动进行）**：
-- 交卷后，一个**独立验证者会话**（全新上下文，看不到本对话）依据该步骤的检查依据取证判定。你会收到「🔍 验证中」与验证结果消息。
+**CHECK 阶段（只对配置了 \`check\` 的步骤自动进行）**：
+- 交卷后，一个**独立验证者会话**（全新上下文，看不到本对话）依据该步骤的检查依据取证判定。你会收到「🔍 验证中」与验证结果消息。**没有 \`check\` 的步骤不走这一阶段**（见下方「未配置 \`check\` 的步骤」）。
 - 验证是**异步**的：通常需要 1–5 分钟，期间不需要你做任何操作，跑完会自动唤醒本会话。
 - **通过** → 工作流自动推进到下一步并注入下一条 DO 提示。
 - **未通过** → 你收到失败原因并重做该步（自动重试，不会反复打扰用户）。
 
-**手动步骤**（工作流 \`manual_step\` 列出的步骤）：CHECK **通过后**系统停下等**用户**审查（会收到 🙋 消息）。用户的 \`/ralphflow-continue\` 是**放行**——直接进入下一步，不重复验证。用户要求修改时，你改完再次调用 \`ralphflow_submit\`，会再次自动验证，通过后再停下。
+**手动步骤**（工作流 \`manual_step\` 列出的步骤，**且本步有 \`check\`**）：CHECK **通过后**系统停下等**用户**审查（会收到 🙋 消息）。用户的 \`/ralphflow-continue\` 是**放行**——直接进入下一步，不重复验证。用户要求修改时，你改完再次调用 \`ralphflow_submit\`，会再次自动验证，通过后再停下。
+
+**未配置 \`check\` 的步骤**（工作流定义声明本步免验证）：**不做独立验证**——交卷后**跳过对抗性验证**，直接进入下一步；\`manual_step\` 的这类步骤则是**纯人工审查**（交卷后停在审查门，等用户 \`/ralphflow-continue\` 放行）。这类步骤务必自查产出是否满足任务要求。
 
 **暂停与恢复**：某步验证失败达到 \`max_fail_count\` 时工作流暂停。用 \`/ralphflow-status\` 看失败原因，修复后 \`/ralphflow-continue\` 恢复（重置失败计数并重试）。
 
-**重要**：\`ralphflow_continue\` 只用于 ① 批准手动审查 ② 恢复暂停 ③ 接管中断实例。普通步骤**不要**调用它——验证是自动的。
+**重要**：\`ralphflow_continue\` 只用于 ① 批准手动审查 ② 恢复暂停 ③ 接管中断实例。**有 \`check\` 的普通步骤不要调用它**——验证是自动的；没有 \`check\` 的步骤交卷后也会自动继续。
 
 **阶段播报**：收到系统阶段通知时，简短地确认一下，让用户随时了解进度（这是良好体验的一部分）：
 - DO 阶段：「已启动步骤 [X]，正在处理 [任务]」
-- CHECK 阶段：「🔍 已交卷，独立验证者正在取证判定」
+- CHECK 阶段（仅本步有 \`check\` 时）：「🔍 已交卷，独立验证者正在取证判定」
 - 完成：「✅ 所有步骤完成，工作流结束」`;
 
 export interface ToolContext {
@@ -113,7 +115,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
   const toolDefs: Array<{ name: string; description: string; params: Record<string, any>; handler: ToolHandler; concludeTurn?: boolean }> = [
     {
       name: "ralphflow_start",
-      description: "启动一个 Ralph Flow 工作流：模型执行当前步骤，完成后由独立验证者（独立会话）取证判定，失败自动返工。",
+      description: "启动一个 Ralph Flow 工作流：模型执行当前步骤；有 `check` 的步骤完成后由独立验证者（独立会话）取证判定，失败自动返工，没有 `check` 的步骤则跳过对抗性验证（`manual_step` 的这类步骤停在审查门等人工放行）。",
       params: {
         workflow: { type: "string", required: true, description: "工作流名（loop / spec，或自定义 YAML 名）。" },
         task: { type: "string", required: true, description: "要完成的任务描述。" },
@@ -122,7 +124,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: "ralphflow_submit",
-      description: "【DO 阶段交卷】本步实际工作完成后调用本工具交卷；独立验证者随后取证判定。不交卷则验证不会开始。",
+      description: "【DO 阶段交卷】本步实际工作完成后调用本工具交卷；本步有 `check` 时独立验证者随后取证判定，没有 `check` 时跳过对抗性验证并直接继续（`manual_step` 则停在审查门等放行）。不交卷则工作流不会推进。",
       params: {
         summary: { type: "string", description: "可选：简述本步做了什么。**验证者看不到它**（T1：验证请求不含执行者自述），它只留在实例状态里；验证者只独立取证。" },
       },
@@ -231,7 +233,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
   }> = [
     {
       name: "ralphflow-start",
-      description: "启动工作流：模型执行 → 独立验证 → 失败自动返工。示例：/ralphflow-start loop 修复登录模块的空指针",
+      description: "启动工作流：模型执行 → 有 `check` 的步骤交独立验证（失败自动返工），没有 `check` 的步骤跳过对抗性验证。示例：/ralphflow-start loop 修复登录模块的空指针",
       input: { hint: "<工作流> <任务描述>" },
       shim: (inv) => {
         const parts = inv.rawInput.trim().split(/\s+/).filter(Boolean);
@@ -259,7 +261,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
         const instance = parts[0] ? `，instance = \`${parts[0]}\`` : "";
         return {
           kind: "directive",
-          text: `用户执行了 /ralphflow-continue。\`ralphflow_continue\` 只用于三种情况：**批准手动审查**（🙋 步骤已通过自动验证，放行进入下一步，不重复验证）、**恢复暂停**（先看 \`/ralphflow-status\` 的失败原因，修复后调用，重置失败计数并重试）、**接管中断/他人实例**。普通步骤的推进是自动的，不要调用它。
+          text: `用户执行了 /ralphflow-continue。\`ralphflow_continue\` 只用于三种情况：**批准手动审查**（🙋 步骤停下等你放行：有 \`check\` 的是已通过独立验证，没有 \`check\` 的是已跳过对抗性验证的纯人工审查——两者都直接放行进入下一步，不重复验证）、**恢复暂停**（先看 \`/ralphflow-status\` 的失败原因，修复后调用，重置失败计数并重试）、**接管中断/他人实例**。有 \`check\` 的普通步骤推进是自动的，不要调用它。
 
 请调用 \`ralphflow_continue\` 工具${instance}。若不带实例 id 且本会话没有活跃实例，工具会列出可选实例：把它展示给用户并询问接管哪个，再带 \`instance\` 调用。按工具结果行动：进入 DO 就执行该步任务；验证中就简短说明；完成就说「工作流结束」；暂停就说明原因与下一步。`,
         };

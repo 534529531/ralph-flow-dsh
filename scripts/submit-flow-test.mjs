@@ -156,5 +156,32 @@ console.log("\nS4 交卷工具调用 concludeTurn（宿主原生回合结束）"
   fs.rmSync(ws, { recursive: true, force: true });
 }
 
+console.log("\nS5 工具/命令描述：无 check 的步骤不得被描述成会走独立验证（诚实标注的类级断言）");
+{
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-flow-desc-"));
+  process.env.RALPHFLOW_WORKSPACE = ws;
+  const { ctx, registered, delivered, pid } = mkEnv(ws);
+  plugin.apply(ctx);
+  const byName = (n) => registered.tools.find((t) => t.name === n);
+  const startDesc = byName("ralphflow_start")?.description ?? "";
+  const submitDesc = byName("ralphflow_submit")?.description ?? "";
+  const cmdStart = registered.commands.find((c) => c.name === "ralphflow-start")?.description ?? "";
+  // continue 指令是**投递给模型**的文本：走真实 handler，再从投递队列里取回
+  delivered.length = 0;
+  await registered.commands.find((c) => c.name === "ralphflow-continue")
+    .handler({ rawInput: "", agent: { session: { id: pid } }, signal: new AbortController().signal });
+  const continueText = delivered.map((m) => JSON.stringify(m?.content ?? m)).join("\n");
+  check("ralphflow_start 描述限定「有 check 的步骤」才独立验证、无 check 则跳过",
+    startDesc.includes("有 `check`") && startDesc.includes("没有 `check`") && startDesc.includes("跳过对抗性验证"), startDesc);
+  check("ralphflow_submit 描述同样限定（不再无条件「独立验证者随后取证判定」）",
+    submitDesc.includes("有 `check`") && submitDesc.includes("没有 `check`"), submitDesc);
+  check("命令描述同步限定（有 check → 独立验证；无 check → 跳过）",
+    cmdStart.includes("有 `check`") && cmdStart.includes("没有 `check`"), cmdStart);
+  check("continue 指令说明手动审查的两种情形（有 check 通过 / 无 check 跳过）",
+    continueText.includes("有 `check`") && continueText.includes("没有 `check`") && continueText.includes("跳过对抗性验证"), continueText.slice(0, 220));
+  check("有 check 的语义仍如实保留（描述里仍有「取证判定」）", /取证判定/.test(startDesc) && /取证判定/.test(submitDesc));
+  fs.rmSync(ws, { recursive: true, force: true });
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);
