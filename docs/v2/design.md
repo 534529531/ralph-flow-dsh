@@ -148,6 +148,8 @@
 
 **超时不在内核里造（作者定案）**：委派生命周期（含模型卡死/打转等异常）**一律交给宿主 dsh 的原生能力**（请求级空闲看门狗、工具调用时限策略），ralphflow 不自建超时轮询或竞速。理由：这是宿主职责，插件重复实现只会分叉行为、随宿主演进腐化。故 `timeout_ms` 永久 warn+ignore，**不要**在后续轮次重新引入有界竞速（claude 版 ADR 独立得出同一结论：`timeout_ms` 零消费者 → 必须静默忽略）。
 
+**`extra_dirs` 不实现（作者定案，与 `timeout_ms` 同一原则）**：**权限是宿主的职责，插件不建平行权限面。** dsh 的验证者子代理**继承发起会话的工作区与权限面**——`SubagentStartRequest` 的字段只有 `label/prompt/parent/signal/agentOptions/outputSchema/maxDepth/toolFilter/persona`，**没有任何路径/权限字段可表达「额外可读目录」**；子代理的权限在启动时固定，dsh 原话：*"your permission scope was fixed when you were started and cannot be widened from inside this session"*。因此「验证者能读什么 = 发起会话能读什么」，opencode 的 `extra_dirs` 在 dsh **没有对应物**（opencode 需要它，是因为它的 check 会话是独立会话 + 自己的权限配置，读项目外必须显式授权）。**不要**在后续轮次把它当缺口补上。
+
 ## 9. 工作流文件即资产（Q5 定案）
 
 - YAML 方言跨端共享（opencode/claude/dsh/pi 同一套 `description / manual_step / adversarial_check（仅 model，两形态）/ steps / do / check / check_model / input / output / on_pass / on_fail / max_fail_count`），是**硬约束**：同一份资产四端可跑，hub 生态押注于此。**`check_model` 与模型引用两形态（§7）已对齐**，故这三项资产在四端同解。dsh 是方言基准：`adversarial_check` 的 `agent`/`system_prompt`/`timeout_ms` 已在 dsh 端删除（opencode/claude 版的对应收敛另行处理），同一份旧 YAML 在 dsh 端 warn+ignore 后仍可跑。
