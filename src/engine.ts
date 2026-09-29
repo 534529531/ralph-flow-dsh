@@ -395,6 +395,16 @@ export function makeArtifactsDirName(task: string, instId: string): string {
   return slug ? `${slug}-${suffix}` : String(instId);
 }
 
+/** 内置工作流文件（不落盘，只存在于插件目录；lib/engine.js → ../workflows/<name>.yaml） */
+export function builtinWorkflowPath(name: string): string | undefined {
+  const here = path.dirname(new URL(import.meta.url).pathname);
+  const candidates = [
+    path.resolve(here, "..", "workflows", `${name}.yaml`),
+    path.resolve(here, "..", "..", "workflows", `${name}.yaml`),
+  ];
+  return candidates.find((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } });
+}
+
 /** 全局工作流目录：`<DSH_HOME|~/.dsh>/ralph-flow/workflows` */
 export function globalWorkflowsDirOf(): string {
   const configured = process.env.DSH_HOME;
@@ -403,32 +413,39 @@ export function globalWorkflowsDirOf(): string {
 }
 
 /**
- * 只读某个工作区（+ 全局目录）里**自定义工作流的名字与描述** —— 不建引擎、不建任何目录。
+ * 只读某个工作区（+ 全局目录 + 内置）里**全部工作流的名字与描述** —— 不建引擎、不建任何目录。
  *
  * 动态快捷命令 `/ralphflow-<名字>` 在插件加载时登记，而引擎是按工作区**惰性**创建的
  * （首个工具调用才建）。只靠引擎的话，用户在新工作区里第一次打开会话时，自己建的工作流
  * 还没有快捷命令。这个函数让登记可以在 `session/created` 时廉价完成（纯读目录）。
+ *
+ * **必须包含内置工作流**（`loop`/`spec`）——它们不落盘，只存在于插件目录，漏掉就会让
+ * `/ralphflow-loop`、`/ralphflow-spec` 消失。工作区里的同名文件遮蔽内置（有意行为）。
  */
-export function listCustomWorkflowsIn(workspace: string): Array<{ name: string; desc: string }> {
-  const out: Array<{ name: string; desc: string }> = [];
-  const seen = new Set<string>(BUILTIN_WORKFLOWS);
+export function listWorkflowsIn(workspace: string): Array<{ name: string; desc: string }> {
+  const found = new Map<string, string>(); // name → 文件路径（工作区优先，其次全局，最后内置）
   for (const dir of [path.join(workspace, RALPH_FLOW_DIR, "workflows"), globalWorkflowsDirOf()]) {
     let files: string[] = [];
     try { files = fs.readdirSync(dir); } catch { continue; }
     for (const f of files) {
       if (!/\.ya?ml$/i.test(f)) continue;
       const name = f.replace(/\.ya?ml$/i, "");
-      if (seen.has(name)) continue;
-      seen.add(name);
-      let desc = "";
-      try {
-        const doc = yaml.load(fs.readFileSync(path.join(dir, f), "utf-8")) as { description?: unknown } | null;
-        if (doc && typeof doc === "object" && typeof doc.description === "string") desc = doc.description;
-      } catch {}
-      out.push({ name, desc });
+      if (!found.has(name)) found.set(name, path.join(dir, f));
     }
   }
-  return out;
+  for (const name of BUILTIN_WORKFLOWS) {
+    if (found.has(name)) continue;
+    const p = builtinWorkflowPath(name);
+    if (p) found.set(name, p);
+  }
+  return [...found].map(([name, file]) => {
+    let desc = "";
+    try {
+      const doc = yaml.load(fs.readFileSync(file, "utf-8")) as { description?: unknown } | null;
+      if (doc && typeof doc === "object" && typeof doc.description === "string") desc = doc.description;
+    } catch {}
+    return { name, desc };
+  });
 }
 
 export function createEngine(projectDir: string, ports: EnginePorts) {
@@ -498,16 +515,6 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     // 播种副本会遮蔽插件目录、并在插件升级后变成陈旧副本——实测踩过：工作区里那份
     // 7 步 spec 副本把新版 4 步内置整个挡住了，改了内置却"没生效"。
     // 用户要定制，就在本目录放同名文件（遮蔽是有意的，也是唯一的定制入口）。
-  }
-
-  function builtinWorkflowPath(name: string): string | undefined {
-    // lib/engine.js → ../workflows/<name>.yaml（构建产物与源码同布局）
-    const here = path.dirname(new URL(import.meta.url).pathname);
-    const candidates = [
-      path.resolve(here, "..", "workflows", `${name}.yaml`),
-      path.resolve(here, "..", "..", "workflows", `${name}.yaml`),
-    ];
-    return candidates.find((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } });
   }
 
   // ─── 工作流加载与校验（坏文件 fail-fast 说人话）────────────────────────────

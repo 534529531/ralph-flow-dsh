@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createEngine, resolveCheckModel, makeArtifactsDirName, stepHasCheck, listCustomWorkflowsIn } from "../lib/engine.js";
+import { createEngine, resolveCheckModel, makeArtifactsDirName, stepHasCheck, listWorkflowsIn } from "../lib/engine.js";
 import { buildCheckPrompt } from "../lib/verify.js";
 import { CREATE_GUIDE } from "../lib/create.js";
 
@@ -204,11 +204,15 @@ const S = () => `session-${++n}`;
   check("自定义工作流（写在本工作区）能被加载", !!lw.def, JSON.stringify(lw.problems));
   // 动态快捷命令 /ralphflow-<名字> 的登记源：必须**不建引擎**就能读出该工作区的自定义工作流
   // （引擎是惰性创建的，会话刚出现时还没有引擎）
-  const custom = listCustomWorkflowsIn(ws);
-  check("listCustomWorkflowsIn 不建引擎就读得到该工作区的自定义工作流",
+  const custom = listWorkflowsIn(ws);
+  check("listWorkflowsIn 不建引擎就读得到该工作区的自定义工作流",
     custom.some((w) => w.name === "mywf" && w.desc === "探针工作流"), JSON.stringify(custom));
-  check("listCustomWorkflowsIn 不把内置工作流当成自定义", !custom.some((w) => w.name === "loop" || w.name === "spec"), JSON.stringify(custom));
-  check("listCustomWorkflowsIn 不会建出引擎目录", !fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "instances", "x")));
+  // 内置必须在内：它们不落盘，漏掉就会让 /ralphflow-loop、/ralphflow-spec 消失（曾被我改漏）
+  check("listWorkflowsIn **包含内置工作流**（否则 /ralphflow-loop 会消失）",
+    custom.some((w) => w.name === "loop" && !!w.desc) && custom.some((w) => w.name === "spec" && !!w.desc),
+    JSON.stringify(custom));
+  check("listWorkflowsIn 不建出任何引擎目录",
+    !fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "instances")) || fs.readdirSync(path.join(ws, ".dsh", "ralph-flow", "instances")).length === 0);
   check("listWorkflows 列出该自定义工作流", e.listWorkflows().some((w) => w.name === "mywf"),
     JSON.stringify(e.listWorkflows().map((w) => w.name)));
 

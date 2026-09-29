@@ -6,7 +6,7 @@
  */
 import type { Context } from "@deepseek-ai/cordis";
 import { createUserMessage, boundContextSummary } from "@deepseek-ai/dsh-llm";
-import { createEngine, listCustomWorkflowsIn, type Engine, type VerifyRequest } from "./engine.js";
+import { createEngine, listWorkflowsIn, type Engine, type VerifyRequest } from "./engine.js";
 import { runVerifier } from "./verify.js";
 import { registerTools, registerCommands } from "./tools.js";
 
@@ -129,7 +129,7 @@ export function apply(ctx: Context): void {
       try { e.ensureLayout(); } catch (err) { log("warn", "ensure_layout_failed", { workspace: key, error: String(err) }); }
       // 崩溃/重载恢复：孤儿委派 fail-safe（暂停等用户，不隐式继续）
       try { e.restore(); } catch (err) { log("warn", "restore_failed", { workspace: key, error: String(err) }); }
-      try { registerShortcuts?.(listCustomWorkflowsIn(key)); } catch {}
+      try { registerShortcuts?.(listWorkflowsIn(key)); } catch {}
     }
     return e;
   };
@@ -207,7 +207,7 @@ export function apply(ctx: Context): void {
       on("session/created", (session?: unknown) => {
         const cwd = (session as { header?: { cwd?: string } } | undefined)?.header?.cwd;
         if (!cwd || !cwd.trim()) return;
-        try { registerShortcuts?.(listCustomWorkflowsIn(cwd.trim())); } catch {}
+        try { registerShortcuts?.(listWorkflowsIn(cwd.trim())); } catch {}
       });
     }
   } catch (e) {
