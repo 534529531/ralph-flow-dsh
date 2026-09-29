@@ -91,14 +91,10 @@ console.log("\nS2 turn-stopping：未交卷时提醒（且提醒有上限）");
   check("达上限后不再重复催促", delivered.length === before + 1, `added=${delivered.length - before}`);
   check("改为暂停并告知用户", last.includes("已暂停等你处理"), last.slice(0, 120));
 
-  const idx = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json"), "utf-8"));
-  const iid = Object.keys(idx).find((k) => idx[k] === ws);
+  const iid = fs.readdirSync(path.join(ws, ".dsh", "ralph-flow", "instances"))[0];
   const st = JSON.parse(fs.readFileSync(path.join(ws, ".dsh", "ralph-flow", "instances", iid, "state.json"), "utf-8"));
   check("暂停原因是 no_submit", st.paused && st.pause_reason === "no_submit", JSON.stringify({ p: st.paused, r: st.pause_reason }));
   check("提醒次数从 history 派生（未新增状态字段）", Array.isArray(st.history) && st.history.filter((h) => h.event === "submit_reminder").length === 2, JSON.stringify(st.history.map((h) => h.event)));
-  const i2 = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json"), "utf-8"));
-  for (const k of Object.keys(i2)) if (i2[k] === ws) delete i2[k];
-  fs.writeFileSync(path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json"), JSON.stringify(i2, null, 2));
   fs.rmSync(ws, { recursive: true, force: true });
 }
 
@@ -124,9 +120,6 @@ console.log("\nS3 turn-stopping：已交卷 / 无实例 / 暂停中 都不提醒
   check("已交卷后不提醒", delivered.length === 0, cli(delivered.at(-1)));
   await sleep(120);
 
-  const i2 = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json"), "utf-8"));
-  for (const k of Object.keys(i2)) if (i2[k] === ws) delete i2[k];
-  fs.writeFileSync(path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json"), JSON.stringify(i2, null, 2));
   fs.rmSync(ws, { recursive: true, force: true });
 }
 
@@ -150,9 +143,6 @@ console.log("\nS4 交卷工具调用 concludeTurn（宿主原生回合结束）"
   await statusTool.execute({}, { agent: { session: { id: pid } }, concludeTurn: () => { statusConcluded++; } });
   check("非交卷工具不结束回合", statusConcluded === 0, `concluded=${statusConcluded}`);
   await sleep(120);
-  const i2 = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json"), "utf-8"));
-  for (const k of Object.keys(i2)) if (i2[k] === ws) delete i2[k];
-  fs.writeFileSync(path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json"), JSON.stringify(i2, null, 2));
   fs.rmSync(ws, { recursive: true, force: true });
 }
 

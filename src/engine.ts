@@ -408,31 +408,18 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   /** 实例 → 在飞取消信号（取消/暂停时中止验证者，不白烧 token） */
   const aborts = new Map<string, AbortController>();
 
-  // ─── 多工作区：实例落在「发起会话的工作区」，索引文件负责任意发现 ─────────
-  const indexPath = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
-  const registry: Record<string, string> = (() => {
-    try { return JSON.parse(fs.readFileSync(indexPath, "utf-8")) as Record<string, string>; } catch { return {}; }
-  })();
-  function saveRegistry(): void {
-    try {
-      const tmp = `${indexPath}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(registry, null, 2), "utf-8");
-      fs.renameSync(tmp, indexPath);
-    } catch (e) { log("warn", "registry_write_failed", { error: msg(e) }); }
-  }
-  function registerInstance(instId: string, workspace: string): void { registry[instId] = workspace; saveRegistry(); }
-  function workspaceOf(instId: string): string { return registry[instId] ?? projectDir; }
-  function rootOf(workspace: string): string { return path.join(workspace, RALPH_FLOW_DIR); }
-  function dirsOf(workspace: string) {
-    const r = rootOf(workspace);
-    return {
-      root: r,
-      instancesDir: path.join(r, "instances"),
-      workflowsDir: path.join(r, "workflows"),
-      reportsDir: path.join(r, "reports"),
-      artifactsDir: path.join(r, ARTIFACTS_DIRNAME),
-    };
-  }
+  // ─── 单根：一个引擎只服务一个工作区 ────────────────────────────────────────
+  //
+  // 这里曾有一个「全局实例索引」（`~/.dsh/ralphflow-instances-index.json`）把 instId
+  // 映射到工作区，好让**一个**引擎服务多个工作区。那是 dsh 版独有的复杂度，也正是
+  // 「写入看会话工作区、读取看进程 cwd」这类缺陷的来源：引擎的 `projectDir` 是 dsh
+  // 进程的 cwd，而实例资产落在会话工作区，真实 GUI 里两者必然不同（实测 `dsh web`
+  // 的 cwd = `/home/yj`，会话工作区 = `/home/yj/ralph-flow-dsh`）—— 于是自定义工作流
+  // 加载不到、历史列表永远是空的、doctor 看不见残留。
+  //
+  // 现在引擎**按工作区实例化**（见 `index.ts` 的 `engineFor`），这正是 opencode 版的
+  // 形状（它的插件是「每个项目目录一个实例」，见其 `engine.ts:9`）。所有路径只有一根，
+  // 索引、`workspaceOf()` 的回落、跨工作区联合扫描一并删除。
 
   /**
    * 每实例产出目录（§1.7）：`<workspace>/.dsh/ralph-flow/artifacts/<artifacts_dir_name>/`。
@@ -440,8 +427,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 目录名来自 `state.artifacts_dir_name`（缺省回退 `instId`，兼容老 `state.json`）。
    * 注意：销毁流程必须**先**解析出这个路径，再删实例目录（不变量 3）。
    */
-  function artifactsDirOf(workspace: string, instId: string): string {
-    return path.join(dirsOf(workspace).artifactsDir, artifactsDirNameOf(instId));
+  function artifactsDirOf(instId: string): string {
+    return path.join(artifactsDir, artifactsDirNameOf(instId));
   }
 
   /** 产出目录的目录名：`state.artifacts_dir_name`，缺省回退 `instId`（向后兼容） */
@@ -464,20 +451,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return `${RALPH_FLOW_DIR}/reports/${instId}.md`;
   }
 
-  /** 索引里登记的全部工作区 + 当前 projectDir（诊断/发现历史报告时扫，不落盘任何新索引） */
-  function knownWorkspaces(): string[] {
-    const set = new Set<string>([projectDir]);
-    for (const w of Object.values(registry)) if (typeof w === "string" && w.trim()) set.add(w);
-    return [...set];
-  }
-
   const log = (level: "info" | "warn" | "error", event: string, data?: unknown) => {
     try { ports.log?.(level, event, data); } catch {}
   };
 
-  function ensureLayout(workspace = projectDir): void {
-    const d = dirsOf(workspace);
-    for (const p of [d.root, d.instancesDir, d.workflowsDir, d.reportsDir, d.artifactsDir]) {
+  function ensureLayout(): void {
+    for (const p of [root, instancesDir, workflowsDir, reportsDir, artifactsDir]) {
       try { fs.mkdirSync(p, { recursive: true }); } catch {}
     }
     // 内置工作流**有意不落盘**（对齐 opencode/claude 的 ensureProjectWorkflows）：
@@ -503,9 +482,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   const KNOWN_WF_KEYS = new Set(["description", "manual_step", "adversarial_check", "steps"]);
 
   function knownWorkflowDirs(): string[] {
-    const dirs = new Set<string>([workflowsDir, globalWorkflowsDir]);
-    for (const w of Object.values(registry)) dirs.add(dirsOf(w).workflowsDir);
-    return [...dirs];
+    // 单根：本工作区的工作流目录 + 全局目录（内置工作流不落盘，由 builtinWorkflowPath 回落）
+    return [workflowsDir, globalWorkflowsDir];
   }
 
   function workflowPaths(name: string): string[] {
@@ -713,7 +691,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   // ─── 状态 I/O（原子写）─────────────────────────────────────────────────────
 
-  function instanceDir(instId: string): string { return path.join(dirsOf(workspaceOf(instId)).instancesDir, instId); }
+  function instanceDir(instId: string): string { return path.join(instancesDir, instId); }
   function statePath(instId: string): string { return path.join(instanceDir(instId), "state.json"); }
 
   function readState(instId: string): InstanceState | null {
@@ -785,8 +763,13 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 已结束的运行从 `reports/` 读出来（{@link listHistory}），不再靠 `state.json` 当历史索引。
    */
   function listInstances(): InstanceInfo[] {
+    // 单根：直接扫本工作区的 instances/，不再靠全局索引（索引会让「目录里明明有」的实例
+    // 在列表与 doctor 里都消失——那正是自定义工作流与历史列表失效的同一个根因）。
     try {
-      return Object.keys(registry)
+      const ids = fs.readdirSync(instancesDir, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name);
+      return ids
         .map((id) => ({ id, state: readState(id) }))
         .filter((x): x is InstanceInfo => !!x.state && x.state.active === true)
         .sort((a, b) => (a.state.started_at < b.state.started_at ? -1 : 1));
@@ -1299,8 +1282,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    */
   function archiveReport(instId: string, state: InstanceState, wf: WorkflowDef, status: "done" | "cancelled"): string | null {
     try {
-      // 报告与实例同属一个工作区（实例目录在哪，报告就归档到哪）
-      const target = dirsOf(workspaceOf(instId)).reportsDir;
+      // 报告与实例同属一个工作区（单根：实例目录在哪，报告就归档到哪）
+      const target = reportsDir;
       fs.mkdirSync(target, { recursive: true });
       const end = new Date().toISOString();
       const endTs = new Date(end).getTime();
@@ -1352,11 +1335,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 否则部分删除失败（Windows EBUSY 等）会留下一个「列表里看不到、磁盘上还在」的幽灵；
    * 反过来先除名，实例在任何失败下都不会复活成幽灵。
    *
-   * **路径必须在除名之前解析并固定**（曾经的缺陷）：`instanceDir()` / `statePath()` 都经
-   * `workspaceOf(instId) = registry[instId] ?? projectDir`；先 `delete registry[instId]` 会让它们
-   * 回落到引擎的 `projectDir`。当**实例工作区 ≠ 引擎 projectDir**（GUI 会话就是：会话工作区是
-   * 仓库，dsh 进程 cwd 在别处）时，删除会打到不存在的路径 —— `unlink` 的 catch 是空的、
-   * `rmSync` 带 `force` —— 于是**静默残留**：报告有了、索引除名了，实例目录还在。
+   * **路径必须在除名之前解析并固定**（曾经的缺陷）：早期 `instanceDir()` / `statePath()` 都经
+   * `workspaceOf(instId) = registry[instId] ?? projectDir`，先除名会让它们回落到引擎的
+   * `projectDir`，跨工作区时删除静默打空（报告有了、目录还在）。索引已随「引擎按工作区
+   * 实例化」一并删除，路径现在由单根目录直接给出；「先解析、后动手」的顺序仍保留。
    *
    * 返回 `{ reportPath, instanceDirRemoved }`；归档失败返回 `null` 且**不销毁**
    * （见不变量 3 与边界 2）。`state` 缺省从磁盘读；调用方（complete/cancel）传内存里的 state，
@@ -1389,31 +1371,26 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       return null;
     }
 
-    // 2) **先把所有路径解析出来并固定**（工作区必须在这里定下来，除名之后 workspaceOf 会回落）：
-    //    · 产出目录名存在 state.json 里，销毁后就查不到了；
-    //    · 实例目录/state.json 的路径一旦除名就再也解析不对（就是这条曾让销毁静默打空）。
-    const workspace = workspaceOf(instId);
-    const artifactsDir = artifactsDirOf(workspace, instId);
-    const instDir = path.join(dirsOf(workspace).instancesDir, instId);
+    // 2) 先把所有路径解析出来并固定：产出目录名存在 state.json 里，销毁后就查不到了。
+    const artDir = artifactsDirOf(instId);
+    const instDir = instanceDir(instId);
     const stPath = path.join(instDir, "state.json");
-    // 3) 立即从全局索引除名，不等下次 restore() 的 GC。
-    delete registry[instId];
-    saveRegistry();
-    // 4) 物理除名：即使第 5 步部分失败，实例也已从列表消失，不会变成幽灵。
+    // 3) 物理除名：即使第 4 步部分失败，实例也已从列表消失，不会变成幽灵。
     //    失败**不静默**（ENOENT 例外：文件本来就不在，不是异常）。
     try { fs.unlinkSync(stPath); }
     catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "ENOENT") log("warn", "state_unlink_failed", { instId, path: stPath, error: msg(e) });
     }
-    // 5) 递归删实例目录（失败告警：实例已经除名，但要留下可诊断痕迹，且播报不得谎称已销毁）。
+    // 4) 递归删实例目录（失败告警：实例已经除名，但要留下可诊断痕迹，且播报不得谎称已销毁）。
     try {
       fs.rmSync(instDir, { recursive: true, force: true });
     } catch (e) {
       log("warn", "instance_dir_remove_failed", { instId, dir: instDir, error: msg(e) });
     }
-    // 6) 产出目录**非递归**删除：rmdir 拒绝非空目录，真实交付物永远活得比实例久。
-    try { fs.rmdirSync(artifactsDir); } catch {}
-    // 7) 复查：销毁必须是**事实**，而不只是"调用过删除"（播报要诚实，doctor 也要能报出残留）。
+    // 5) **本实例的**产出目录非递归删除：rmdir 拒绝非空目录，真实交付物永远活得比实例久。
+    //    （注意用 artDir —— 第 2 步固定下来的那个；`artifactsDir` 是整个 artifacts/ 根目录。）
+    try { fs.rmdirSync(artDir); } catch {}
+    // 6) 复查：销毁必须是**事实**，而不只是"调用过删除"（播报要诚实，doctor 也要能报出残留）。
     const instanceDirRemoved = !fs.existsSync(instDir);
     if (!instanceDirRemoved) log("warn", "instance_dir_not_removed", { instId, dir: instDir });
     return { reportPath, instanceDirRemoved, instanceDir: instDir };
@@ -1425,15 +1402,14 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return listInstances().find((i) => i.state.active && i.state.owner_session === sessionId);
   }
 
-  /** workspace：发起会话的工作区（缺省回落 projectDir 单根模式） */
-  function start(workflowName: string, task: string, sessionId: string, workspace = projectDir): ToolResult {
+  function start(workflowName: string, task: string, sessionId: string): ToolResult {
     if (!workflowName?.trim()) return { ok: false, text: "缺少工作流名。用法：`ralphflow_start(workflow, task)` 或 `/ralphflow-start <工作流> <任务>`。" };
     if (!task?.trim()) return { ok: false, text: "缺少任务描述。示例：`/ralphflow-start loop 修复登录模块的空指针`。" };
     const mine = activeInstanceOfSession(sessionId);
     if (mine) {
       return { ok: false, text: `当前会话已有活跃实例 \`${mine.id}\`（${mine.state.workflow_name} · ${mine.state.current_step}）。用 \`/ralphflow-continue\` 继续，或 \`/ralphflow-cancel\` 取消。` };
     }
-    try { ensureLayout(workspace); } catch {}
+    try { ensureLayout(); } catch {}
     const { def: wf, problems, warnings } = loadWorkflow(workflowName.trim());
     if (!wf) return { ok: false, text: `工作流 \`${workflowName}\` 无法启动：\n${problems.map((p) => `- ${p}`).join("\n")}` };
     const first = wf.steps[0]!;
@@ -1448,13 +1424,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       delegations: [], verdicts: [], history: [], started_at: now, updated_at: now,
       artifacts_dir_name: artifactsDirName,
     };
-    registerInstance(instId, workspace);
     pushHistory(state, "start", `workflow=${wf.name}`, first.id);
     writeState(state, instId);
     // §1.7 产出目录：实例启动时建好，完成后**保留**（不随实例结束删除）。
     // 用刚算出的名字直接建，避免依赖已落盘的状态。
-    try { fs.mkdirSync(path.join(dirsOf(workspace).artifactsDir, artifactsDirName), { recursive: true }); } catch {}
-    log("info", "instance_start", { instId, workflow: wf.name, workspace });
+    try { fs.mkdirSync(path.join(artifactsDir, artifactsDirName), { recursive: true }); } catch {}
+    log("info", "instance_start", { instId, workflow: wf.name, workspace: projectDir });
     const warnText = warnings.length > 0 ? `\n\n⚠️ 工作流定义告警：\n${warnings.map((w) => `- ${w}`).join("\n")}` : "";
     const text = [
       `🚀 已启动工作流 **${wf.name}**（实例 \`${instId}\`，共 ${wf.steps.length} 步）。${warnText}`,
@@ -1946,33 +1921,27 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    */
   function diagnoseInstanceDirs(): string[] {
     const issues: string[] = [];
-    const seen = new Set<string>();
-    for (const ws of knownWorkspaces()) {
-      const d = dirsOf(ws);
-      let entries: Array<{ name: string; isDirectory(): boolean }> = [];
-      try { entries = fs.readdirSync(d.instancesDir, { withFileTypes: true }); } catch { continue; }
-      for (const e of entries) {
-        if (!e.isDirectory()) continue;
-        const id = e.name;
-        if (seen.has(id)) continue;
-        seen.add(id);
-        const label = ws === projectDir ? `instances/${id}/` : `${ws}/${RALPH_FLOW_DIR}/instances/${id}/`;
-        const sp = path.join(d.instancesDir, id, "state.json");
-        if (!fs.existsSync(sp)) {
-          issues.push(`实例目录 \`${label}\` 缺少 state.json —— 所有工具都看不到它。若是残留目录可直接删除`);
-          continue;
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(fs.readFileSync(sp, "utf-8"));
-          if (!parsed || typeof parsed !== "object") throw new Error("不是 JSON 对象");
-        } catch (err) {
-          issues.push(`实例 \`${id}\` 的 state.json 损坏（${msg(err)}）—— 该实例无法恢复，确认无需保留后可删除整个目录`);
-          continue;
-        }
-        if ((parsed as { active?: unknown }).active === false) {
-          issues.push(`实例 \`${id}\` 已结束但目录未被销毁（可能是报告归档失败）。先确认报告是否已生成，再决定是否删除该目录`);
-        }
+    let entries: Array<{ name: string; isDirectory(): boolean }> = [];
+    try { entries = fs.readdirSync(instancesDir, { withFileTypes: true }); } catch { return issues; }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const id = e.name;
+      const label = `instances/${id}/`;
+      const sp = path.join(instancesDir, id, "state.json");
+      if (!fs.existsSync(sp)) {
+        issues.push(`实例目录 \`${label}\` 缺少 state.json —— 所有工具都看不到它。若是残留目录可直接删除`);
+        continue;
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(fs.readFileSync(sp, "utf-8"));
+        if (!parsed || typeof parsed !== "object") throw new Error("不是 JSON 对象");
+      } catch (err) {
+        issues.push(`实例 \`${id}\` 的 state.json 损坏（${msg(err)}）—— 该实例无法恢复，确认无需保留后可删除整个目录`);
+        continue;
+      }
+      if ((parsed as { active?: unknown }).active === false) {
+        issues.push(`实例 \`${id}\` 已结束但目录未被销毁（可能是报告归档失败）。先确认报告是否已生成，再决定是否删除该目录`);
       }
     }
     return issues;
@@ -1984,14 +1953,11 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const claimed = new Set<string>();
     for (const { state } of listInstances()) if (state.artifacts_dir_name) claimed.add(state.artifacts_dir_name);
     for (const h of listHistory()) if (h.artifactsDirName) claimed.add(h.artifactsDirName);
-    for (const ws of knownWorkspaces()) {
-      const d = dirsOf(ws);
-      let entries: Array<{ name: string; isDirectory(): boolean }> = [];
-      try { entries = fs.readdirSync(d.artifactsDir, { withFileTypes: true }); } catch { continue; }
-      for (const e of entries) {
-        if (!e.isDirectory() || claimed.has(e.name)) continue;
-        issues.push(`产出目录 \`artifacts/${e.name}/\` 既无对应报告、也无对应实例目录（通常来自被手动清理的实例）—— 只报告，不删除`);
-      }
+    let entries: Array<{ name: string; isDirectory(): boolean }> = [];
+    try { entries = fs.readdirSync(artifactsDir, { withFileTypes: true }); } catch { return issues; }
+    for (const e of entries) {
+      if (!e.isDirectory() || claimed.has(e.name)) continue;
+      issues.push(`产出目录 \`artifacts/${e.name}/\` 既无对应报告、也无对应实例目录（通常来自被手动清理的实例）—— 只报告，不删除`);
     }
     return issues;
   }
@@ -2043,21 +2009,6 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   /** 插件加载/进程重启：孤儿委派 fail-safe（不隐式继续、不隐式通过） */
   function restore(): void {
-    // §1.5 索引 GC：`state.json` 已不存在的悬挂条目（实例目录被手动清理、或布局迁移过）
-    // 必须清出索引，否则 listInstances / 接管列表永远看到读不到的幽灵实例。
-    // 只清索引条目，**绝不删任何目录**（血泪规则：复现脚本不得动真实工作区）。
-    let gcChanged = false;
-    for (const id of Object.keys(registry)) {
-      let exists = false;
-      try { exists = fs.statSync(statePath(id)).isFile(); } catch { exists = false; }
-      if (!exists) {
-        delete registry[id];
-        gcChanged = true;
-        log("warn", "registry_gc_dangling", { instId: id });
-      }
-    }
-    if (gcChanged) saveRegistry();
-
     for (const { id, state } of listInstances()) {
       if (!state.active) continue;
       if (state.delegations.length > 0) {
@@ -2074,7 +2025,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   return {
     root, instancesDir, workflowsDir, reportsDir, projectDir,
     ensureLayout, listWorkflows, loadWorkflow,
-    readState, listInstances, listHistory, instanceDir, workspaceOf, indexPath,
+    readState, listInstances, listHistory, instanceDir,
     artifactsDirOf, artifactsRelDirOf, reportRelPathOf, destroyInstance,
     start, onSubmit, noteAssistantText, remindToSubmit, continueInstance, cancelInstance, statusOf, listAll, restore, diagnose,
     activeInstanceOfSession,

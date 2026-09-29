@@ -24,15 +24,10 @@ const sleep = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 const RUN = Math.random().toString(36).slice(2, 8);
 
 const RF = ".dsh/ralph-flow";
-const indexFile = () => path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
-const readIndex = () => { try { return JSON.parse(fs.readFileSync(indexFile(), "utf-8")); } catch { return {}; } };
-/** 从隔离 HOME 的索引里剔除某个工作区的条目（模拟真实工作区清理，绝不碰真实文件） */
+// 引擎已改为「按工作区实例化、单根」：全局实例索引与 workspaceOf 的回落一并删除，
+// 因此不再需要 forget()/readIndex() 这类索引维护 helper（每个用例的工作区互相隔离）。
 function forget(ws) {
-  try {
-    const idx = readIndex();
-    for (const [k, v] of Object.entries(idx)) if (v === ws) delete idx[k];
-    fs.writeFileSync(indexFile(), JSON.stringify(idx, null, 2));
-  } catch {}
+  try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
 }
 const reportPathOf = (ws, id) => path.join(ws, ".dsh", "ralph-flow", "reports", `${id}.md`);
 const artifactsDirOfName = (ws, name) => path.join(ws, ".dsh", "ralph-flow", "artifacts", name);
@@ -221,7 +216,8 @@ console.log("\nL6 报告归档失败：保留实例目录 + state.json + 索引�
     check("归档失败：实例目录仍在", fs.existsSync(engine.instanceDir(id)));
     check("归档失败：state.json 仍在", fs.existsSync(stateFileOf(ws, id)));
     check("归档失败：state.json 已落「已结束」（doctor 才能报出）", engine.readState(id)?.active === false);
-    check("归档失败：索引仍含该条目", id in readIndex());
+    check("归档失败：不再出现在活跃列表（active=false）", !engine.listInstances().some((i) => i.id === id));
+    check("归档失败：doctor 报出「已结束但目录未被销毁」", engine.diagnose().text.includes("已结束但目录未被销毁"), engine.diagnose().text.slice(-200));
     check("归档失败：日志记 report_archive_failed", logs.some((l) => l.ev === "report_archive_failed"), JSON.stringify(logs.map((l) => l.ev)));
     check("归档失败：向用户发出告警（含「未销毁」）", notes.some((t) => t.includes("未销毁") && t.includes(id)), notes.at(-1)?.slice(0, 160));
     check("归档失败：报告确实没生成", !fs.existsSync(reportPathOf(ws, id)));
@@ -255,7 +251,7 @@ console.log("\nL7 幽灵防护：注入 rmSync 失败 → state.json 已不在�
 
   try {
     check("递归删除失败：state.json 已不在（先除名）", !fs.existsSync(stateFileOf(ws, id)));
-    check("递归删除失败：索引不再含该条目（不靠下次 restore GC）", !(id in readIndex()));
+    check("递归删除失败：实例目录仍残留（如实播报的前提）", fs.existsSync(path.join(ws, RF, "instances", id)));
     check("递归删除失败：listInstances() 不含鬼影", !engine.listInstances().some((i) => i.id === id));
     check("递归删除失败：告警可诊断", logs.some((l) => l.ev === "instance_dir_remove_failed"), JSON.stringify(logs.map((l) => l.ev)));
     const text = engine.listAll().text;
@@ -341,7 +337,7 @@ console.log("\nL10 老 state.json 兼容：产出目录回退 instId（验收 11
 
   const st = engine.readState(id);
   check("老 state.json 仍可读", !!st && st.active === true);
-  check("缺字段 → 产出目录回退 instId", engine.artifactsDirOf(ws, id).endsWith(path.join("artifacts", id)), engine.artifactsDirOf(ws, id));
+  check("缺字段 → 产出目录回退 instId", engine.artifactsDirOf(id).endsWith(path.join("artifacts", id)), engine.artifactsDirOf(id));
   check("产出相对路径同样回退 instId", engine.artifactsRelDirOf(id).endsWith(`/artifacts/${id}`), engine.artifactsRelDirOf(id));
   engine.onSubmit(sid, "完成");
   await sleep();
@@ -377,34 +373,31 @@ console.log("\nL11 产出目录名 slug：码点截断 + 路径安全（验收 1
   forget(ws);
 }
 
-// ── 12) 跨工作区销毁：引擎 projectDir ≠ 实例工作区时，终止必须真的删掉实例目录 ──────
-// 曾经的缺陷：destroyInstance 先 `delete registry[instId]`，再调 instanceDir()/statePath()，
-// 而它们经 workspaceOf() = registry[instId] ?? projectDir → 回落到引擎的 projectDir →
-// 删除打到不存在的路径（unlink 的 catch 是空的、rmSync 带 force）→ **静默残留**。
-// 注意断言必须用**真实工作区路径**：engine.instanceDir(id) 走同一回落逻辑，跨工作区时是空转的。
-console.log("\nL12 跨工作区销毁：projectDir ≠ 实例工作区（静默残留回归）");
+// ── 12) 单根销毁：路径解析不再有任何回落，实例目录必须真的消失 ────────────────
+// 曾经的缺陷：destroyInstance 先除名索引，再经 workspaceOf() = registry[instId] ?? projectDir
+// 解析路径 —— 跨工作区时删除静默打空（unlink 的 catch 是空的、rmSync 带 force）。
+// 索引与回落已随「引擎按工作区实例化」删除：引擎根**就是**会话工作区，路径只有一根。
+// 这条用例守住「销毁是真删，不是调用过删除」。
+console.log("\nL12 单根销毁：实例目录必须真的消失（不再有路径回落）");
 {
-  const engineRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rf-lc12-engine-"));
-  const sessionWs = fs.mkdtempSync(path.join(os.tmpdir(), "rf-lc12-session-"));
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-lc12-"));
   const notes = [];
-  const engine = mkEngine(engineRoot, [{ status: "passed", reason: "ok" }], [], notes);
+  const engine = mkEngine(ws, [{ status: "passed", reason: "ok" }], [], notes);
   const sid = `lc12-${RUN}`;
-  const r = engine.start("loop", "跨工作区销毁用例", sid, sessionWs);
+  const r = engine.start("loop", "单根销毁用例", sid);
   const id = engine.listInstances().at(-1).id;
-  const realInstDir = path.join(sessionWs, RF, "instances", id);
+  const realInstDir = path.join(ws, RF, "instances", id);
   const realStateFile = path.join(realInstDir, "state.json");
-  const ghostDir = path.join(engineRoot, RF, "instances", id); // 引擎 projectDir 下的错误落点
-  check("实例真实落在会话工作区（前置条件）", r.ok && fs.existsSync(realStateFile), realInstDir);
+  check("实例落在引擎根（前置条件）", r.ok && fs.existsSync(realStateFile), realInstDir);
+  check("engine.instanceDir 与真实路径逐字一致（不再有回落）", engine.instanceDir(id) === realInstDir, engine.instanceDir(id));
   engine.onSubmit(sid, "完成");
   await sleep();
-  check("完成后**真实工作区**的实例目录消失（不再静默残留）", !fs.existsSync(realInstDir), realInstDir);
+  check("完成后实例目录消失（不再静默残留）", !fs.existsSync(realInstDir), realInstDir);
   check("state.json 一并消失（先 unlink 后删目录）", !fs.existsSync(realStateFile));
-  check("readState 为 null 且索引已除名", engine.readState(id) === null && !(id in readIndex()));
-  check("报告归档在实例所属工作区", fs.existsSync(reportPathOf(sessionWs, id)));
-  check("引擎 projectDir 下没有幽灵拷贝", !fs.existsSync(ghostDir), ghostDir);
+  check("readState 为 null", engine.readState(id) === null);
+  check("报告归档在引擎根", fs.existsSync(reportPathOf(ws, id)));
   check("完成播报说「实例目录已销毁」（与事实一致）", notes.some((t) => t.includes("实例目录已销毁")), notes.at(-1)?.slice(0, 200));
-  forget(sessionWs);
-  forget(engineRoot);
+  forget(ws);
 }
 
 // ── 13) 销毁失败必须诚实：删不掉就别说「已销毁」，且 doctor 要报得出残留 ──────────
@@ -454,7 +447,7 @@ console.log("\nL13 销毁失败：播报不得谎称已销毁（+ 删除失败�
       check("报告仍已归档（归档与删除解耦）", fs.existsSync(reportPathOf(wsB, idB)));
       check("doctor 报出该残留（缺 state.json 的实例目录）",
         engineB.diagnose().text.includes(idB), engineB.diagnose().text.slice(-260));
-      check("索引已除名（不复活成幽灵活跃实例）", !(idB in readIndex()));
+      check("不再出现在活跃列表（不复活成幽灵）", !engineB.listInstances().some((i) => i.id === idB));
     } else {
       // 高权限环境（root）下 chmod 挡不住删除：改为断言成功路径的自洽性，并明确标注
       console.log("  ⚠️  本环境无法注入删除失败（权限过高），13b 改为断言成功路径的自洽性");

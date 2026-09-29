@@ -180,29 +180,54 @@ const S = () => `session-${++n}`;
   check("孤儿委派 → fail-safe 暂停 check_infra", after.paused && after.pause_reason === "check_infra" && after.delegations.length === 0);
 }
 
-// ── 8) 显式工作区放置：实例与报告都落在发起会话的工作区 ──────────────────────
+// ── 8) 引擎按工作区单根：列表 / 历史 / 自定义工作流都在会话工作区里找到 ────────
+// 这是「发现面锚定」缺陷的回归用例。引擎的根**就是**发起会话的工作区；真实 GUI 里
+// dsh 进程 cwd ≠ 会话工作区（实测 cwd=/home/yj、会话工作区=仓库），而旧实现是
+// 「一个引擎服务多个工作区 + 全局实例索引」，于是自定义工作流加载不到、历史列表
+// 永远 0 条、doctor 报「暂无实例」——三条都是同一个根因。
 {
   const s = S();
-  const ws = path.join(dir, "ws-b");
-  fs.mkdirSync(ws, { recursive: true });
-  const r = engine.start("loop", "工作区用例", s, ws);
-  check("显式工作区 start 成功", r.ok);
-  const id = newestId();
-  // 真实工作区路径（不经过 engine.instanceDir 的回落）：跨工作区用例里后者在销毁后指向 projectDir，
-  // 用它断言「已销毁」是**空转**的（本工程曾因此漏掉「终止不销毁实例目录」缺陷）。
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-ws-"));
+  const e = createEngine(ws, {
+    deliver: () => true,
+    verify: async (req) => ({ check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), status: "passed", reason: "ok" }),
+    log: () => {},
+  });
+  e.ensureLayout();
+
+  // CREATE_GUIDE 教模型写的位置就是这里：写进去必须能被加载、能被列出
+  fs.writeFileSync(
+    path.join(ws, ".dsh", "ralph-flow", "workflows", "mywf.yaml"),
+    ["description: 探针工作流", "steps:", "  - id: only", "    do: 做事。", "    check: 核对。"].join("\n"),
+  );
+  const lw = e.loadWorkflow("mywf");
+  check("自定义工作流（写在本工作区）能被加载", !!lw.def, JSON.stringify(lw.problems));
+  check("listWorkflows 列出该自定义工作流", e.listWorkflows().some((w) => w.name === "mywf"),
+    JSON.stringify(e.listWorkflows().map((w) => w.name)));
+
+  const r = e.start("mywf", "工作区用例", s);
+  check("start 成功", r.ok, r.text);
+  const id = e.listInstances().at(-1)?.id;
   const wsInstDir = path.join(ws, ".dsh", "ralph-flow", "instances", id);
-  check("实例目录落在指定工作区", fs.existsSync(path.join(wsInstDir, "state.json")), wsInstDir);
-  check("索引可发现（listInstances 可见）", engine.listInstances().some((i) => i.id === id));
+  check("实例目录落在本工作区", fs.existsSync(path.join(wsInstDir, "state.json")), wsInstDir);
   check("内置工作流**不**播种到工作区（对齐 opencode/claude，避免陈旧副本遮蔽内置）",
     !fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "workflows", "loop.yaml")));
-  check("但内置仍可加载（回落插件目录，始终取最新发布版）", !!engine.loadWorkflow("loop").def);
-  // 完整一轮 + 报告归档位置跟随工作区
-  scripted.push({ status: "passed", reason: "报告位置验证" });
-  submit(s, "完成。");
+  check("但内置仍可加载（回落插件目录，始终取最新发布版）", !!e.loadWorkflow("loop").def);
+
+  e.onSubmit(s, "完成。");
   await settle();
-  const st = engine.readState(id);
-  check("跨工作区实例通过并完成（**真实工作区**实例目录已销毁）", st === null && !fs.existsSync(wsInstDir), wsInstDir);
-  check("报告归档在相同工作区", fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "reports", `${id}.md`)), `${ws}/.dsh/ralph-flow/reports/${id}.md`);
+  check("完成后实例目录已销毁", !fs.existsSync(wsInstDir), wsInstDir);
+  check("报告归档在本工作区", fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "reports", `${id}.md`)));
+  check("**listHistory 看得见刚跑完的运行**（曾经的缺陷：永远 0 条）",
+    e.listHistory().some((h) => h.id === id), JSON.stringify(e.listHistory().map((h) => h.id)));
+  // doctor 必须能看见**本工作区**的残留。旧实现扫 knownWorkspaces()=projectDir∪索引，
+  // 实例一除名该工作区就从扫描范围消失 → 残留永远报不出来。
+  const ghostDir = path.join(ws, ".dsh", "ralph-flow", "instances", "ghost-residue");
+  fs.mkdirSync(ghostDir, { recursive: true });
+  check("**diagnose 报出本工作区的残留实例目录**（曾经的缺陷：报「暂无实例」）",
+    e.diagnose().text.includes("ghost-residue"), e.diagnose().text.slice(-220));
+  fs.rmSync(ghostDir, { recursive: true, force: true });
+  try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
 }
 
 // ── 9) 加固回归：委派超时交给 dsh 原生能力，ralphflow 不自设总时长上界 ─────────
@@ -226,26 +251,24 @@ const S = () => `session-${++n}`;
   e2.onSubmit("native-session", "完成");
   await sleep(40);
   check("验证端口收到 dsh 要求的取消句柄（signal）", sawSignal);
-  try {
-    const idxPath2 = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
-    const idx2 = JSON.parse(fs.readFileSync(idxPath2, "utf-8"));
-    for (const k of Object.keys(idx2)) if (idx2[k] === dir2) delete idx2[k];
-    fs.writeFileSync(idxPath2, JSON.stringify(idx2, null, 2));
-  } catch {}
   try { fs.rmSync(dir2, { recursive: true, force: true }); } catch {}
 }
 
-// ── 10) 补全 §1.8：布局迁移到工作区 dot-dir，旧 ralph-flow/ 不再创建 ────────────
+// ── 10) 布局：新 dot-dir 布局齐全，旧 ralph-flow/ 不再创建 ────────────────────
 {
-  const ws = path.join(dir, "ws-layout");
-  fs.mkdirSync(ws, { recursive: true });
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-layout-"));
+  const e = createEngine(ws, {
+    deliver: () => true,
+    verify: async (req) => ({ check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), status: "passed", reason: "布局 ok" }),
+    log: () => {},
+  });
+  e.ensureLayout();
   const s = S();
-  const r = engine.start("loop", "布局用例", s, ws);
-  const id = newestId();
+  const r = e.start("loop", "布局用例", s);
+  const id = e.listInstances().at(-1)?.id;
   check("start 成功（布局用例）", r.ok && r.text.includes("布局用例"));
   for (const sub of ["workflows", "instances", "reports", "artifacts"]) {
-    const p = path.join(ws, ".dsh", "ralph-flow", sub);
-    check(`新布局 .dsh/ralph-flow/${sub} 齐全`, fs.existsSync(p), p);
+    check(`新布局 .dsh/ralph-flow/${sub} 齐全`, fs.existsSync(path.join(ws, ".dsh", "ralph-flow", sub)));
   }
   check("旧 ralph-flow/ 不再被创建", !fs.existsSync(path.join(ws, "ralph-flow")));
   // §1.7 产出目录：实例启动时建好；完成后**非空即保留**；DO 提示词注入工作区相对路径
@@ -258,13 +281,12 @@ const S = () => `session-${++n}`;
     r.text.slice(-260),
   );
   fs.writeFileSync(path.join(artDir, "summary.md"), "keep-me\n", "utf-8");
-  scripted.push({ status: "passed", reason: "布局 ok" });
-  submit(s, "布局完成。");
+  e.onSubmit(s, "布局完成。");
   await settle();
   check("完成后非空产出目录保留（逐字节）",
     fs.existsSync(artDir) && fs.readFileSync(path.join(artDir, "summary.md"), "utf-8") === "keep-me\n");
-  // 同 §8：跨工作区用例必须用**真实工作区路径**断言，engine.instanceDir 在销毁后会回落到 projectDir
-  check("完成后实例目录已销毁（真实工作区路径）", !fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "instances", id)));
+  check("完成后实例目录已销毁", !fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "instances", id)));
+  try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
 }
 
 // ── 11) §1.1 加载期硬校验：写错了必须硬错误（静默 = 缺陷）─────────────────────
@@ -490,19 +512,26 @@ const S = () => `session-${++n}`;
   check("报告含产出目录（入库可查）", report.includes(`.dsh/ralph-flow/artifacts/${makeArtifactsDirName("报告统计用例", id)}/`), report.slice(0, 600));
 }
 
-// ── 15) §1.5 restore() 清掉悬挂索引条目（state.json 已不存在）─────────────────
+// ── 15) 单根扫描：悬挂实例目录（无 state.json）不进活跃列表，但 doctor 报出来 ────
+// 索引已随「引擎按工作区实例化」删除：listInstances 直接扫本工作区的 instances/，
+// 所以「磁盘上有、列表里没有」这种幽灵不再可能，也不再需要索引 GC。
 {
-  const s = S();
-  const { id } = start("loop", "GC 用例", s);
-  const idxBefore = JSON.parse(fs.readFileSync(engine.indexPath, "utf-8"));
-  check("GC 前索引含本实例", !!idxBefore[id], JSON.stringify(idxBefore));
-  fs.rmSync(engine.instanceDir(id), { recursive: true, force: true });
-  engine.restore();
-  const idxAfter = JSON.parse(fs.readFileSync(engine.indexPath, "utf-8"));
-  check("restore() 清掉悬挂条目", !idxAfter[id], JSON.stringify(idxAfter));
-  check("restore() 不动正常条目", Object.values(idxAfter).length === Object.values(idxBefore).length - 1, JSON.stringify({ before: idxBefore, after: idxAfter }));
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-scan-"));
+  const e = createEngine(ws, {
+    deliver: () => true,
+    verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }),
+    log: () => {},
+  });
+  e.ensureLayout();
+  const ghost = path.join(ws, ".dsh", "ralph-flow", "instances", "ghost-x");
+  fs.mkdirSync(ghost, { recursive: true });
+  check("无 state.json 的悬挂目录不进活跃列表", e.listInstances().length === 0);
+  let threw = false;
+  try { e.restore(); } catch { threw = true; }
+  check("restore() 不因悬挂目录抛错", !threw);
+  check("doctor 报出悬挂目录", e.diagnose().text.includes("ghost-x"));
+  try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
 }
-
 // ── 16) §1.6 CREATE_GUIDE 与引擎实际行为一致（文本 + 行为双向交叉验证）────────
 {
   // 文本侧：不得再出现与实测相反的陈述

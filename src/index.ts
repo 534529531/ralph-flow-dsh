@@ -6,7 +6,7 @@
  */
 import type { Context } from "@deepseek-ai/cordis";
 import { createUserMessage, boundContextSummary } from "@deepseek-ai/dsh-llm";
-import { createEngine } from "./engine.js";
+import { createEngine, type Engine, type VerifyRequest } from "./engine.js";
 import { runVerifier } from "./verify.js";
 import { registerTools, registerCommands } from "./tools.js";
 
@@ -105,13 +105,41 @@ export function apply(ctx: Context): void {
     }
   };
 
-  const engine = createEngine(workspace, {
-    deliver,
-    verify: (req) => runVerifier({ ctx }, req),
-    log,
-  });
+  /**
+   * 工作区 → 引擎。**一个工作区一个引擎**——这正是 opencode 版的形状（它的插件是
+   * 「每个项目目录一个实例」，见其 `engine.ts:9`）。每个引擎都是**单根**的：根就是发起
+   * 会话的工作区，所以列表、历史、doctor、自定义工作流查找天然落在对的地方。
+   *
+   * 以前是「一个引擎服务所有工作区 + 一个全局实例索引映射 instId→工作区」：引擎的根是
+   * dsh 进程的 cwd，而实例资产落在会话工作区，真实 GUI 里两者必然不同（实测 `dsh web`
+   * cwd = `/home/yj`，会话工作区 = `/home/yj/ralph-flow-dsh`）——那正是「自定义工作流加载
+   * 不到 / 历史列表永远空 / doctor 看不见残留」的同一个根因。
+   */
+  const engines = new Map<string, Engine>();
+  const ports = { deliver, verify: (req: VerifyRequest) => runVerifier({ ctx }, req), log };
+  /** 由 registerCommands 返回，用于给**新建引擎**所在工作区补登记 /ralphflow-<名字> 快捷命令 */
+  let registerShortcuts: ((engine: Engine) => void) | undefined;
 
-  try { engine.ensureLayout(); } catch (e) { log("warn", "ensure_layout_failed", { error: String(e) }); }
+  const engineFor = (ws?: string): Engine => {
+    const key = ws && ws.trim() ? ws.trim() : workspace;
+    let e = engines.get(key);
+    if (!e) {
+      e = createEngine(key, ports);
+      engines.set(key, e);
+      try { e.ensureLayout(); } catch (err) { log("warn", "ensure_layout_failed", { workspace: key, error: String(err) }); }
+      // 崩溃/重载恢复：孤儿委派 fail-safe（暂停等用户，不隐式继续）
+      try { e.restore(); } catch (err) { log("warn", "restore_failed", { workspace: key, error: String(err) }); }
+      try { registerShortcuts?.(e); } catch {}
+    }
+    return e;
+  };
+
+  /**
+   * 只查**已存在**的引擎：会话事件是高频路径，不能为了它给每个会话凭空建引擎
+   * （没有引擎 = 该工作区没有活跃实例，也就没有需要提醒/捕获的东西）。
+   */
+  const existingEngineFor = (sid: string): Engine | undefined =>
+    engines.get(workspaceOfSession(ctx, sid, workspace));
 
   // 全局会话事件流 → 引擎：**只做上下文捕获**（最近一条助手文本，仅作审查门重交去重的
   // 兜底文本；**不进验证者视野**，T1 说明见 engine.ts 的 lastText 注释）。
@@ -125,7 +153,8 @@ export function apply(ctx: Context): void {
         const ev = e as { type?: unknown; data?: unknown };
         if (ev.type !== "assistant/message") return;
         const text = lastAssistantText(ev.data);
-        if (text) engine.noteAssistantText(sid, text);
+        const eng = existingEngineFor(sid);
+        if (text && eng) eng.noteAssistantText(sid, text);
       });
     } else {
       log("warn", "session_event_listener_unavailable", {});
@@ -144,8 +173,10 @@ export function apply(ctx: Context): void {
       on("agent/turn-stopping", (payload?: unknown) => {
         const sid = (payload as { agent?: { id?: string } } | undefined)?.agent?.id;
         if (!sid) return;
+        const eng = existingEngineFor(sid);
+        if (!eng) return;
         let verdict: { remind: boolean; message?: string; summary?: string };
-        try { verdict = engine.remindToSubmit(sid); } catch (e) {
+        try { verdict = eng.remindToSubmit(sid); } catch (e) {
           log("warn", "turn_stopping_failed", { sessionId: sid, error: e instanceof Error ? e.message : String(e) });
           return;
         }
@@ -164,11 +195,12 @@ export function apply(ctx: Context): void {
     log("warn", "turn_stopping_listener_failed", { error: e instanceof Error ? e.message : String(e) });
   }
 
-  const handlers = registerTools({ ctx, engine, deliver, workspaceOfSession: (sid) => workspaceOfSession(ctx, sid, workspace) });
-  registerCommands({ ctx, engine, deliver, handlers });
+  const deps = { ctx, engineFor, deliver, workspaceOfSession: (sid: string) => workspaceOfSession(ctx, sid, workspace) };
+  const handlers = registerTools(deps);
+  registerShortcuts = registerCommands({ ...deps, handlers });
 
-  // 崩溃/重载恢复：孤儿委派 fail-safe（暂停等用户，不隐式继续）
-  try { engine.restore(); } catch (e) { log("warn", "restore_failed", { error: String(e) }); }
+  // 默认工作区的引擎在插件加载时建好（ensureLayout + restore 都在 engineFor 里）
+  engineFor(workspace);
 
   log("info", "plugin_loaded", { workspace, version: "0.1.0" });
 }

@@ -212,11 +212,7 @@ console.log("\nH8 判定丢弃必须可诊断（交卷丢失告警的姊妹缺�
   e.onSubmit(sid, "交卷");
   await sleep(60);
 
-  // 外部删除实例（模拟工作区被清理）
-  const ip = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
-  const idx = JSON.parse(fs.readFileSync(ip, "utf-8"));
-  delete idx[iid];
-  fs.writeFileSync(ip, JSON.stringify(idx, null, 2));
+  // 外部删除实例（模拟工作区被清理）——单根模型下没有索引要同步，删目录即除名
   fs.rmSync(e.instanceDir(iid), { recursive: true, force: true });
 
   resolveVerify({ check_index: 0, step_id: "loop", ts: new Date().toISOString(), status: "passed", reason: "迟到的判定" });
@@ -293,27 +289,9 @@ console.log("\nH9 审查门 + 在飞委派：改稿重交必须生效（不得�
   st = e.readState(iid);
   check("continue 可正常放行（不再被 delegations 挡住）", c.ok && st.current_step === "implement", `ok=${c.ok} step=${st.current_step}`);
 
-  // 清理索引里本用例创建的条目（按 id 精确删除，绝不按路径批量删真实实例）
-  try {
-    const ip2 = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
-    const idx2 = JSON.parse(fs.readFileSync(ip2, "utf-8"));
-    for (const [k, v] of Object.entries(idx2)) if (v === ws) delete idx2[k];
-    fs.writeFileSync(ip2, JSON.stringify(idx2, null, 2));
-  } catch {}
   try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
 }
 
-// ── 清理（索引在隔离 HOME 里，只删本测试写入的条目）──────────────────────────
-const indexPath = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
-try {
-  const idx = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
-  let changed = false;
-  for (const [id, ws] of Object.entries(idx)) {
-    if (typeof ws === "string" && ws.startsWith(dir)) { delete idx[id]; changed = true; }
-  }
-  if (changed) fs.writeFileSync(indexPath, JSON.stringify(idx, null, 2), "utf-8");
-} catch {}
-try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
-
+// ── 清理：引擎按工作区单根，实例资产都在各自的隔离工作区里，无需清理全局索引 ──
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

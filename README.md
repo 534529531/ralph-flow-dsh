@@ -57,7 +57,7 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 
 `/ralphflow-list` 分两节：**活跃实例** + **历史运行（已归档）**。后者扫 `reports/*.md` 现读现解析（实例 id、状态、任务、结束时间、报告路径），不需要任何派生索引——已结束的运行永远不会因为实例目录被销毁而"找不回来"。`/ralphflow-status <实例ID>` 对已销毁实例会直接指向它的报告，而不是谎称"没有实例"。
 
-多工作区各自独立；实例索引在 `~/.dsh/ralphflow-instances-index.json`。`.gitignore` 只忽略 `.dsh/ralph-flow/`（精确），不忽略整个 `.dsh/`。
+**一个工作区一个引擎**（对齐 opencode 的「每个项目目录一个插件实例」）：引擎的根就是**发起会话的工作区**，所以列表、历史、`doctor`、自定义工作流查找全都落在同一个地方。工作区之间互相独立、互不可见；**没有全局索引**——任何跨工作区的映射都会让「写入看会话工作区、读取看进程 cwd」这类缺陷复活（引擎的 `projectDir` 是 dsh 进程的 cwd，真实 GUI 里与会话工作区必然不同）。`.gitignore` 只忽略 `.dsh/ralph-flow/`（精确），不忽略整个 `.dsh/`。
 
 ## 设计
 
@@ -65,12 +65,12 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 - 状态模型：无相位字段，全部阶段由原始事实派生（交卷了吗 / 判定落地了吗 / 有在飞委派吗 / 暂停了吗）。
 - **验证者**：全新独立会话（按能力自动选择全新上下文的后端，与名称无关），只见任务 + 检查依据 +（可读的）产出目录——**看不到执行者的交卷摘要**；只读工具白名单，结构化判定 + 文本兜底，fail-closed。
 - **验证者配置（YAML `adversarial_check`）**：**只接受 `model` 一个字段**（可选，`"provider/model"` 或 `{providerID, modelID}`），步骤级 `check_model` 可覆盖它；都不写就沿用发起会话当前模型。验证者的身份与职责是插件内部定义，工作流不再能配置它。写了其它字段（或 `adversarial_check` 不是对象）会在加载期告警并忽略，`/ralphflow-doctor` 同样报出。
-- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；引擎验证测试见 `scripts/engine-test.mjs`（含布局/产出目录/加载期硬校验/doctor lint/报告统计/索引 GC/CREATE_GUIDE 一致性），实例生命周期验收见 `scripts/lifecycle-test.mjs`。
+- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；引擎验证测试见 `scripts/engine-test.mjs`（含布局/产出目录/加载期硬校验/doctor lint/报告统计/**单根发现面**/CREATE_GUIDE 一致性），实例生命周期验收见 `scripts/lifecycle-test.mjs`。
 - **生命周期不变量**（违反即回退）：实例是临时的、报告与产出是永久的；先除名（`unlink(state.json)`）后删物理文件（否则部分删除失败会留下幽灵实例）；销毁前先写完报告、先读出产出目录名；产出只用非递归 `rmdir`（非空即保留）；销毁后不再写 `state.json`（`writeState` 会 `mkdirSync` 复活的实例目录）。
 
 ## v0 范围（诚实声明）
 
-有：YAML 引擎、loop + spec、审查门、续跑/接管、失败重试、多工作区、崩溃 fail-safe、报告归档（含每步耗时与重试）、产出目录、实例生命周期（终止即归档并销毁实例目录 + 历史运行列表 + doctor 实例目录体检）、create/doctor 实现。
+有：YAML 引擎、loop + spec、审查门、续跑/接管、失败重试、按工作区单根、崩溃 fail-safe、报告归档（含每步耗时与重试）、产出目录、实例生命周期（终止即归档并销毁实例目录 + 历史运行列表 + doctor 实例目录体检）、create/doctor 实现。
 无：多验证者投票（`check_voting` 键会警告忽略）、reset/rewind、子工作流、客户端 UI、系统通知、验证者沙箱、执行日志。每项的准入触发条件见设计文档 §11。
 
 ## 许可

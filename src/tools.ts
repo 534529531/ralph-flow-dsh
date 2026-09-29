@@ -46,7 +46,8 @@ const SHARED_MECHANISM = `## 工作流机制（每次启动都会生效）
 
 export interface ToolContext {
   ctx: Context;
-  engine: Engine;
+  /** 按工作区取引擎（**一个工作区一个引擎**，见 index.ts 的 engineFor）；缺省用进程工作区 */
+  engineFor: (workspace?: string) => Engine;
   deliver: (sessionId: string, text: string) => boolean;
   /** 解析发起会话的工作区（实例资产落点） */
   workspaceOfSession?: (sessionId: string) => string;
@@ -61,35 +62,47 @@ function sessionIdOf(agent: Agent | undefined): string | null {
 // ─── 工具注册 ────────────────────────────────────────────────────────────────
 
 export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
-  const { ctx, engine } = deps;
+  const { ctx } = deps;
   const handlers = new Map<string, ToolHandler>();
   const tools = ctx.tools as { register(def: unknown): void };
+
+  /**
+   * 会话 → 它所在工作区的引擎。**这是所有「发现面」的唯一入口。**
+   *
+   * 引擎的根就是会话工作区，所以列表、历史、doctor、自定义工作流查找天然落在对的地方。
+   * 以前这里是「一个引擎 + 全局索引」：引擎根是 dsh 进程的 cwd，而实例资产落在会话
+   * 工作区——真实 GUI 里两者必然不同（`dsh web` cwd = /home/yj，会话工作区 = 仓库），
+   * 于是自定义工作流加载不到、历史列表永远空、doctor 看不见残留。
+   */
+  const engineOf = (agent: Agent | undefined): Engine => {
+    const sid = sessionIdOf(agent);
+    return deps.engineFor(sid ? deps.workspaceOfSession?.(sid) : undefined);
+  };
 
   const startHandler: ToolHandler = (args, agent) => {
     const sessionId = sessionIdOf(agent);
     if (!sessionId) return "找不到当前会话，无法启动工作流。";
-    const workspace = deps.workspaceOfSession?.(sessionId) ?? engine.projectDir;
-    return engine.start(String(args?.workflow ?? ""), String(args?.task ?? ""), sessionId, workspace).text;
+    return engineOf(agent).start(String(args?.workflow ?? ""), String(args?.task ?? ""), sessionId).text;
   };
 
   const continueHandler: ToolHandler = (args, agent) => {
     const sessionId = sessionIdOf(agent);
     if (!sessionId) return "找不到当前会话。";
-    return engine.continueInstance(sessionId, args?.instance ? String(args.instance) : undefined).text;
+    return engineOf(agent).continueInstance(sessionId, args?.instance ? String(args.instance) : undefined).text;
   };
 
   const statusHandler: ToolHandler = (args, agent) => {
     const sessionId = sessionIdOf(agent);
     if (!sessionId) return "找不到当前会话。";
-    return engine.statusOf(sessionId, args?.instance ? String(args.instance) : undefined).text;
+    return engineOf(agent).statusOf(sessionId, args?.instance ? String(args.instance) : undefined).text;
   };
 
-  const listHandler: ToolHandler = () => engine.listAll().text;
+  const listHandler: ToolHandler = (_args, agent) => engineOf(agent).listAll().text;
 
   const cancelHandler: ToolHandler = (args, agent) => {
     const sessionId = sessionIdOf(agent);
     if (!sessionId) return "找不到当前会话。";
-    return engine.cancelInstance(sessionId, args?.instance ? String(args.instance) : undefined, args?.reason ? String(args.reason) : undefined).text;
+    return engineOf(agent).cancelInstance(sessionId, args?.instance ? String(args.instance) : undefined, args?.reason ? String(args.reason) : undefined).text;
   };
 
   const createHandler: ToolHandler = (args) => {
@@ -97,7 +110,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     return idea ? `你要创建的工作流：**${idea}**\n\n---\n\n${CREATE_GUIDE}` : CREATE_GUIDE;
   };
 
-  const doctorHandler: ToolHandler = () => engine.diagnose().text;
+  const doctorHandler: ToolHandler = (_args, agent) => engineOf(agent).diagnose().text;
 
   /**
    * DO 阶段交卷（dsh 原生方式：工具调用即事实，不靠正则扫自由文本）。
@@ -107,7 +120,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     const sessionId = sessionIdOf(agent);
     if (!sessionId) return "找不到当前会话，无法交卷。";
     const summary = args?.summary !== undefined ? String(args.summary) : undefined;
-    return engine.onSubmit(sessionId, summary).text;
+    return engineOf(agent).onSubmit(sessionId, summary).text;
   };
 
   const unimplHandler: ToolHandler = () => "本版本未实现（涉及上下文管理，暂缓）。已可用：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`。";
@@ -208,8 +221,8 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
 
 // ─── 命令注册 ────────────────────────────────────────────────────────────────
 
-export function registerCommands(deps: ToolContext & { handlers: Map<string, ToolHandler> }): void {
-  const { ctx, engine } = deps;
+export function registerCommands(deps: ToolContext & { handlers: Map<string, ToolHandler> }): (engine: Engine) => void {
+  const { ctx } = deps;
   const commands = (ctx as unknown as {
     commands: {
       register(def: {
@@ -371,7 +384,11 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
   // claude 版：cmdName = SLASH_COMMAND_PREFIX("ralphflow-") + wf.name，且只对
   // 名字安全（^[a-zA-Z0-9_-]+$）的工作流注册。这里同款，另加 dsh 命令名约束
   // （小写、^[a-z][a-z0-9_-]*$）与静态命令撞名保护（如工作流叫 start → ralphflow-start 已占用则跳过）。
+  //
+  // **引擎按工作区惰性创建**，所以这里返回一个登记器而不是一次性注册：每新建一个引擎，
+  // 就把该工作区新出现的工作流补登记成快捷命令（同名先到先得，与「绝不覆盖」语义一致）。
   const taken = new Set<string>(defs.map((d) => d.name));
+  return function registerWorkflowShortcuts(engine: Engine): void {
   try {
     for (const wf of engine.listWorkflows()) {
       if (wf.invalid) continue;
@@ -414,6 +431,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
   } catch (err) {
     ctx.logger?.warn?.("[ralphflow] workflow shortcut registration skipped:", err);
   }
+  };
 }
 
 function messageSessionId(agent: Agent | undefined): string {

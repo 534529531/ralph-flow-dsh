@@ -78,10 +78,6 @@ console.log("D1 委派请求只带 dsh 契约字段，不注入自造超时");
     check("验证者按该相对路径读得到产出（继承会话工作区，无需额外权限）", seen.includes("verified-by-check"));
     check("实例销毁后非空产出目录与文件原样保留", fs.existsSync(path.join(abs, "summary.md")));
   }
-  const ip = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
-  const idx = JSON.parse(fs.readFileSync(ip, "utf-8"));
-  for (const k of Object.keys(idx)) if (idx[k] === ws) delete idx[k];
-  fs.writeFileSync(ip, JSON.stringify(idx, null, 2));
   fs.rmSync(ws, { recursive: true, force: true });
 }
 
@@ -115,11 +111,8 @@ console.log("\nD2 取消能真正中止在飞验证者（原生取消语义）")
   check("取消报告已归档且状态为「取消」", /状态：\*\*取消\*\*/.test(report), report.slice(0, 200));
   check("取消后不再出现在活跃实例列表", !e.listInstances().some((i) => i.id === iid));
   void resolveVerify;
-  const ip = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
-  const idx = JSON.parse(fs.readFileSync(ip, "utf-8"));
-  check("索引已立即除名", !(iid in idx), JSON.stringify(Object.keys(idx)));
-  for (const k of Object.keys(idx)) if (idx[k] === ws) delete idx[k];
-  fs.writeFileSync(ip, JSON.stringify(idx, null, 2));
+  // 单根模型：取消即从本工作区的 instances/ 消失（上面已断言），没有索引要复核
+  check("取消后本工作区实例目录已消失", !fs.existsSync(e.instanceDir(iid)));
   fs.rmSync(ws, { recursive: true, force: true });
 }
 
