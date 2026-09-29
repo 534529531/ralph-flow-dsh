@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createEngine, resolveCheckModel, makeArtifactsDirName, stepHasCheck, listWorkflowsIn } from "../lib/engine.js";
+import { createEngine, resolveCheckModel, makeArtifactsDirName, stepHasCheck, listWorkflowsIn, stepStats } from "../lib/engine.js";
 import { buildCheckPrompt } from "../lib/verify.js";
 import { CREATE_GUIDE } from "../lib/create.js";
 
@@ -519,6 +519,35 @@ const S = () => `session-${++n}`;
   const report = fs.readFileSync(path.join(engine.reportsDir, `${id}.md`), "utf-8");
   check("报告含总耗时", report.includes("总耗时："), report.slice(0, 400));
   check("报告含每步耗时表", report.includes("## 步骤耗时与重试") && /`loop`：耗时 \S+/.test(report), report.slice(0, 600));
+  // 上一条断言**太弱**：`/耗时 \S+/` 连 "0s" 都算通过 —— 于是「每步耗时恒为 0s」
+  // 这个缺陷活过了全部既有断言，直到作者真跑一轮 6m22s 的工作流才在归档报告里看见。
+  // 单测用**合成 history**（毫秒级真跑永远算不出非 0 秒，必须直接喂时间戳）。
+  {
+    const H = (ts, step, event) => ({ ts, step, event });
+    const st = stepStats(
+      [
+        H("2026-01-01T00:00:00.000Z", "a", "start"),
+        H("2026-01-01T00:01:00.000Z", "a", "do_submitted"),
+        H("2026-01-01T00:02:00.000Z", "b", "step_start"),
+        H("2026-01-01T00:03:00.000Z", "b", "do_submitted"),
+      ],
+      {},
+      new Date("2026-01-01T00:05:00.000Z").getTime(),
+    );
+    const by = Object.fromEntries(st.map((x) => [x.step, x.ms]));
+    check("单测：首步耗时 = 首条事件 → 下一步首条事件（2 分钟）", by.a === 120_000, JSON.stringify(st));
+    check("单测：**末步耗时 = 首条事件 → endTs**（3 分钟，不是 0）", by.b === 180_000, JSON.stringify(st));
+    check("单测：单步工作流的耗时 = 整轮跨度（不是 0）",
+      stepStats([H("2026-01-01T00:00:00.000Z", "only", "start"), H("2026-01-01T00:06:22.000Z", "only", "complete")], {}, new Date("2026-01-01T00:06:22.380Z").getTime())[0].ms === 382_380,
+      JSON.stringify(stepStats([H("2026-01-01T00:00:00.000Z", "only", "start")], {}, 0)));
+    check("单测：返工重新进入同一步 → 累计总时长",
+      stepStats([
+        H("2026-01-01T00:00:00.000Z", "a", "start"),
+        H("2026-01-01T00:00:10.000Z", "b", "step_start"),
+        H("2026-01-01T00:00:20.000Z", "a", "step_start"),
+      ], {}, new Date("2026-01-01T00:00:30.000Z").getTime()).find((x) => x.step === "a").ms === 20_000,
+      JSON.stringify(stepStats([], {}, 0)));
+  }
   check("报告含重试次数（fail_counts 派生）", report.includes("失败 1 轮"), report.slice(0, 600));
   check("报告含产出目录（入库可查）", report.includes(`.dsh/ralph-flow/artifacts/${makeArtifactsDirName("报告统计用例", id)}/`), report.slice(0, 600));
 }
@@ -543,6 +572,29 @@ const S = () => `session-${++n}`;
   check("doctor 报出悬挂目录", e.diagnose().text.includes("ghost-x"));
   try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
 }
+// ── 15a) 只读操作不得有写副作用（不建任何目录）────────────────────────────────
+// engineFor 是所有工具的入口，若在那里 ensureLayout，/ralphflow-list、/ralphflow-doctor
+// 这类只读命令会在用户从没用过 ralphflow 的项目里创建整棵 .dsh/ralph-flow/ 树。
+{
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-ro-"));
+  const e = createEngine(ws, {
+    deliver: () => true,
+    verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }),
+    log: () => {},
+  });
+  e.listAll();
+  e.diagnose();
+  e.listInstances();
+  e.listHistory();
+  e.listWorkflows();
+  e.loadWorkflow("loop");
+  check("只读操作不创建 .dsh/ralph-flow/（list/doctor/status 无写副作用）",
+    !fs.existsSync(path.join(ws, ".dsh")), fs.existsSync(path.join(ws, ".dsh")) ? fs.readdirSync(path.join(ws, ".dsh")).join(",") : "");
+  e.ensureLayout();
+  check("显式 ensureLayout 才建目录（写意图的操作走这条）", fs.existsSync(path.join(ws, ".dsh", "ralph-flow", "workflows")));
+  try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
+}
+
 // ── 15b) 列表里的「属主会话」必须可辨认 ───────────────────────────────────────
 // dsh 的会话 id 一律以 `session-` 开头，所以 slice(0, 8) 会让**每一个**实例都显示成
 // `session-` —— 列表里那一行等于没写。
@@ -823,16 +875,7 @@ const S = () => `session-${++n}`;
   }
 }
 
-// ── 清理（索引在隔离 HOME 里，只删本测试写入的条目）────────────────────────────
-const indexPath = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
-try {
-  const idx = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
-  let changed = false;
-  for (const [id, ws] of Object.entries(idx)) {
-    if (typeof ws === "string" && ws.startsWith(dir)) { delete idx[id]; changed = true; }
-  }
-  if (changed) fs.writeFileSync(indexPath, JSON.stringify(idx, null, 2), "utf-8");
-} catch {}
+// ── 清理：引擎已按工作区单根，实例资产都在隔离工作区里，没有全局索引要清理 ──────
 try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
 
 console.log(`\n${pass} passed, ${fail} failed`);

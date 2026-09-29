@@ -171,6 +171,54 @@ export interface HistoryEntry {
   detail?: string;
 }
 
+/**
+ * §1.4 每步耗时与重试次数：**全部从 `history` 的 `ts` 与 `fail_counts` 派生**
+ * （不新增落盘字段）。纯函数，便于用合成 history 直接验证。
+ *
+ * 耗时区间 = 属于某步的**第一条**历史事件 → 下一条属于其它步骤的事件（或 `endTs`）；
+ * 同一被反复进入的步骤（返工/回退）累计总时长。
+ *
+ * ⚠️ 这里曾经有一个只在「步骤切换」时才结算的实现：最后一步的耗时被算成
+ * `endTs - 该步最后一条事件`，而最后一条事件（`complete`）与 `endTs` 只差几毫秒
+ * —— 于是**每一步都显示 `耗时 0s`**（实测：6m22s 的一轮报告成 0s，历史上每一份
+ * 归档报告都是 0s）。区间起点必须是该步的**首条**事件，不是末条。
+ *
+ * 重试次数 = `max(fail_counts[step], 该步 verdict_failed 条数)`：
+ * 通过时 `clearFailCount` 会把该步计数清零、恢复暂停时也会清零，所以单看
+ * `fail_counts` 会把「先失败几次再通过」记成 0 轮 —— 必须同时从 history 兜底。
+ */
+export function stepStats(
+  history: HistoryEntry[],
+  failCounts: Record<string, number> | undefined,
+  endTs: number,
+): Array<{ step: string; ms: number; retries: number }> {
+  const acc = new Map<string, { ms: number; order: number; failed: number }>();
+  let order = 0;
+  let current: string | undefined;
+  let firstTs: number | undefined;
+  const ensure = (step: string) => {
+    let v = acc.get(step);
+    if (!v) { v = { ms: 0, order: order++, failed: 0 }; acc.set(step, v); }
+    return v;
+  };
+  /** 结算当前步：区间起点是它的**首条**事件 */
+  const close = (until: number) => {
+    if (current !== undefined && firstTs !== undefined) ensure(current).ms += Math.max(0, until - firstTs);
+  };
+  for (const h of history) {
+    const step = h.step;
+    if (!step) continue;
+    const t = new Date(h.ts).getTime();
+    if (!Number.isFinite(t)) continue;
+    if (step !== current) { close(t); current = step; firstTs = t; }
+    if (h.event === "verdict_failed") ensure(step).failed += 1;
+  }
+  close(endTs);
+  return [...acc.entries()]
+    .sort((a, b) => a[1].order - b[1].order)
+    .map(([step, v]) => ({ step, ms: v.ms, retries: Math.max(failCounts?.[step] ?? 0, v.failed) }));
+}
+
 export interface InstanceState {
   active: boolean;
   workflow_name: string;
@@ -1274,44 +1322,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   // ─── 报告归档 ──────────────────────────────────────────────────────────────
 
-  /**
-   * §1.4 每步耗时与重试次数：**全部从 `history` 的 `ts` 与 `fail_counts` 派生**
-   * （不新增落盘字段）。
-   *
-   * 耗时区间 = 属于某步的第一条历史事件 → 下一条属于其它步骤的事件（或 `endTs`）；
-   * 同一被反复进入的步骤（返工/回退）累计总时长。
-   *
-   * 重试次数 = `max(fail_counts[step], 该步 verdict_failed 条数)`：
-   * 通过时 `clearFailCount` 会把该步计数清零、恢复暂停时也会清零，所以单看
-   * `fail_counts` 会把「先失败几次再通过」记成 0 轮 —— 必须同时从 history 兜底。
-   */
-  function stepStats(state: InstanceState, endTs: number): Array<{ step: string; ms: number; retries: number }> {
-    const acc = new Map<string, { ms: number; order: number; failed: number }>();
-    let order = 0;
-    let lastStep: string | undefined;
-    let lastTs: number | undefined;
-    const ensure = (step: string) => {
-      let v = acc.get(step);
-      if (!v) { v = { ms: 0, order: order++, failed: 0 }; acc.set(step, v); }
-      return v;
-    };
-    for (const h of state.history) {
-      const step = h.step;
-      if (!step) continue;
-      const t = new Date(h.ts).getTime();
-      if (!Number.isFinite(t)) continue;
-      if (step !== lastStep) {
-        if (lastStep !== undefined && lastTs !== undefined) ensure(lastStep).ms += Math.max(0, t - lastTs);
-        lastStep = step;
-      }
-      lastTs = t;
-      const rec = ensure(step);
-      if (h.event === "verdict_failed") rec.failed += 1;
-    }
-    if (lastStep !== undefined && lastTs !== undefined) ensure(lastStep).ms += Math.max(0, endTs - lastTs);
-    return [...acc.entries()]
-      .sort((a, b) => a[1].order - b[1].order)
-      .map(([step, v]) => ({ step, ms: v.ms, retries: Math.max(state.fail_counts?.[step] ?? 0, v.failed) }));
+  function stepStatsOf(state: InstanceState, endTs: number): Array<{ step: string; ms: number; retries: number }> {
+    return stepStats(state.history, state.fail_counts, endTs);
   }
 
   /**
@@ -1328,7 +1340,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       fs.mkdirSync(target, { recursive: true });
       const end = new Date().toISOString();
       const endTs = new Date(end).getTime();
-      const stats = stepStats(state, endTs);
+      const stats = stepStatsOf(state, endTs);
       const totalMs = Math.max(0, endTs - new Date(state.started_at).getTime());
       const totalFails = stats.reduce((a, s) => a + s.retries, 0);
       const artifactsRel = artifactsRelDirOf(instId);

@@ -22,12 +22,7 @@ const sleep = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 const RUN = Math.random().toString(36).slice(2, 8);
 const sidOf = (n) => `${n}-${RUN}`;
 const clean = (ws) => {
-  const ip = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
-  try {
-    const idx = JSON.parse(fs.readFileSync(ip, "utf-8"));
-    for (const [k, v] of Object.entries(idx)) if (v === ws) delete idx[k];
-    fs.writeFileSync(ip, JSON.stringify(idx, null, 2));
-  } catch {}
+  // 引擎已按工作区单根：实例资产都在各自的隔离工作区里，没有全局索引要清理
   try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
 };
 /** 每笔委派一个独立 resolver */

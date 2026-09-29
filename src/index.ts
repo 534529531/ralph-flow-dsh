@@ -126,7 +126,10 @@ export function apply(ctx: Context): void {
     if (!e) {
       e = createEngine(key, ports);
       engines.set(key, e);
-      try { e.ensureLayout(); } catch (err) { log("warn", "ensure_layout_failed", { workspace: key, error: String(err) }); }
+      // **不在这里建目录**：engineFor 是所有工具（含只读的 list/doctor/status）的入口，
+      // 在这里 ensureLayout 会让只读命令在用户从没用过 ralphflow 的项目里创建整棵
+      // .dsh/ralph-flow/ 树。目录由**写意图**的操作创建：start（引擎内已调）与
+      // create（要往 workflows/ 放文件）。读操作对目录缺失是容错的（readdir 失败即空）。
       // 崩溃/重载恢复：孤儿委派 fail-safe（暂停等用户，不隐式继续）
       try { e.restore(); } catch (err) { log("warn", "restore_failed", { workspace: key, error: String(err) }); }
       try { registerShortcuts?.(listWorkflowsIn(key)); } catch {}

@@ -52,12 +52,7 @@ function mkEnv(ws, sid) {
 const textOf = (m) => (m?.content ?? []).filter((b) => b?.type === "text").map((b) => b.text).join("");
 const visible = (m) => m?.source?.kind === "plugin" && m.source.form === "notice" && typeof m.source.summary === "string" && m.source.summary.trim() !== "";
 const cleanup = (ws) => {
-  const ip = path.join(os.homedir(), ".dsh", "ralphflow-instances-index.json");
-  try {
-    const idx = JSON.parse(fs.readFileSync(ip, "utf-8"));
-    for (const [k, v] of Object.entries(idx)) if (v === ws) delete idx[k];
-    fs.writeFileSync(ip, JSON.stringify(idx, null, 2));
-  } catch {}
+  // 引擎已按工作区单根：实例资产都在各自的隔离工作区里，没有全局索引要清理
   try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
 };
 /** 断言「所有投递都是用户可见的 notice」 */

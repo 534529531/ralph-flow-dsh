@@ -105,8 +105,10 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     return engineOf(agent).cancelInstance(sessionId, args?.instance ? String(args.instance) : undefined, args?.reason ? String(args.reason) : undefined).text;
   };
 
-  const createHandler: ToolHandler = (args) => {
+  const createHandler: ToolHandler = (args, agent) => {
     const idea = args?.idea ? String(args.idea).trim() : "";
+    // 写意图：把工作流目录建好，模型随后才写得进 <workspace>/.dsh/ralph-flow/workflows/
+    try { engineOf(agent).ensureLayout(); } catch {}
     return idea ? `你要创建的工作流：**${idea}**\n\n---\n\n${CREATE_GUIDE}` : CREATE_GUIDE;
   };
 
