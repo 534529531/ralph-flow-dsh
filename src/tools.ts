@@ -221,7 +221,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
 
 // ─── 命令注册 ────────────────────────────────────────────────────────────────
 
-export function registerCommands(deps: ToolContext & { handlers: Map<string, ToolHandler> }): (engine: Engine) => void {
+export function registerCommands(deps: ToolContext & { handlers: Map<string, ToolHandler> }): (workflows: Array<{ name: string; desc: string }>) => void {
   const { ctx } = deps;
   const commands = (ctx as unknown as {
     commands: {
@@ -388,10 +388,9 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
   // **引擎按工作区惰性创建**，所以这里返回一个登记器而不是一次性注册：每新建一个引擎，
   // 就把该工作区新出现的工作流补登记成快捷命令（同名先到先得，与「绝不覆盖」语义一致）。
   const taken = new Set<string>(defs.map((d) => d.name));
-  return function registerWorkflowShortcuts(engine: Engine): void {
+  return function registerWorkflowShortcuts(workflows: Array<{ name: string; desc: string }>): void {
   try {
-    for (const wf of engine.listWorkflows()) {
-      if (wf.invalid) continue;
+    for (const wf of workflows) {
       const rawName = String(wf.name);
       if (!/^[a-zA-Z0-9_-]+$/.test(rawName)) continue;
       const cmd = `ralphflow-${rawName.toLowerCase()}`;

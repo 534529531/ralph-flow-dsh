@@ -6,7 +6,7 @@
  */
 import type { Context } from "@deepseek-ai/cordis";
 import { createUserMessage, boundContextSummary } from "@deepseek-ai/dsh-llm";
-import { createEngine, type Engine, type VerifyRequest } from "./engine.js";
+import { createEngine, listCustomWorkflowsIn, type Engine, type VerifyRequest } from "./engine.js";
 import { runVerifier } from "./verify.js";
 import { registerTools, registerCommands } from "./tools.js";
 
@@ -117,8 +117,8 @@ export function apply(ctx: Context): void {
    */
   const engines = new Map<string, Engine>();
   const ports = { deliver, verify: (req: VerifyRequest) => runVerifier({ ctx }, req), log };
-  /** 由 registerCommands 返回，用于给**新建引擎**所在工作区补登记 /ralphflow-<名字> 快捷命令 */
-  let registerShortcuts: ((engine: Engine) => void) | undefined;
+  /** 由 registerCommands 返回，用于给某个工作区补登记 /ralphflow-<名字> 快捷命令 */
+  let registerShortcuts: ((workflows: Array<{ name: string; desc: string }>) => void) | undefined;
 
   const engineFor = (ws?: string): Engine => {
     const key = ws && ws.trim() ? ws.trim() : workspace;
@@ -129,7 +129,7 @@ export function apply(ctx: Context): void {
       try { e.ensureLayout(); } catch (err) { log("warn", "ensure_layout_failed", { workspace: key, error: String(err) }); }
       // 崩溃/重载恢复：孤儿委派 fail-safe（暂停等用户，不隐式继续）
       try { e.restore(); } catch (err) { log("warn", "restore_failed", { workspace: key, error: String(err) }); }
-      try { registerShortcuts?.(e); } catch {}
+      try { registerShortcuts?.(listCustomWorkflowsIn(key)); } catch {}
     }
     return e;
   };
@@ -198,6 +198,21 @@ export function apply(ctx: Context): void {
   const deps = { ctx, engineFor, deliver, workspaceOfSession: (sid: string) => workspaceOfSession(ctx, sid, workspace) };
   const handlers = registerTools(deps);
   registerShortcuts = registerCommands({ ...deps, handlers });
+
+  // 动态快捷命令：会话一出现就登记**它那个工作区**的自定义工作流（纯读目录，不建引擎）。
+  // 引擎是惰性创建的，只靠 engineFor 的话，用户在新工作区第一次打开会话时还没有快捷命令。
+  try {
+    const on = (ctx as unknown as { on?: (name: string, listener: (...args: unknown[]) => void) => unknown }).on;
+    if (typeof on === "function") {
+      on("session/created", (session?: unknown) => {
+        const cwd = (session as { header?: { cwd?: string } } | undefined)?.header?.cwd;
+        if (!cwd || !cwd.trim()) return;
+        try { registerShortcuts?.(listCustomWorkflowsIn(cwd.trim())); } catch {}
+      });
+    }
+  } catch (e) {
+    log("warn", "session_created_listener_failed", { error: e instanceof Error ? e.message : String(e) });
+  }
 
   // 默认工作区的引擎在插件加载时建好（ensureLayout + restore 都在 engineFor 里）
   engineFor(workspace);

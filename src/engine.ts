@@ -395,6 +395,42 @@ export function makeArtifactsDirName(task: string, instId: string): string {
   return slug ? `${slug}-${suffix}` : String(instId);
 }
 
+/** 全局工作流目录：`<DSH_HOME|~/.dsh>/ralph-flow/workflows` */
+export function globalWorkflowsDirOf(): string {
+  const configured = process.env.DSH_HOME;
+  const dshHome = configured && path.isAbsolute(configured) ? path.resolve(configured) : path.join(os.homedir(), ".dsh");
+  return path.join(dshHome, RALPH_FLOW_NAME, "workflows");
+}
+
+/**
+ * 只读某个工作区（+ 全局目录）里**自定义工作流的名字与描述** —— 不建引擎、不建任何目录。
+ *
+ * 动态快捷命令 `/ralphflow-<名字>` 在插件加载时登记，而引擎是按工作区**惰性**创建的
+ * （首个工具调用才建）。只靠引擎的话，用户在新工作区里第一次打开会话时，自己建的工作流
+ * 还没有快捷命令。这个函数让登记可以在 `session/created` 时廉价完成（纯读目录）。
+ */
+export function listCustomWorkflowsIn(workspace: string): Array<{ name: string; desc: string }> {
+  const out: Array<{ name: string; desc: string }> = [];
+  const seen = new Set<string>(BUILTIN_WORKFLOWS);
+  for (const dir of [path.join(workspace, RALPH_FLOW_DIR, "workflows"), globalWorkflowsDirOf()]) {
+    let files: string[] = [];
+    try { files = fs.readdirSync(dir); } catch { continue; }
+    for (const f of files) {
+      if (!/\.ya?ml$/i.test(f)) continue;
+      const name = f.replace(/\.ya?ml$/i, "");
+      if (seen.has(name)) continue;
+      seen.add(name);
+      let desc = "";
+      try {
+        const doc = yaml.load(fs.readFileSync(path.join(dir, f), "utf-8")) as { description?: unknown } | null;
+        if (doc && typeof doc === "object" && typeof doc.description === "string") desc = doc.description;
+      } catch {}
+      out.push({ name, desc });
+    }
+  }
+  return out;
+}
+
 export function createEngine(projectDir: string, ports: EnginePorts) {
   const root = path.join(projectDir, RALPH_FLOW_DIR);
   const instancesDir = path.join(root, "instances");
@@ -402,9 +438,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   const reportsDir = path.join(root, "reports");
   const artifactsDir = path.join(root, ARTIFACTS_DIRNAME);
   // 全局工作流目录仍是 `~/.dsh/ralph-flow/workflows`（插件命名空间在全局与工作区同名）
-  const configuredDshHome = process.env.DSH_HOME;
-  const dshHome = configuredDshHome && path.isAbsolute(configuredDshHome) ? path.resolve(configuredDshHome) : path.join(os.homedir(), ".dsh");
-  const globalWorkflowsDir = path.join(dshHome, RALPH_FLOW_NAME, "workflows");
+  const globalWorkflowsDir = globalWorkflowsDirOf();
   /** 实例 → 在飞取消信号（取消/暂停时中止验证者，不白烧 token） */
   const aborts = new Map<string, AbortController>();
 
