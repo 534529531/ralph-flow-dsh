@@ -1926,7 +1926,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         if (task) body.push(`- **任务**: ${task}`);
         body.push(`- **步骤**: ${s.current_step}（${phaseLabel(s)}）`);
         body.push(`- **状态**: ${phaseLabel(s)}`);
-        body.push(`- **属主会话**: ${s.owner_session ? `\`${s.owner_session.slice(0, 8)}\`` : "无"}`);
+        body.push(`- **属主会话**: ${s.owner_session ? `\`${shortSessionId(s.owner_session)}\`` : "无"}`);
         body.push(`- **最后活动**: ${relativeTime(s.updated_at)}`);
         body.push("");
       }
@@ -2076,6 +2076,18 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 export type Engine = ReturnType<typeof createEngine>;
 
 function msg(e: unknown): string { return e instanceof Error ? e.message : String(e); }
+
+/**
+ * 会话 id 的**可辨认**短形式。
+ *
+ * dsh 的会话 id 一律以 `session-` 开头，所以 `slice(0, 8)` 会把每一个实例都显示成
+ * `session-`——列表里那一行等于没写。这里保留前缀、截 uuid 的首段。
+ */
+function shortSessionId(id: string): string {
+  const head = "session-";
+  const rest = id.startsWith(head) ? id.slice(head.length) : id;
+  return rest.length > 8 ? `${id.startsWith(head) ? head : ""}${rest.slice(0, 8)}…` : id;
+}
 
 /**
  * 归一化 ports.verify 的返回（判定是不可信的外部输入）。

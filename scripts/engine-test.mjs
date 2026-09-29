@@ -543,6 +543,24 @@ const S = () => `session-${++n}`;
   check("doctor 报出悬挂目录", e.diagnose().text.includes("ghost-x"));
   try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
 }
+// ── 15b) 列表里的「属主会话」必须可辨认 ───────────────────────────────────────
+// dsh 的会话 id 一律以 `session-` 开头，所以 slice(0, 8) 会让**每一个**实例都显示成
+// `session-` —— 列表里那一行等于没写。
+{
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-sid-"));
+  const e = createEngine(ws, {
+    deliver: () => true,
+    verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }),
+    log: () => {},
+  });
+  e.ensureLayout();
+  e.start("loop", "属主会话显示用例", "session-437df8a0-d996-4d27-89ea-a90094060c87");
+  const text = e.listAll().text;
+  check("属主会话显示可辨认（含 uuid 首段）", text.includes("session-437df8a0"), text.slice(0, 420));
+  check("不再出现无信息的 `session-`", !/`session-`/.test(text), text.slice(0, 420));
+  try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
+}
+
 // ── 16) §1.6 CREATE_GUIDE 与引擎实际行为一致（文本 + 行为双向交叉验证）────────
 {
   // 文本侧：不得再出现与实测相反的陈述
