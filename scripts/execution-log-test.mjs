@@ -182,7 +182,7 @@ console.log("L1 运行期 JSONL → 归档 → 报告指路 → 可复盘（验�
     const cur = norm(report);
     const stripped = cur.replace(LOG_LINE_RE, "").replace(/\n{2,}/g, "\n\n");
     const baseNorm = norm(baseReport);
-    check("验收2：报告去掉新增那一行后与 039f2f6 基线逐字节相同",
+    check("验收2：报告去掉新增那一行后与基线库（RF_BASELINE_LIB）逐字节相同",
       stripped === baseNorm, `\n--- 当前(归一化,去新增行) ---\n${stripped}\n--- 基线(归一化) ---\n${baseNorm}`);
     check("验收2：基线报告里没有执行日志行（新增确为我方引入）", !LOG_LINE_RE.test(baseNorm));
     forget(bws);
@@ -343,6 +343,38 @@ steps:
   delete process.env.RALPHFLOW_LOG_MAX_BYTES;
   forget(ws);
 }
+// 验收 4 的另一半：§3.3 是「保留 **3** 份轮转（.log.1/.log.2/.log.3，**最旧的删除**）」——
+// 只验到「出现 .log.1」不足以证明代数上限与最旧被删（写错了会无限膨胀）。
+{
+  const ws = wsOf("l3gen");
+  writeWorkflow(ws, "log-probe", `description: 多代轮转验收用
+steps:
+  - id: work
+    desc: 反复返工的步骤
+    do: 做事
+    check: 检查
+    on_pass: done
+    on_fail: work
+    max_fail_count: 5
+`);
+  const { engine } = mkEngine(ws, {
+    scripted: Array.from({ length: 5 }, (_, i) => ({ status: "failed", reason: `第${i + 1}轮不通过` })),
+    ports: { logMaxBytes: 150 }, // 单行 JSON 远超 150 B → 几乎每次 append 前都轮转
+  });
+  const sid = `gen-${RUN}`;
+  const { id } = start(engine, "log-probe", "多代轮转验收", sid);
+  const lp = logPathOf(ws, id);
+  for (let i = 0; i < 5; i++) { engine.onSubmit(sid, `第${i + 1}轮`); await sleep(120); }
+  const gens = [1, 2, 3].map((i) => `${lp}.${i}`);
+  const dirNow = () => JSON.stringify(fs.readdirSync(path.dirname(lp)));
+  check("验收4：轮转到 .log.1 / .log.2 / .log.3 三代", gens.every((f) => fs.existsSync(f)), dirNow());
+  check("验收4：第 4 代被删除（上限恰为 3，不无限膨胀）", !fs.existsSync(`${lp}.4`), dirNow());
+  check("验收4：三代轮转文件都是合法 JSONL 且非空",
+    gens.every((f) => { const j = parseJsonl(f); return j.exists && j.bad === null && j.lines.length > 0; }));
+  engine.cancelInstance(sid, undefined, "多代轮转用例收尾");
+  await sleep(80);
+  forget(ws);
+}
 
 // ── L4 日志失败不致命（验收 5）───────────────────────────────────────────────
 console.log("L4 日志写失败不致命（验收 5）");
@@ -479,6 +511,63 @@ steps:
     forget(bws);
   }
   forget(ws);
+}
+
+// ── L6 销毁期归档：两条**有意不对称**的不变量（§3.1 / §3.6）──────────────────
+// 任务书 §3.1：「报告归档失败 → 不销毁」（现状不变）；「日志归档失败只告警、不阻塞销毁」。
+// 日志归档被插在报告归档**之后**（步骤 ①b），所以还多一条必须成立的性质：
+// 报告归档失败时 ① 早退，①b **不得**执行（绝不出现「报告没归档、日志倒先归档了」）。
+console.log("L6 销毁期归档的两条不对称不变量（§3.1）");
+{
+  // 6a) 日志归档失败 → 只告警、不阻塞销毁；报告照常归档、推进判定不变
+  const ws = wsOf("l6a");
+  const { engine, logs } = mkEngine(ws, { scripted: [{ status: "passed", reason: "日志归档失败也要通过" }] });
+  const sid = `archfail-${RUN}`;
+  const { id } = start(engine, "loop", "日志归档失败验收", sid);
+  // 注入：在**归档目标**位置放一个目录 → copyFileSync 报 EISDIR；
+  // 报告目标是 `<id>.md`（另一个路径），因此「报告成功 + 日志失败」可稳定构造。
+  fs.mkdirSync(archivedLogOf(ws, id), { recursive: true });
+  let threw = null;
+  try { engine.onSubmit(sid, "完成"); await sleep(200); } catch (e) { threw = e; }
+  const report = fs.existsSync(reportOf(ws, id)) ? fs.readFileSync(reportOf(ws, id), "utf-8") : "";
+  check("§3.1：日志归档失败时不抛异常", threw === null, String(threw));
+  check("§3.1：日志归档失败仍照常销毁实例（不阻塞销毁）", engine.readState(id) === null);
+  check("§3.1：日志归档失败时报告照常归档且状态「完成」", report.includes("- 状态：**完成**"), report.slice(0, 160));
+  check("§3.1：推进判定未被改变（判定仍 passed）", report.includes("[passed] loop:"));
+  check("§3.1：日志归档失败只多一条 warning（execution_log_archive_failed）",
+    logs.some((l) => l.lvl === "warn" && l.ev === "execution_log_archive_failed"),
+    JSON.stringify(logs.map((l) => `${l.lvl}:${l.ev}`)));
+  check("§3.1：两条不变量确实不对称 —— 日志失败不触发 report_archive_failed",
+    !logs.some((l) => l.ev === "report_archive_failed"));
+  // 已知边界（如实标注，见 change-note.md「如实披露」一节）：报告先于 ①b 写出，此时运行期日志确实存在，
+  // 所以那一行**仍会**写出；归档随后失败 → 该行悬空（指向的不是文件）。
+  check("§3.1 已知边界：归档失败时报告指路行仍会写出，且它悬空（目标不是文件）",
+    (report.match(/^- 执行日志：/gm) ?? []).length === 1 && !fs.statSync(archivedLogOf(ws, id)).isFile());
+  forget(ws);
+
+  // 6b) 报告归档失败 → 不销毁（现状不变），且 ①b 必须被早退短路
+  const ws2 = wsOf("l6b");
+  const { engine: e2, logs: logs2 } = mkEngine(ws2, { scripted: [{ status: "passed", reason: "报告归档失败用例" }] });
+  const sid2 = `repfail-${RUN}`;
+  const { id: id2 } = start(e2, "loop", "报告归档失败验收", sid2);
+  const reportsDir2 = path.join(ws2, RF, "reports");
+  fs.rmSync(reportsDir2, { recursive: true, force: true });
+  fs.writeFileSync(reportsDir2, "occupied"); // 同名普通文件占位 → mkdir/write 全部 ENOTDIR
+  let threw2 = null;
+  try { e2.onSubmit(sid2, "完成"); await sleep(200); } catch (e) { threw2 = e; }
+  const rt2 = parseJsonl(logPathOf(ws2, id2));
+  check("§3.6：报告归档失败 → 不销毁（实例目录仍在、state.json 仍在）",
+    fs.existsSync(e2.instanceDir(id2)) && e2.readState(id2) !== null);
+  check("§3.6：报告归档失败 → 记 report_archive_failed 并告警",
+    logs2.some((l) => l.ev === "report_archive_failed"));
+  check("§3.6：报告归档失败时 ①b 被早退短路（没有 execution_log_archive_failed）",
+    !logs2.some((l) => l.ev === "execution_log_archive_failed"), JSON.stringify(logs2.map((l) => l.ev)));
+  check("§3.6：报告归档失败时不落 destroy 事件（①b 未执行，销毁序列未启动）",
+    rt2.exists && !hasEvent(rt2, "destroy"), JSON.stringify(eventsOf(rt2)));
+  check("§3.6：不抛出（失败只走告警通道）", threw2 === null, String(threw2));
+  fs.rmSync(reportsDir2, { recursive: true, force: true });
+  fs.mkdirSync(reportsDir2, { recursive: true });
+  forget(ws2);
 }
 
 console.log(`\n${pass} passed, ${fail} failed  (lib=${LIB})`);

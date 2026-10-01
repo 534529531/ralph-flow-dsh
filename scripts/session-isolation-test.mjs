@@ -223,10 +223,20 @@ console.log("\nI4 判据边界：心跳新鲜/过期/缺字段，以及「在飞
   const now = Date.now();
   check("心跳刚刷过 → 活",
     delegationOwnerAlive({ run_id: "r", check_index: 0, ts: "", heartbeat_at: now }) === true);
-  check("心跳在 TTL 内（含边界）→ 活",
-    delegationOwnerAlive({ run_id: "r", check_index: 0, ts: "", heartbeat_at: now - DELEGATION_HEARTBEAT_TTL_MS }) === true);
-  check("心跳过期 → 死（属主失联）",
-    delegationOwnerAlive({ run_id: "r", check_index: 0, ts: "", heartbeat_at: now - DELEGATION_HEARTBEAT_TTL_MS - 1 }) === false);
+  // 「含边界」必须**冻结时钟**才测得准：判据内部读 `Date.now()`，而 `now` 是上面几行取的，
+  // 两次读之间只要有 1ms 抖动，`now - TTL` 就落到界外 —— 那是在**碰运气**，不是判据错
+  // （实测约 1/4 的运行会因此偶发变红）。冻结后既确定、又精确钉住「含」这一侧。
+  const realDateNow = Date.now;
+  const FROZEN = realDateNow();
+  Date.now = () => FROZEN;
+  try {
+    check("心跳在 TTL 内（含边界）→ 活",
+      delegationOwnerAlive({ run_id: "r", check_index: 0, ts: "", heartbeat_at: FROZEN - DELEGATION_HEARTBEAT_TTL_MS }) === true);
+    check("心跳过期 → 死（属主失联）",
+      delegationOwnerAlive({ run_id: "r", check_index: 0, ts: "", heartbeat_at: FROZEN - DELEGATION_HEARTBEAT_TTL_MS - 1 }) === false);
+  } finally {
+    Date.now = realDateNow;
+  }
   check("穷途末路的老账：没有心跳字段 → 不是活（按孤儿兜底）",
     delegationOwnerAlive({ run_id: "r", check_index: 0, ts: "" }) === false);
   check("心跳字段是垃圾值 → 不是活",
