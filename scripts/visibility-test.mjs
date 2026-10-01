@@ -16,6 +16,8 @@ import path from "node:path";
 import { Context } from "@deepseek-ai/cordis";
 import { Session } from "@deepseek-ai/dsh-session";
 import * as plugin from "../lib/index.js";
+// 时长承诺的唯一判据来源（问题二用例共用）：summary 里不许再出现任何时间承诺
+import { findDurationPromises } from "./helpers/time-promise-scan.mjs";
 
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
 // 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
@@ -187,7 +189,12 @@ console.log("\nU5 默认可见的只有 summary（notice 行默认折叠）→ s
   check("验证中 notice 可见", !!verifyNote && visible(verifyNote));
   const sum = verifyNote?.source?.summary ?? "";
   check("验证中 summary 自带「无需操作」（默认唯一可见行必须可行动）", /无需操作/.test(sum), sum);
-  check("验证中 summary 给出时长预期", /1–5 分钟|1-5 分钟/.test(sum), sum);
+  // 这条断言**换掉了**原来那条 `/1–5 分钟|1-5 分钟/`：旧断言是在断言一句假话
+  // （实测 3m53s / 7m29s / 8m34s，且委派没有超时上界，那个区间是编的）。
+  // 换成的判据 = 「summary 里不许有任何时长承诺」+「必须说清验证者在干什么」，
+  // 判据来源是唯一的扫描器（scripts/helpers/time-promise-scan.mjs，问题二的用例也在用）。
+  check("验证中 summary 不含任何时长承诺（不猜时间）", findDurationPromises(sum).length === 0, sum);
+  check("验证中 summary 说清验证者正在取证（把「在干什么」讲给用户，而不是猜时间）", /取证/.test(sum), sum);
   cleanup(ws);
 }
 

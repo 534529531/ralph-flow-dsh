@@ -221,6 +221,16 @@ function extractText(output: unknown): string {
   return "";
 }
 
+/**
+ * 把一条复盘证据写进执行日志（§3.2）。
+ *
+ * **日志写入绝不参与判定**：端口抛错也只吞掉（引擎侧同样只告警不抛，§3.4）——
+ * 日志是辅助证据，写不出来绝不能把一次验证搞成 infra。
+ */
+function logSafe(req: VerifyRequest, level: "info" | "warn" | "error", event: string, extra: Record<string, unknown>): void {
+  try { req.logEvent?.(level, event, extra); } catch {}
+}
+
 /** 委派一个独立验证者并返回判定（T1 的唯一入口，由引擎调用） */
 export async function runVerifier(deps: VerifyDeps, req: VerifyRequest): Promise<Verdict> {
   const ctx = deps.ctx;
@@ -258,12 +268,27 @@ export async function runVerifier(deps: VerifyDeps, req: VerifyRequest): Promise
 
   let run: any;
   try {
+    // §3.2 可复盘证据之一：**发给验证者的提示词原文**（不截断）。
+    // 这正是排查「验证者为什么判错」唯一有效的东西——提示词被截断，日志就等于没有。
+    //
+    // ⚠️ 这一句**必须留在 try 内**：`buildCheckPrompt` 对无 `check` 的步骤**明确抛错**
+    // （兜底配方已退役，见 no-check-semantics-brief §7），该抛错要由下面的 catch 统一转成
+    // infra 判定 —— 挪到 try 外会让「无 check 被误委派」从 fail-closed 退化成未捕获异常。
+    const promptText = buildCheckPrompt(req, wantStructured);
+    logSafe(req, "info", "verifier_prompt", {
+      step: req.step.id,
+      checkIndex: req.checkIndex,
+      backend: name,
+      structured: wantStructured,
+      model: model?.providerID && model?.modelID ? `${model.providerID}/${model.modelID}` : null,
+      prompt: promptText,
+    });
     const startReq: Record<string, unknown> = {
       label: `Ralph Check: ${req.step.id} ${req.userTask.slice(0, 50)}`,
       // 任务消息正文只保留本次任务、检查依据、产出位置等**事实**；
       // 通用验证者角色说明走 persona 通道（唯一一份，见 VERIFIER_PERSONA）。
       prompt: [
-        { type: "text", text: buildCheckPrompt(req, wantStructured) },
+        { type: "text", text: promptText },
       ],
       signal: req.signal,
       // persona 在子代理 scope 注册 `deployment:persona-prefix` 系统提示段 —— 角色说明的正确通道。
@@ -291,6 +316,17 @@ export async function runVerifier(deps: VerifyDeps, req: VerifyRequest): Promise
     // 原生等待：与 dsh-tool-subagent（宿主自己的委派工具）同款 —— 直接 await run.result，
     // 由宿主决定子代理何时结束。取消仍经 req.signal 传下去（dsh 的取消契约）。
     const settled = await run.result;
+    // §3.2 可复盘证据之二：**验证者返回的原始输出**（解析前的原文 + stopReason + 结构化结果）。
+    // 判定原文（reason）由引擎在落账时写进日志；这里额外留下解析的输入，
+    // 解析逻辑本身出问题时才复盘得动（解析失败只写日志、不改判定）。
+    const raw = (settled ?? {}) as { structured?: unknown; output?: unknown; stopReason?: string };
+    logSafe(req, "info", "verifier_result", {
+      step: req.step.id,
+      checkIndex: req.checkIndex,
+      stopReason: raw.stopReason ?? null,
+      structured: raw.structured ?? null,
+      output: typeof raw.output === "string" ? raw.output : extractText(raw.output),
+    });
     return parseVerdict(settled, req.step.id, req.checkIndex);
   } catch (e) {
     const aborted = req.signal.aborted;
