@@ -85,7 +85,7 @@ export function revertOrphanLivenessGuard(src) {
  * **编出来的时长承诺**（逐字回到旧文案）。
  */
 export function revertHonestVerifyNotice(src) {
-  const honest = "它现在正在读文件、跑命令取证，它在做什么你在会话里看得到（这里不给时长预估：没有超时上界，任何时间承诺都是编的）。";
+  const honest = "它现在正在读文件、跑命令取证，你在会话里看得到它在做什么。";
   if (!src.includes(honest)) throw new Error("负对照锚点（诚实的验证播报文案）不见了 —— 修复被改写，请同步更新负对照");
   return src.replace(honest, "验证通常需要 1–5 分钟（它要真的去读文件、跑命令取证）。");
 }
