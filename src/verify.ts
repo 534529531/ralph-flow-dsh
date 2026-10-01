@@ -129,14 +129,16 @@ function supportsOutputSchema(ctx: Context, name: string): boolean {
 /** CHECK 提示词构造（导出供测试直接断言 §1.3 的 desc/交付物/产出目录） */
 export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): string {
   // 通用兜底配方已随「无 check = 跳过对抗性验证」退役（no-check-semantics-brief §7）。
-  // 本函数**只在有 check 时被调用**：传入无 check 的步骤是引擎缺陷，必须明确失败，
-  // 绝不静默产出兜底配方 —— 那等于把已删除的行为留成暗门（校验形同虚设且不可见）。
-  if (!stepHasCheck(req.step)) {
+  // 本函数**只在有检查依据时被调用**：单 `check` 用 `step.check`，多验证者投票用 `req.voter.check`。
+  // 传入两者都没有的步骤是引擎缺陷，必须明确失败，绝不静默产出兜底配方 ——
+  // 那等于把已删除的行为留成暗门（校验形同虚设且不可见）。
+  if (!req.voter && !stepHasCheck(req.step)) {
     throw new Error(
-      `buildCheckPrompt 拒绝无 \`check\` 的步骤 \`${req.step.id}\`：无 check 的步骤跳过对抗性验证，` +
+      `buildCheckPrompt 拒绝无 \`check\`/\`check_voting\` 的步骤 \`${req.step.id}\`：这类步骤跳过对抗性验证，` +
       `不应委派验证者（兜底配方已退役，不再静默生成）。`,
     );
   }
+  const voter = req.voter;
   const rel = req.artifactsRelDir;
   // §1.3：CHECK 必须拿到与 DO 同等的承诺上下文（desc + 交付物 + 产出目录），
   // 否则验证者不知道本步承诺交付什么，只能泛泛核对。
@@ -148,6 +150,21 @@ export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): s
     ...(req.step.output ? [`**交付物（本步承诺的产出）**：${String(req.step.output).trim()}`] : []),
     `**产出目录**：\`${rel}/\` —— 检查依据里没写路径的文件名（如 \`summary.md\`）即指此目录下的文件。`,
   ];
+  // 投票变体（对齐 opencode `buildVotingCheckPrompt`）：共享上下文 + **该票专属**检查依据 +
+  // 「你是 N 个之一，只查自己这一条」约束。目的：防止各票趋同成同一份泛泛检查。
+  const basis = voter
+    ? [
+      "## 你的检查依据（专属视角）",
+      voter.check.trim(),
+      "",
+      `## 你是 ${voter.count} 个验证者之一`,
+      "",
+      "- 你**只负责你自己的检查依据**（上方「你的检查依据」段），不要试图覆盖其他验证者的视角。",
+      "- 其他验证者正在并行检查其他方面，各有独立会话。",
+      "- 你的结论不受任何其他验证者影响，也不要等待或引用它们。",
+      "- 本步**全过才放行**，但汇总由程序完成：你只需给出你自己这一票的判定。",
+    ]
+    : ["## 检查依据", req.step.check!.trim()];
   // T1：**不注入执行者的交卷自述**。验证者只看"结果是否满足检查依据"，不看执行者
   // 怎么做的、自称做了什么。opencode 与 claude 版同样从不传入自述，并明令
   // "不要依赖任何外部提供的实现总结"——自述是锚点，会软化独立判定。
@@ -158,12 +175,12 @@ export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): s
     "## 本步上下文",
     stepFacts.join("\n"),
     "",
-    "## 检查依据",
-    req.step.check!.trim(),
+    ...basis,
     "",
     "## 取证要求",
     "在**当前工作区**里取证（读文件、跑命令、搜索），逐条核对检查依据。",
     "产出目录也在这个工作区内，用上面的相对路径即可读到。",
+    ...(voter ? ["**只查你自己那条检查依据**：其他视角由别的验证者负责，不要替它们下结论。"] : []),
     "**只看结果**：以你亲自取证到的事实为准，不采信任何执行者自述或实现总结。",
     wantStructured
       // 原生结构化输出可用：判定由 structured_output 工具承载，不需要文本标签。
@@ -284,7 +301,10 @@ export async function runVerifier(deps: VerifyDeps, req: VerifyRequest): Promise
       prompt: promptText,
     });
     const startReq: Record<string, unknown> = {
-      label: `Ralph Check: ${req.step.id} ${req.userTask.slice(0, 50)}`,
+      // 投票时把票号写进会话标题（opencode 同款做法）：用户能一眼看出「这是第几票、共几票」。
+      label: req.voter
+        ? `Ralph Check: ${req.step.id} [${req.voter.index}/${req.voter.count}] ${req.userTask.slice(0, 50)}`
+        : `Ralph Check: ${req.step.id} ${req.userTask.slice(0, 50)}`,
       // 任务消息正文只保留本次任务、检查依据、产出位置等**事实**；
       // 通用验证者角色说明走 persona 通道（唯一一份，见 VERIFIER_PERSONA）。
       prompt: [

@@ -111,15 +111,15 @@
 - **身份是内部定义（单一来源）**：验证者职责（独立性、只读取证、不采信自述、只读不改文件）收敛为 `verify.ts` 的 `VERIFIER_PERSONA`，经 DSH 原生子代理 `persona` 传入（在子代理 scope 注册 `deployment:persona-prefix` 系统提示段）。**切分线**：persona 只承载「你是谁、你的纪律」；本次任务的事实与**按 `wantStructured` 分支的判定提交方式**（`structured_output` 工具 / `<promise-check>` 文本标记）仍由 `buildCheckPrompt` 承载——后者是逐请求状态，搬进 persona 会让降级路径失效。
 - **判定**：`outputSchema` 结构化 `{ passed: boolean, reason: string }`；reason 必须给证据（读到的文件/跑出的结果）。
 - **只读**：`toolFilter: { allow: [read, grep, glob, bash, read_image] }`。bash 内的间接写（`sed -i`/`tee`）**有意接受**（ADR-0002 同款弱点；将来用 dsh 沙箱收紧，见 §11）。
-- **模型**：默认同主会话模型；YAML 可覆盖（§0 推论：独立性 ≠ 模型隔离）。优先级链**与 opencode/claude 一致**：步骤 `check_model` > 全局 `adversarial_check.model` > 发起会话当前模型。
+- **模型**：默认同主会话模型；YAML 可覆盖（§0 推论：独立性 ≠ 模型隔离）。优先级链**与 opencode/claude 一致**：`check_voting` 条目 `model` > 步骤 `check_model` > 全局 `adversarial_check.model` > 发起会话当前模型。
   - `model` 通过 DSH 原生 `agentOptions` 传给验证者，不由提示词要求模型自行切换。**没有覆盖时不传 `agentOptions`**，由宿主 `resolveChildAgentOptions` 继承**父级** provider/model（即发起会话当前模型）。
   - 两种形态都支持（dsh/opencode/claude 三端同解）：`"provider/model"` 字符串、`{ providerID, modelID }` 对象（两者都必须非空）。**裸模型名**（如 `sonnet`）、对象缺字段、或类型非法 → 解析不出 → **告警并回退发起会话当前模型**，绝不静默忽略（否则用户以为换了验证模型，实际没换）。归一化只有一处：引擎的 `resolveCheckModel`（照抄 opencode 语义），验证者只消费结果。
-  - `check_model` **仅单 `check` 场景生效**：与 `check_voting` 同写、或本步没有 `check` → **加载期硬错误**（照抄 opencode）。
+  - `check_model` **仅单 `check` 场景生效**：与 `check_voting` 同写、或本步没有 `check` → **加载期硬错误**（照抄 opencode）。投票步各票用自己条目里的 `model`。
 - **公开配置契约（`adversarial_check`）**：可选对象，**唯一允许的字段是 `model`**。`agent` / `system_prompt` / `timeout_ms` **已从公开契约中删除**——它们（以及任何未知字段、`adversarial_check` 非对象）在**加载期**与 `doctor` 都告警并忽略：不拒收、不静默、不改作别的含义。口径与未知键、`check_voting` 统一为 **warn+ignore**（§8 Q13）：dsh 对「自己不兑现的键」只有这一条规则，忽略后回落到固定的内部验证者正是文档承诺的默认行为。告警必须在加载期出现，不能拖到验证阶段。
 - **prompt 由引擎构造**：任务原文 + 本步上下文（`desc`/`do`/`input`/`output`/产出目录）+ 检查依据（来自工作流定义，主会话零输入）+ 工作区可读。任务消息正文只保留这些**事实**，通用角色说明走 persona 通道（见上）。验证者 prompt 是 T1 防污染的唯一注入点。
 - **绝不注入执行者自述（T1 硬规则）**：验证者**看不到**执行者的交卷摘要/实现总结——它只判「结果是否满足检查依据」，不判「执行者怎么做的、自称做了什么」。自述是**锚点**，会软化独立判定。opencode 与 claude 版同样从不传入，并在提示词里明令"不要依赖任何外部提供的实现总结"。
   - 交卷摘要仍存于 `state.last_submit_summary`，但**唯一消费者是审查门改稿重交去重**（`onSubmit` 里"内容与上次完全相同则不重复验证"），不流向验证者。`VerifyRequest` 类型上**没有** `submitSummary` 字段——从类型层面阻止它被重新引入。
-- **数量**：v0 单验证者。`verdicts[]` 与 `delegations[]` 按数组建模，为将来多票预留，但 v0 恒为 1。
+- **数量**：v0 单验证者；**v0.2 起 `check_voting` 激活**（1–5 票并行、全过才放行，见 §11）。`verdicts[]` 与 `delegations[]` 从一开始就按数组建模，投票没有引入新的状态字段：每票一条 `Verdict`（`check_index` = 票号）、一笔 `Delegation`（`attempt` = 第几轮投票）。
 - **不注入环境异常条款（作者定案）**：验证者 prompt **不**加「取证期间宿主可能重启/源码可能漂移，请区分环境干扰与被验证对象缺陷」这类提示。理由：环境异常是开放集合（重启、改码、并发写、宿主升级、权限、网络……），逐条枚举等于对不可控环境做猜测，**每条猜测都是一个新增的误判入口**，复杂度换不来正确性。与 `timeout_ms` 同一条原则：宿主职责交宿主，内核不造轮子。
   - **已知代价（如实记录，不修）**：用正在被修改的插件验证它自己的改动时，中途重启会让在飞验证被 `restore()` 孤儿恢复清记账，其判定被 `run_superseded` 丢弃；而**验证者进程仍活着**，它会在一个正在变动的树里取证，可能把环境噪声写进判定（实测：`loop-mudrr90d-xd5d` 两次重启，其中一轮判定即因此失真，其"残留项 #1"经干净环境复现判定为**不成立**）。这是 fail-safe 的诚实代价，**接受**。
   - **正确应对是流程而非代码**：批量交付、需要重启才能生效的改动集中到最后一次重启（见 `hardening-brief.md` §6）。
@@ -141,11 +141,11 @@
 | `/ralphflow-reset` `/ralphflow-rewind` | 只声明不实现（涉及上下文管理，作者定案暂缓） |
 | —（无命令，DO 阶段由模型自动调用） | `ralphflow_submit` | DO 交卷（dsh 原生工具调用；取代 `<promise>done</promise>` 文本标记）。见 §5 三时刻① |
 
-**v0 没有**：多验证者投票、reset、rewind、客户端 UI、HTTP 通道、通知、沙箱。
+**v0 没有**（**v0.2 已激活多验证者投票**，其余未变）：reset、rewind、客户端 UI、HTTP 通道、通知、沙箱。
 
 **v0 有**：YAML 引擎、内置 `loop` + `spec`、审查门、续跑、落盘、失败重试、多实例、报告归档、崩溃 fail-safe。
 
-**方言容错（Q13 定案）**：未知/未支持键（`check_voting`、`adversarial_check` 下 `model` 以外的字段如 `agent`/`system_prompt`/`timeout_ms`、其它未识别键）→ **警告该键 v0 未支持/已删除、已忽略，按默认语义跑**；不做语义降级兼容（不加工作量）。`adversarial_check` 写了非对象（`true`/`"foo"`/`[...]`）同样告警并忽略。语法错误、`on_pass`/`on_fail` 引用不存在的步骤 → **fail-fast 带人话报错**。
+**方言容错（Q13 定案）**：未知/未支持键（`adversarial_check` 下 `model` 以外的字段如 `agent`/`system_prompt`/`timeout_ms`、`check_voting` 条目里 `check`/`model` 以外的字段、其它未识别键）→ **警告该键未支持/已删除、已忽略，按默认语义跑**；不做语义降级兼容（不加工作量）。`adversarial_check` 写了非对象（`true`/`"foo"`/`[...]`）同样告警并忽略。语法错误、`on_pass`/`on_fail` 引用不存在的步骤 → **fail-fast 带人话报错**。
 
 **超时不在内核里造（作者定案）**：委派生命周期（含模型卡死/打转等异常）**一律交给宿主 dsh 的原生能力**（请求级空闲看门狗、工具调用时限策略），ralphflow 不自建超时轮询或竞速。理由：这是宿主职责，插件重复实现只会分叉行为、随宿主演进腐化。故 `timeout_ms` 永久 warn+ignore，**不要**在后续轮次重新引入有界竞速（claude 版 ADR 独立得出同一结论：`timeout_ms` 零消费者 → 必须静默忽略）。
 
@@ -153,9 +153,9 @@
 
 ## 9. 工作流文件即资产（Q5 定案）
 
-- YAML 方言跨端共享（opencode/claude/dsh/pi 同一套 `description / manual_step / adversarial_check（仅 model，两形态）/ steps / do / check / check_model / input / output / on_pass / on_fail / max_fail_count`），是**硬约束**：同一份资产四端可跑，hub 生态押注于此。**`check_model` 与模型引用两形态（§7）已对齐**，故这三项资产在四端同解。dsh 是方言基准：`adversarial_check` 的 `agent`/`system_prompt`/`timeout_ms` 已在 dsh 端删除（opencode/claude 版的对应收敛另行处理），同一份旧 YAML 在 dsh 端 warn+ignore 后仍可跑。
+- YAML 方言跨端共享（opencode/claude/dsh/pi 同一套 `description / manual_step / adversarial_check（仅 model，两形态）/ steps / do / check / check_voting（条目 check + model）/ check_model / input / output / on_pass / on_fail / max_fail_count`），是**硬约束**：同一份资产四端可跑，hub 生态押注于此。**`check_model` 与模型引用两形态（§7）已对齐**，故这三项资产在四端同解。dsh 是方言基准：`adversarial_check` 的 `agent`/`system_prompt`/`timeout_ms` 已在 dsh 端删除（opencode/claude 版的对应收敛另行处理），同一份旧 YAML 在 dsh 端 warn+ignore 后仍可跑。
   **维护与收敛范围 = dsh / opencode / claude 三端**（作者定案）。第四端 `ralph-flow-pi`（Pi SDK 的独立 CLI，npm v0.2.1，最后更新 2026-07）**已搁置，不纳入范围**——它的方言事实相同（已核实同样支持被删的三个字段，且验证是同步的 `await adversarialCheck`），但不再维护、不做收敛。上文「四端可跑」是对**既有事实**的陈述，不是维护承诺。
-- **`check` 是可选语义键（缺 = 免验证，与 opencode 对齐）**：步骤不写 `check` → 该步**跳过对抗性验证**，DO 完成直接按 `on_pass` 推进；是 `manual_step` 时则**纯人工审查**（停在门等 `continue`）。判据 `stepHasCheck(step)` 只读 `StepDef`（工作流定义的属性，不是运行事实，故不落状态）。`check` 写了但**非字符串**（如 `check: true`）仍是**加载期硬错误**——绝不把「想要 check」误读成「不想 check」（本意是免验证请直接删掉该键）。`check_voting` 未支持（warn+ignore），不参与此判据。
+- **`check` 是可选语义键（缺 = 免验证，与 opencode 对齐）**：步骤不写 `check` → 该步**跳过对抗性验证**，DO 完成直接按 `on_pass` 推进；是 `manual_step` 时则**纯人工审查**（停在门等 `continue`）。判据 `stepHasVerification(step)` 只读 `StepDef`（工作流定义的属性，不是运行事实，故不落状态）= 有 `check` **或** `check_voting`；`check` 写了但**非字符串**（如 `check: true`）仍是**加载期硬错误**——绝不把「想要 check」误读成「不想 check」（本意是免验证请直接删掉该键）。
 - 目录：`<workspace>/.dsh/ralph-flow/workflows/` 自定 + 内置 loop/spec；每实例隔离的**产出目录**为 `<workspace>/.dsh/ralph-flow/artifacts/<artifacts_dir_name>/`（目录名 = 任务摘要 slug + 实例 id 尾段，按码点截断；实例启动时建好、终止后**保留**，DO/CHECK 提示词各注入一行工作区相对路径；只有空目录随实例销毁被 `rmdir` 删掉）。
 - **实例生命周期（§4 的落点）**：活跃 vs 历史分两层。工作流完成/取消时 `destroyInstance()` 严格按序执行：① 先 `archiveReport()`，失败则**中止销毁**（保留可见残留 + 告警，绝不静默丢轨迹）；①b 落 `destroy` 事件、并把执行日志归档到 `reports/<id>-execution.log`（**失败只告警、不阻塞销毁**——报告是主事实、日志是辅助证据，与第①步有意不对称）；② **先把全部路径解析并固定**（产出目录名、实例目录、`state.json` 路径 —— 产出目录名只存在于 `state.json` 里，删掉就查不到了）；③ `unlink(state.json)`（失败记 `state_unlink_failed`，ENOENT 除外）；④ 递归删实例目录（失败记 `instance_dir_remove_failed`）；⑤ 非递归 `rmdir(本实例产出目录)`（非空即保留）；⑥ **复查**实例目录是否真的没了（`instanceDirRemoved`），没删掉就记 `instance_dir_not_removed` 并让完成/取消播报**如实说残留**、指向 `doctor`（绝不谎称"已销毁"）。`writeState` 会 `mkdirSync` 实例目录，因此**销毁后不得再写 state**——迟到的验证回调由 `launchVerification` 的 `readState === null` 护栏挡下（记 `verdict_discarded/instance_state_missing`）。存量已结束实例**不自动迁移**，由 `doctor` 报出、用户显式决定。
 - **执行日志（JSONL，机器可读的复盘证据）**：每实例一份 `instances/<id>/execution.log`，每行 `{ts, level, event, instId, ...extra}`；生命周期事件（`start / step_start / do_submitted / verify_start / verdict / advance / gate_opened / gate_released / check_skipped / pause / resume / complete / cancelled / destroy`）与既有内部告警（`state_unlink_failed` / `instance_dir_remove_failed` / `instance_dir_not_removed` 等）逐个入流，**验证者提示词原文与判定原文全文**（不截断）也在其中——报告给人看、日志给机器（`grep` / `jq`）看，**两者不互相抄**（报告只新增一行指路）。轮转照 opencode：单文件 **10 MB**、保留 **3** 份（`.log.1..3`），阈值可注入（`EnginePorts.logMaxBytes` 或环境变量 `RALPHFLOW_LOG_MAX_BYTES`），否则轮转这条验收不可测。写日志的任何异常（目录只读 / 磁盘满 / 轮转失败）**只记一条 warning 到插件 `log()` 端口**，绝不抛出、绝不中断工作流、绝不改变推进判定；实例目录不存在时一律不写（**绝不把已销毁的目录 mkdir 回来**）。**零新状态字段**：日志是 append-only 的**文件事实**，不是状态，`state.json` 一个字节都不因它改变（§10.4）。**不移植 `step-records.json`**：那是 `rewind` 的消费者（rewind 已押后），且每步耗时/重试报告已从 `history` 派生（`stepStats()`）——再移植一份就是给同一件事造第二个事实源。任务书：`docs/v2/execution-log-brief.md`；验收：`scripts/execution-log-test.mjs`。
@@ -187,7 +187,7 @@
 | **v0** | 本文所定义的一切 | — |
 | 迭代 1 | 真实使用反馈修复（明天开跑） | 作者日常使用中炸了/别扭了 |
 | 迭代 1 记录 | **已解决（重构定案）**：① 命令返回"工具原始文本"不像大模型回复 → 命令改为**触发词**（注入指令给模型，模型调同名工具并自然回复）；② 该重构顺带根治了「dsh web 新会话首条斜杠命令结果不渲染」——命令现在走普通消息路径，平台命令卡渲染缺陷不再影响（无需上游 issue，v0.4 命令卡作 UI 润色而非必需） | 已复现并解决 |
-| v0.2 | 多验证者投票（`check_voting` 激活） | 单验证者 ≥3 次误放/误烧的证据 |
+| v0.2 | 多验证者投票（`check_voting` 激活）**已实现** | 原准入是「单验证者 ≥3 次误放/误烧的证据」；本次由作者**直接指示**实现，**未按原样收集该证据**（如实记录，不补造）。行为对齐 opencode `check-voting.ts` + `voting-progress.ts`（权威参考），载体按 dsh 无相位模型落地：进度不另立文件（`state.json` 单根事实源） |
 | v0.3 | `create` 交互式、`doctor` 薄版（fail-fast 的人话出口） | 手写 YAML 开始成为摩擦 |
 | v0.4 | UI（页头/抽屉，复用 v1 配方） | loop+spec 在 ≥20 个真实任务上跑过；命令卡渲染作为本次实测问题的补药 |
 | v0.5+ | 验证者沙箱化、reset/rewind、通知 | 各自的最小版失败证据 |

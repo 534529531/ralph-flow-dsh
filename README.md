@@ -37,6 +37,25 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 
 **`check` 决定本步是否被独立验证（与 opencode 一致）**：写了 `check` → 交卷后由独立验证者取证判定；**不写 `check` → 该步跳过对抗性验证**，DO 完成直接进入下一步（`manual_step` 的这类步骤则是**纯人工审查**：停在审查门等你 `/ralphflow-continue` 放行）。跳过时通知、轨迹与归档报告一律写「跳过对抗性验证」——绝不会写成「检查通过」。非 `manual_step` 的无 `check` 步骤会在加载期与 `/ralphflow-doctor` 告警（提醒它不会被独立验证）；`check` 写了但非字符串（如 `check: true`）仍是加载期硬错误（本意是免验证请直接删掉该键）。内置 `loop`/`spec` 四步全有 `check`，行为不受影响。
 
+**多验证者投票（`check_voting`，行为对齐 opencode 2.8.0）**：把 `check` 换成 1–5 个验证者，各自**并行**只查自己那条检查依据（可各配 `model`），**全过才放行**；任一票不通过 → 整体失败，聚合所有失败票的理由（含各票检查依据原文）反馈 DO 返工。每票完成即时推送一行进度，`/ralphflow-status` 可看每票状态。基础设施故障（票没跑成）**自动重试一次**且不计失败次数，只重跑故障票（已通过的保留）；重试仍故障才暂停，`/ralphflow-continue` 只补跑未通过的票。与 `check` **互斥**（同写 = 加载期硬错误），与 `check` 都不写 = 跳过对抗性验证。
+
+```yaml
+steps:
+  - id: implement
+    do: 按 design.md 实现
+    output: 测试通过的代码
+    check_voting:                      # 1-5 条；写几条就是几个验证者
+      - check: 用户任务的每一条要求都已落实
+      - check: 实现的行为符合预期，真实可用
+        model: anthropic/claude-sonnet # 可选：该票专用模型（不填继承全局 adversarial_check.model）
+      - check: 没有遗漏的需求，边界情况已覆盖
+    on_pass: done
+    on_fail: implement
+    max_fail_count: 5
+```
+
+票数超过 5、空数组、条目缺 `check`、`check` 与 `check_voting` 同写、`check_voting` 与 `check_model` 同写，都是**加载期硬错误**（说人话、不静默）。条目里写 `timeout_ms` / `system_prompt` 与 `adversarial_check` 下同名键同一口径：本版本不兑现，加载期告警并忽略（验证超时交给宿主 dsh 的原生看门狗；验证者职责是插件内部定义）。投票进度**不另立文件**：每票状态就是实例 `state.json` 里的判定与在飞委派（单根事实源，见设计 §10.4），`/ralphflow-status` 现算。
+
 > **内置工作流不落盘**（对齐 opencode/claude）：它们只存在于插件目录，加载时回落取用，因此**始终是随插件发布的最新版本**。要定制，就在 `<workspace>/.dsh/ralph-flow/workflows/` 放一个同名文件——它会遮蔽内置（这是唯一的定制入口，也是有意行为）。
 
 ## 工作区结构
@@ -66,14 +85,15 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 - **裁判权定理**：判定只可能产生于独立会话（T1）；推进只由机械程序决定（T2）。
 - 状态模型：无相位字段，全部阶段由原始事实派生（交卷了吗 / 判定落地了吗 / 有在飞委派吗 / 暂停了吗）。
 - **验证者**：全新独立会话（按能力自动选择全新上下文的后端，与名称无关），只见任务 + 检查依据 +（可读的）产出目录——**看不到执行者的交卷摘要**；只读工具白名单，结构化判定 + 文本兜底，fail-closed。
-- **验证者配置（YAML `adversarial_check`）**：**只接受 `model` 一个字段**（可选，`"provider/model"` 或 `{providerID, modelID}`），步骤级 `check_model` 可覆盖它；都不写就沿用发起会话当前模型。验证者的身份与职责是插件内部定义，工作流不再能配置它。写了其它字段（或 `adversarial_check` 不是对象）会在加载期告警并忽略，`/ralphflow-doctor` 同样报出。
-- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；引擎验证测试见 `scripts/engine-test.mjs`（含布局/产出目录/加载期硬校验/doctor lint/报告统计/**单根发现面**/CREATE_GUIDE 一致性），实例生命周期验收见 `scripts/lifecycle-test.mjs`，执行日志（JSONL）验收见 `scripts/execution-log-test.mjs`（JSONL 合法性 / 归档与报告指路 / 提示词与判定原文可复盘 / 轮转 / 写失败不致命 / 零状态字段；`RF_LIB=<基线库>` 即负对照）。
+- **验证者配置（YAML `adversarial_check`）**：**只接受 `model` 一个字段**（可选，`"provider/model"` 或 `{providerID, modelID}`），步骤级 `check_model` 可覆盖它；都不写就沿用发起会话当前模型。验证者的身份与职责是插件内部定义，工作流不再能配置它。写了其它字段（或 `adversarial_check` 不是对象）会在加载期告警并忽略，`/ralphflow-doctor` 同样报出。模型优先级链：`check_voting` 条目 `model` > 步骤 `check_model` > 全局 `adversarial_check.model` > 发起会话当前模型。
+- **多验证者投票**：N 票各自独立会话、独立提示词（共享上下文 + 该票专属检查依据 + 「你是 N 个之一」约束）、独立取消句柄与心跳；**全部终态才聚合**，聚合优先级 `failed > infra > 全过`（工作问题绝不被基础设施故障遮蔽）。
+- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；多验证者投票验收见 `scripts/voting-test.mjs`（加载校验/提示词变体/聚合优先级/infra 重试与续跑/跨轮重投/每票进度/取消传播/单 check 回归）；引擎验证测试见 `scripts/engine-test.mjs`（含布局/产出目录/加载期硬校验/doctor lint/报告统计/**单根发现面**/CREATE_GUIDE 一致性），实例生命周期验收见 `scripts/lifecycle-test.mjs`，执行日志（JSONL）验收见 `scripts/execution-log-test.mjs`（JSONL 合法性 / 归档与报告指路 / 提示词与判定原文可复盘 / 轮转 / 写失败不致命 / 零状态字段；`RF_LIB=<基线库>` 即负对照）。
 - **生命周期不变量**（违反即回退）：实例是临时的、报告与产出是永久的；先除名（`unlink(state.json)`）后删物理文件（否则部分删除失败会留下幽灵实例）；销毁前先写完报告、先读出产出目录名；产出只用非递归 `rmdir`（非空即保留）；销毁后不再写 `state.json`（`writeState` 会 `mkdirSync` 复活的实例目录）。
 
 ## v0 范围（诚实声明）
 
-有：YAML 引擎、loop + spec、审查门、续跑/接管、失败重试、按工作区单根、崩溃 fail-safe、报告归档（含每步耗时与重试）、产出目录、实例生命周期（终止即归档并销毁实例目录 + 历史运行列表 + doctor 实例目录体检）、执行日志（JSONL，机器可读，随报告归档 + 轮转）、create/doctor 实现。
-无：多验证者投票（`check_voting` 键会警告忽略）、reset/rewind、子工作流、客户端 UI、系统通知、验证者沙箱。每项的准入触发条件见设计文档 §11。
+有：YAML 引擎、loop + spec、审查门、续跑/接管、失败重试、按工作区单根、崩溃 fail-safe、报告归档（含每步耗时与重试）、产出目录、实例生命周期（终止即归档并销毁实例目录 + 历史运行列表 + doctor 实例目录体检）、执行日志（JSONL，机器可读，随报告归档 + 轮转）、create/doctor 实现、**多验证者投票（`check_voting`）**。
+无：reset/rewind、子工作流、客户端 UI、系统通知、验证者沙箱。每项的准入触发条件见设计文档 §11。
 
 ## 许可
 

@@ -12,6 +12,21 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import yaml from "js-yaml";
+import {
+  MAX_VOTERS,
+  decideVotingOutcome,
+  formatVotingFailureReason,
+  formatVotingInfraReason,
+  formatVotingPassReason,
+  voterProgressLine,
+  voterStatusLabel,
+  type VoterVerdict,
+  type VoterDisplayStatus,
+} from "./voting.js";
+// 纯函数层（聚合优先级与三份文案）的唯一实现在 voting.ts；这里只把常量与展示标签转出去，
+// 让 `lib/engine.js` 仍是「引擎 + 方言」的单一入口（verify.ts / 测试都从它取类型）。
+export { MAX_VOTERS };
+export { formatVotingFailureReason, formatVotingPassReason, formatVotingInfraReason, voterProgressLine, voterStatusLabel };
 
 /**
  * 工作区内的运行时根目录。**工作区 dot-dir**（§1.8）：与 opencode `.opencode/ralph-flow/`、
@@ -94,11 +109,73 @@ function describeValueKind(v: unknown): string {
   return typeof v;
 }
 
+/**
+ * `check_voting` 条目的加载期校验（照抄 opencode §3.4 的硬错误规则；措辞按本仓库风格）。
+ *
+ * 返回**硬错误**清单（调用方据此整份拒收定义）；可容忍的写法写进 `warnings` 并忽略：
+ *   · 条目的 `model` 形态合法但解析不出 provider（裸模型名 / 对象缺字段）→ 告警 + 回退
+ *     （与 `check_model` / `adversarial_check.model` **同一条口径**：本仓库对「想覆盖却配错」
+ *     一律告警并回退，绝不静默，也不因为一个可回退的字段拒收整份工作流）；
+ *   · 条目的 `timeout_ms` / `system_prompt` → 与 `adversarial_check` 下同名键同口径：
+ *     本版本从公开契约中删除/未支持，告警并忽略（dsh 不设验证超时；验证者职责是内部定义）；
+ *   · 其它未知键 → 通用告警并忽略。
+ */
+function validateVotingEntries(stepId: string, raw: unknown, warnings: string[]): string[] {
+  const problems: string[] = [];
+  if (!Array.isArray(raw) || raw.length === 0) {
+    problems.push(`步骤 \`${stepId}\` 的 \`check_voting\` 必须是 1-${MAX_VOTERS} 个验证者的数组（当前是${describeValueKind(raw)}）：至少要有 1 条检查依据。`);
+    return problems;
+  }
+  if (raw.length > MAX_VOTERS) {
+    problems.push(`步骤 \`${stepId}\` 的 \`check_voting\` 有 ${raw.length} 个验证者，超过上限 ${MAX_VOTERS}。`);
+    return problems;
+  }
+  raw.forEach((e: any, i: number) => {
+    const at = `\`check_voting[${i}]\``;
+    if (!e || typeof e !== "object" || Array.isArray(e)) {
+      problems.push(`步骤 \`${stepId}\` 的 ${at} 不是映射（应为 {check, model?}）。`);
+      return;
+    }
+    if (typeof e.check !== "string" || e.check.trim() === "") {
+      problems.push(`步骤 \`${stepId}\` 的 ${at} 缺少非空的 \`check\`（该票专属的检查依据，必填）。`);
+    }
+    for (const k of Object.keys(e)) {
+      if (k === "check" || k === "model") continue;
+      if (k === "timeout_ms") {
+        warnings.push(`步骤 \`${stepId}\` 的 ${at}.timeout_ms 本版本未支持（验证超时交给宿主 dsh 的原生看门狗），已忽略。`);
+      } else if (k === "system_prompt") {
+        warnings.push(`步骤 \`${stepId}\` 的 ${at}.system_prompt 已从公开契约中删除（验证者职责是 Ralphflow 的内部定义），已忽略。`);
+      } else {
+        warnings.push(`步骤 \`${stepId}\` 的 ${at}.${k} 本版本未支持，已忽略。`);
+      }
+    }
+    if (e.model !== undefined && e.model !== null) {
+      const parsed = parseModelRef(e.model);
+      if (!parsed) {
+        problems.push(`步骤 \`${stepId}\` 的 ${at}.model 类型非法（应为 "provider/model" 字符串或 {providerID, modelID} 对象）。`);
+      } else if (!resolveCheckModel(parsed)) {
+        warnings.push(`步骤 \`${stepId}\` 的 ${at}.model 是${describeModelRef(parsed)}，解析不出 provider/model，该票的 \`model\` 被忽略并回退（优先全局 \`adversarial_check.model\`，未设则用发起会话当前模型）（需要 "provider/model" 或 {providerID, modelID} 两个非空字符串）。`);
+      }
+    }
+  });
+  return problems;
+}
+
 export interface StepDef {
   id: string;
   desc?: string;
   do?: string;
   check?: string;
+  /**
+   * 多验证者投票（对齐 opencode 2.8.0 的 `check_voting`）：1–5 个验证者**并行**检查，
+   * 每票只查自己那一条检查依据，**全过才放行**。与 `check` **互斥**（同写 = 加载期硬错误）；
+   * 两者都不写 = 本步免验证（跳过对抗性验证）。
+   *
+   * 条目只有两个字段被兑现：`check`（必填）与 `model`（可选，该票专用模型）。
+   * `timeout_ms` / `system_prompt` 与 `adversarial_check` 下同名键同一口径：
+   * 本版本从公开契约中删除/未支持，加载期告警并忽略（见 `loadWorkflow`）。
+   */
+  check_voting?: CheckVotingEntry[];
   input?: string;
   output?: string;
   manual_step?: boolean;
@@ -112,14 +189,25 @@ export interface StepDef {
   check_model?: ModelRef;
 }
 
+/** 投票条目（`check_voting[i]`）：一条检查依据 +（可选）该票专用模型 */
+export interface CheckVotingEntry {
+  /** 该验证者**专属**的检查依据（只查这一条；非空字符串，加载期硬校验） */
+  check: string;
+  /**
+   * 该票专用模型；不填 → 继承全局 `adversarial_check.model`，再往后是「发起会话当前模型」。
+   * 形态与 {@link ModelRef} 相同：`"provider/model"` 字符串或 `{providerID, modelID}` 对象。
+   */
+  model?: ModelRef;
+}
+
 /**
  * `adversarial_check` 是**可选**对象，**唯一允许的字段是 `model`**。
  *
  * 验证者身份与职责是 Ralphflow 的**内部定义**（`verify.ts` 的 `VERIFIER_PERSONA`），
  * 不是工作流资产的一项配置：同一个职责不该在「Agent 名称 / 工作流提示词 / 步骤检查依据」
  * 三处重复表达。因此 `agent` / `system_prompt` / `timeout_ms` 已从公开契约中删除——
- * 它们出现在 YAML 里时 **加载期与 doctor 都告警并忽略**（warn+ignore，与未知键、
- * `check_voting` 同一条口径，见 design §8 Q13），绝不拒收、不静默、不改作别的含义。
+ * 它们出现在 YAML 里时 **加载期与 doctor 都告警并忽略**（warn+ignore，与未知键同一条口径，
+ * 见 design §8 Q13），绝不拒收、不静默、不改作别的含义。
  */
 export interface AdversarialConfig {
   /**
@@ -131,19 +219,39 @@ export interface AdversarialConfig {
 }
 
 /**
- * 本步是否配置了对抗性检查 —— **纯函数谓词，只读 `StepDef`**（design §12.1 精修）。
+ * 本步是否配置了**单** `check` —— **纯函数谓词，只读 `StepDef`**（design §12.1 精修）。
  *
- * 这是「本步是否需要独立验证」的**唯一判据**，与 state、与模型输出无关：
+ * 「本步是否需要独立验证」的判据是 {@link stepHasVerification}（`check` **或** `check_voting`）：
  * 判据来自**工作流定义**（作者所有），执行者在运行期无法影响它。因此
- * 「无 `check` 的步骤跳过对抗性验证」是**作者声明的机械推进**，不是执行者绕过裁判。
+ * 「无对抗性检查的步骤跳过验证」是**作者声明的机械推进**，不是执行者绕过裁判。
  *
- * **零新状态字段**（宪法 §10.4）：某步有没有 `check` 是工作流定义的属性、不是运行事实，
+ * **零新状态字段**（宪法 §10.4）：某步有没有检查是工作流定义的属性、不是运行事实，
  * 需要时现算即可 —— 绝不往 `InstanceState` 里加 `skipped_steps[]` 之类的派生量。
- *
- * `check_voting` 本版本未支持（warn+ignore），不参与此判据。
  */
 export function stepHasCheck(step: Pick<StepDef, "check">): boolean {
   return typeof step.check === "string" && step.check.trim() !== "";
+}
+
+/**
+ * 本步是否配置了**任何**对抗性检查：单 `check` 或多验证者投票（`check_voting`）。
+ *
+ * 这是「本步是否需要独立验证」的**唯一判据**（取代原先只看 `check` 的写法）：
+ * 两者都不写 → 跳过对抗性验证（manual 步骤 = 纯人工审查）。
+ */
+export function stepHasVerification(step: Pick<StepDef, "check" | "check_voting">): boolean {
+  return stepHasCheck(step) || voterCountOf(step) > 0;
+}
+
+/** 校验通过的投票票数（0 = 不是投票步）；上限 {@link MAX_VOTERS} 照抄 opencode */
+export function voterCountOf(step: Pick<StepDef, "check_voting">): number {
+  return Array.isArray(step.check_voting) ? Math.min(step.check_voting.length, MAX_VOTERS) : 0;
+}
+
+/** 本步预期落地几张判定票：投票步 = 票数；单 `check` 步 = 1；免验证步 = 0 */
+export function expectedVerdicts(step: Pick<StepDef, "check" | "check_voting">): number {
+  const voters = voterCountOf(step);
+  if (voters > 0) return voters;
+  return stepHasCheck(step) ? 1 : 0;
 }
 
 export interface WorkflowDef {
@@ -171,6 +279,14 @@ export interface Delegation {
   run_id: string;
   agent_id?: string;
   check_index: number;
+  /**
+   * 本笔委派属于第几轮投票（`1` = 首轮；`2` = 某票 infra 后的**自动重试轮**）。
+   *
+   * 这是**原始事实**（这一笔委派到底是第几次跑），不是派生量：聚合时要靠它区分
+   * 「首轮 infra → 自动重试一次」与「重试仍 infra → 暂停」（照抄 opencode 的重试预算，
+   * 见 `check-voting.ts` §4.4）。单 `check` 步骤不写该字段（省略 = 首轮）。
+   */
+  attempt?: number;
   ts: string;
   /**
    * 属主运行时 id（`<pid>-<装载时刻>-<rand>`）：**只作诊断**，不参与判活。
@@ -401,6 +517,14 @@ export interface VerifyRequest {
   ownerSession?: string;
   checkIndex: number;
   /**
+   * 多验证者投票（`check_voting`）：本票的**专属检查依据**与序号。
+   *
+   * 有它 ⇒ 验证者提示词走**投票变体**（共享上下文 + 该票依据 + 「你是 N 个之一，只查自己
+   * 这一条」约束，照抄 opencode `buildVotingCheckPrompt`）；没有它 ⇒ 单 `check` 步骤，
+   * 检查依据取 `step.check`。**执行的判定只由 ports.verify 的返回决定**（T1），这里只传事实。
+   */
+  voter?: { index: number; count: number; check: string };
+  /**
    * 本实例产出目录的**工作区相对路径**（§1.7，正斜杠）。
    * 验证者继承父会话工作区，因此用它就能读到 DO 的产出；CHECK 提示词据此注入「产出目录」。
    */
@@ -486,13 +610,22 @@ export function lintWorkflow(steps: StepDef[], manual: Set<string>): string[] {
       }
     }
   }
-  // 无 check 的步骤**跳过对抗性验证**（与 opencode 对齐）：
+  // 无对抗性检查的步骤（无 `check` 也无 `check_voting`）**跳过对抗性验证**（与 opencode 对齐）：
   //   · 非 manual 步 → DO 完成后直接进入下一步，不会被独立验证 —— 作者必须知道（告警）；
   //   · manual 步 → 纯人工审查是**刻意的默认**，不是问题（不告警）。
   // 通用兜底配方已随本语义退役（见 verify.ts buildCheckPrompt），文案不得再提它。
   for (const s of steps) {
-    if (!stepHasCheck(s) && !manual.has(s.id) && s.manual_step !== true) {
-      warnings.push(`步骤 \`${s.id}\` 未配置对抗性检查（无 \`check\`），DO 完成后直接进入下一步，不会被独立验证。`);
+    if (!stepHasVerification(s) && !manual.has(s.id) && s.manual_step !== true) {
+      warnings.push(`步骤 \`${s.id}\` 未配置对抗性检查（无 \`check\`/\`check_voting\`），DO 完成后直接进入下一步，不会被独立验证。`);
+    }
+  }
+  // 投票配置的 lint（硬错误已在加载期拦截，这里只报已通过校验但仍可优化的写法）——
+  // 照抄 opencode §3.5：单票且没配模型 = 等同单验证者，建议直接用 check 或配多视角。
+  for (const s of steps) {
+    const entries = s.check_voting;
+    if (!Array.isArray(entries) || entries.length === 0) continue;
+    if (entries.length === 1 && !entries[0]?.model) {
+      warnings.push(`步骤 \`${s.id}\` 的 \`check_voting\` 只有 1 个验证者且未指定 \`model\`：等同单验证者，建议直接用 \`check\` 或配多视角/多模型。`);
     }
   }
   return warnings;
@@ -592,8 +725,33 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   const artifactsDir = path.join(root, ARTIFACTS_DIRNAME);
   // 全局工作流目录仍是 `~/.dsh/ralph-flow/workflows`（插件命名空间在全局与工作区同名）
   const globalWorkflowsDir = globalWorkflowsDirOf();
-  /** 实例 → 在飞取消信号（取消/暂停时中止验证者，不白烧 token） */
-  const aborts = new Map<string, AbortController>();
+  /**
+   * 实例 → 在飞取消信号集合（取消/重开/暂停时中止验证者，不白烧 token）。
+   *
+   * **一实例一个集合**而不是一个句柄：多验证者投票时同一实例会同时有 N 笔在飞委派，
+   * 只存一个会把先发的那 N-1 笔漏掉（取消/重开时止不住，白烧 token 且留下孤儿）。
+   */
+  const aborts = new Map<string, Set<AbortController>>();
+  function addAbort(instId: string, controller: AbortController): void {
+    let set = aborts.get(instId);
+    if (!set) { set = new Set(); aborts.set(instId, set); }
+    set.add(controller);
+  }
+  function dropAbort(instId: string, controller: AbortController): void {
+    const set = aborts.get(instId);
+    if (!set) return;
+    set.delete(controller);
+    if (set.size === 0) aborts.delete(instId);
+  }
+  /** 中止某实例下**所有**在飞验证者（一次只该由一个入口调用：取消 / 重开审查门） */
+  function abortInstance(instId: string): number {
+    const set = aborts.get(instId);
+    if (!set) return 0;
+    const n = set.size;
+    for (const c of set) { try { c.abort(); } catch {} }
+    aborts.delete(instId);
+    return n;
+  }
 
   // ─── 在飞委派的心跳（跨 sandbox 的判活机制，见 delegationOwnerAlive）──────────
   //
@@ -613,15 +771,21 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const key = beatKey(instId, runId);
     if (heartbeats.has(key)) return;
     const timer = setInterval(() => {
-      try {
-        const fresh = readState(instId);
-        const d = fresh?.delegations.find((x) => x.run_id === runId);
-        if (!fresh || !fresh.active || !d) { stopHeartbeat(instId, runId); return; }
-        d.heartbeat_at = Date.now();
-        writeState(fresh, instId);
-      } catch (e) {
-        log("warn", "delegation_heartbeat_failed", { instId, runId, error: msg(e) });
-      }
+      // 心跳与「判定落账」写的是**同一份 state.json**（读-改-写）。本进程内这两段都是
+      // 同步块（readFileSync/writeFileSync），不会交错；共用实例锁是**按构造的护栏**：
+      // 多验证者投票时 N 份心跳 + N 笔判定同时活跃，将来任何一处引入 await（异步落盘、
+      // 重试）都不会退化成互相覆盖（判定被旧快照写回去 = 票凭空消失、卡在「验证中」）。
+      void withStateLock(instId, () => {
+        try {
+          const fresh = readState(instId);
+          const d = fresh?.delegations.find((x) => x.run_id === runId);
+          if (!fresh || !fresh.active || !d) { stopHeartbeat(instId, runId); return; }
+          d.heartbeat_at = Date.now();
+          writeState(fresh, instId);
+        } catch (e) {
+          log("warn", "delegation_heartbeat_failed", { instId, runId, error: msg(e) });
+        }
+      });
     }, DELEGATION_HEARTBEAT_REFRESH_MS);
     // 心跳不该拖住进程退出
     (timer as unknown as { unref?: () => void }).unref?.();
@@ -881,18 +1045,24 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       for (const k of Object.keys(s)) {
         if (!KNOWN_STEP_KEYS.has(k)) warnings.push(`步骤 \`${s.id}\` 的键 \`${k}\` 本版本未支持，已忽略。`);
       }
-      if (s.check_voting !== undefined) {
-        warnings.push(`步骤 \`${s.id}\` 用了 \`check_voting\`（多验证者投票）：本版本未支持，已忽略；本步有 \`check\` 时按单验证者执行，没有 \`check\` 时跳过对抗性验证。`);
-      }
       // ── §1.1 加载期硬校验：写错了却没有任何信号 = 缺陷（要么硬错误，要么 doctor 告警）
       // do 缺失：没有可执行的指令，整步无意义 → 硬错误（不再静默接受空步）。
       if (typeof s.do !== "string" || s.do.trim() === "") {
         problems.push(`步骤 \`${s.id}\` 缺少 \`do\`（必填：主会话执行的指令；缺失、非字符串或空串都不接受）。`);
       }
-      // check 存在但非字符串（如 `check: true`）：几乎一定是漏写正文。
-      // 硬错误，不静默当成「本步不做检查」——避免把「想要 check」误读成「不想 check」
-      // （照 opencode：非字符串会被视为未配置检查并跳过验证；本意是跳过请直接删掉该字段）。
-      if (s.check !== undefined && s.check !== null && typeof s.check !== "string") {
+      // ── 对抗性检查：`check`（单验证者）与 `check_voting`（多验证者投票）二选一，都不写 = 免验证 ──
+      // 校验顺序照抄 opencode：**互斥优先于类型检查**——即使 check 类型写错，只要两字段都在就报
+      // 互斥，不让配置错误被「check 非字符串」这类次要报错掩盖。
+      const hasCheckKey = s.check !== undefined && s.check !== null;
+      const hasVotingKey = s.check_voting !== undefined && s.check_voting !== null;
+      if (hasCheckKey && hasVotingKey) {
+        problems.push(`步骤 \`${s.id}\` 的 \`check\` 与 \`check_voting\` 互斥，不能同时写（二选一）：单验证者用 \`check\`，多验证者投票用 \`check_voting\`。`);
+      } else if (hasVotingKey) {
+        problems.push(...validateVotingEntries(s.id, s.check_voting, warnings));
+      } else if (hasCheckKey && typeof s.check !== "string") {
+        // check 存在但非字符串（如 `check: true`）：几乎一定是漏写正文。
+        // 硬错误，不静默当成「本步不做检查」——避免把「想要 check」误读成「不想 check」
+        // （照 opencode：非字符串会被视为未配置检查并跳过验证；本意是跳过请直接删掉该字段）。
         problems.push(`步骤 \`${s.id}\` 的 \`check\` 必须是字符串（当前是 ${typeof s.check}）：非字符串会被视为未配置检查并跳过验证；若你本意是跳过请直接删掉该字段。`);
       }
       // max_fail_count 给了就必须是 ≥1 的整数（0/负数以前被静默接受 → 首次失败即暂停，用户看不懂）。
@@ -905,10 +1075,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       // 静默忽略会让用户以为「这步换了便宜模型验」，实际没换。
       const checkModelRaw = s.check_model;
       if (checkModelRaw !== undefined && checkModelRaw !== null) {
-        if (s.check_voting !== undefined && s.check_voting !== null) {
+        if (hasVotingKey) {
           problems.push(`步骤 \`${s.id}\` 同时写了 \`check_voting\` 与 \`check_model\`：\`check_model\` 仅单 \`check\` 场景生效，此处无意义（多验证者时各票用自己条目里的 \`model\`）。`);
-        }
-        if (typeof s.check !== "string" || s.check.trim() === "") {
+        } else if (typeof s.check !== "string" || s.check.trim() === "") {
           problems.push(`步骤 \`${s.id}\` 写了 \`check_model\` 但没有可用的 \`check\`：\`check_model\` 仅当步骤提供 \`check\` 时才生效，请补上 \`check\` 或删掉 \`check_model\`。`);
         }
         const parsed = parseModelRef(checkModelRaw);
@@ -931,6 +1100,14 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         on_fail: typeof s.on_fail === "string" ? s.on_fail : undefined,
         max_fail_count: typeof s.max_fail_count === "number" ? s.max_fail_count : undefined,
         check_model: parseModelRef(checkModelRaw),
+        // 只有通过上面校验的投票步才会走到这里（有 problems 时整份定义已被拒收）；
+        // 非法条目里的坏值不带进定义，避免运行期拿到半成品配置。
+        check_voting: Array.isArray(s.check_voting) && !hasCheckKey
+          ? (s.check_voting as any[])
+            .filter((e) => e && typeof e === "object" && typeof e.check === "string" && e.check.trim() !== "")
+            .slice(0, MAX_VOTERS)
+            .map((e) => ({ check: String(e.check).trim(), model: parseModelRef(e.model) }))
+          : undefined,
       });
     });
     // 引用校验：on_pass 必须指向存在的步骤或 done；on_fail 必须指向存在的步骤
@@ -1187,15 +1364,17 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return step.on_fail ?? step.id;
   }
 
-  /** 判定齐了且全 passed（v0 单验证者，仍按数组建模） */
-  function allPassed(state: InstanceState): boolean {
-    return state.verdicts.length > 0 && state.verdicts.every((v) => v.status === "passed");
-  }
-  function anyFailed(state: InstanceState): boolean {
-    return state.verdicts.some((v) => v.status === "failed");
-  }
-  function anyInfra(state: InstanceState): boolean {
-    return state.verdicts.some((v) => v.status === "infra");
+  /**
+   * 判定齐了且全 passed。
+   *
+   * **「齐」= 票数够**：单 `check` 要 1 张；`check_voting` 要 N 张（每票一个 `check_index`）。
+   * 只数 passed 不看票数会让「3 票里 1 票通过、另外 2 票还没回来」被误判成通过 ——
+   * 于是这里按步骤定义现算期望票数（零新状态字段），fail-closed。
+   */
+  function allPassed(state: InstanceState, step?: StepDef): boolean {
+    const need = step ? expectedVerdicts(step) : 1;
+    if (need <= 0 || state.verdicts.length < need) return false;
+    return state.verdicts.every((v) => v.status === "passed");
   }
 
   /**
@@ -1209,20 +1388,21 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   /**
    * 当前步是否已停下等放行的审查门。
    *
-   * 无 `check` 的步骤（`!stepHasCheck`）**不叠加机器验证**：交卷/放行后直接停在门，
-   * 是**纯人工审查** —— 判据来自工作流定义（design §12.1 精修后的机械判据）。
+   * 无对抗性检查的步骤（`!stepHasVerification`：既无 `check` 也无 `check_voting`）
+   * **不叠加机器验证**：交卷/放行后直接停在门，是**纯人工审查** —— 判据来自工作流定义
+   * （design §12.1 精修后的机械判据）。
    */
   function atOpenGate(wf: WorkflowDef, state: InstanceState, step: StepDef): boolean {
-    return isGate(wf, step) && (!stepHasCheck(step) || allPassedVerified(state, step));
+    return isGate(wf, step) && (!stepHasVerification(step) || allPassedVerified(state, step));
   }
 
   /**
-   * 判定齐、全 passed，且**判定确实属于当前步**（design §5 第 3 条的归属校验）。
+   * 判定齐（票数够）、全 passed，且**判定确实属于当前步**（design §5 第 3 条的归属校验）。
    * 归属用 step_id 判定；缺少 step_id 的判定按当前步处理，避免历史数据被误判为不通过。
    * 错位判定（step_id 指向别的步骤）一律不算通过 —— fail-closed。
    */
   function allPassedVerified(state: InstanceState, step: StepDef): boolean {
-    if (!allPassed(state)) return false;
+    if (!allPassed(state, step)) return false;
     return state.verdicts.every((v) => verdictBelongsToStep(v, step.id));
   }
 
@@ -1242,9 +1422,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    */
   function reopenGate(state: InstanceState, instId: string, step: StepDef, reason: string): void {
     if (state.delegations.length > 0) {
-      // 只中止本实例的验证者；引擎随后重新委派，语义等价于「上一轮作废」
-      try { aborts.get(instId)?.abort(); } catch {}
-      aborts.delete(instId);
+      // 只中止本实例的验证者（投票时是**全部** N 笔）；引擎随后重新委派，语义等价于「上一轮作废」
+      abortInstance(instId);
       log("info", "gate_reopen_abort_inflight", { instId, count: state.delegations.length });
     }
     state.do_submitted = false;
@@ -1268,7 +1447,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   function doPrompt(instId: string, wf: WorkflowDef, state: InstanceState, step: StepDef, rework?: string): string {
     const idx = wf.steps.findIndex((s) => s.id === step.id) + 1;
     const rel = artifactsRelDirOf(instId);
-    const hasCheck = stepHasCheck(step);
+    const hasCheck = stepHasVerification(step);
+    const voters = voterCountOf(step);
     const parts = [
       `[ralphflow] 工作流 \`${wf.name}\` · 步骤 ${idx}/${wf.steps.length}：**${step.id}**${step.desc ? ` — ${step.desc}` : ""}`,
       "",
@@ -1291,14 +1471,18 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       "## 交卷方式",
       "完成实际工作后，按顺序做两件事：",
       "",
-      // 有无 check 决定「交卷之后发生什么」：有 → 独立验证；无 → 跳过对抗性验证。
-      // 绝不预告一个不会发生的验证（省 token 不能以伪造事实为代价）。
-      // 有 check 的两条与改造前**逐字相同**（回归基线）。
+      // 有无对抗性检查决定「交卷之后发生什么」：有（check 或 check_voting）→ 独立验证；
+      // 无 → 跳过对抗性验证。绝不预告一个不会发生的验证（省 token 不能以伪造事实为代价）。
+      // 单 check 的两条与改造前**逐字相同**（回归基线）；投票步只换「一个/N 个并行」这层事实。
       hasCheck
-        ? "1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（异步，**不需要用户做任何操作**；验证者是独立会话，正在读文件、跑命令取证，它在做什么用户在会话里看得到）→ 期间用户可以做什么（补充信息或纠正方向 / 用 `/ralphflow-status` 看进度 / 用 `/ralphflow-cancel` 中止）。**不要给任何时长预估**：委派没有超时上界，估计出来的时间只会是编的。用用户的语言写，不要把它埋进技术叙述里。"
+        ? (voters > 0
+          ? `1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（${voters} 个独立验证者**并行**取证，各自只查一条检查依据，**全过才放行**；异步，**不需要用户做任何操作**；验证者是独立会话，正在读文件、跑命令取证，它在做什么用户在会话里看得到）→ 期间用户可以做什么（补充信息或纠正方向 / 用 \`/ralphflow-status\` 看进度 / 用 \`/ralphflow-cancel\` 中止）。**不要给任何时长预估**：委派没有超时上界，估计出来的时间只会是编的。用用户的语言写，不要把它埋进技术叙述里。`
+          : "1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（异步，**不需要用户做任何操作**；验证者是独立会话，正在读文件、跑命令取证，它在做什么用户在会话里看得到）→ 期间用户可以做什么（补充信息或纠正方向 / 用 `/ralphflow-status` 看进度 / 用 `/ralphflow-cancel` 中止）。**不要给任何时长预估**：委派没有超时上界，估计出来的时间只会是编的。用用户的语言写，不要把它埋进技术叙述里。")
         : "1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 本步**不配置对抗性检查**，会**跳过对抗性验证**（不会有独立验证进程来复核）→ 接下来自动进入下一步（`manual_step` 步骤则停在审查门等你放行，**不需要用户做任何操作**）。用用户的语言写，不要把它埋进技术叙述里。",
       hasCheck
-        ? "2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。独立验证者会立刻检查你的产出。"
+        ? (voters > 0
+          ? `2. **调用 \`ralphflow_submit\` 工具交卷**（可在参数 \`summary\` 里简述你做了什么）。${voters} 个独立验证者会立刻**并行**检查你的产出（全过才放行）。`
+          : "2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。独立验证者会立刻检查你的产出。")
         : "2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。本步不委派独立验证者，交卷即生效。",
       "",
       hasCheck
@@ -1331,7 +1515,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   /**
    * 无 `check` 的步骤：**不委派验证者**，按工作流定义声明直接推进或停在审查门。
    *
-   * 判据是 `stepHasCheck(step)`（只读 `StepDef`，见 design §12.1 精修）：这不是
+   * 判据是 `stepHasVerification(step)`（只读 `StepDef`，见 design §12.1 精修）：这不是
    * 「执行者跳过验证」，而是**作者已声明本步免验证**的机械推进。
    *
    * **两个分支都不写 `verdicts[]`** —— 没有验证者就没有判定（也不写 `delegations[]`）。
@@ -1347,25 +1531,33 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       logEvent(instId, "info", "gate_opened", { step: step.id, kind: "manual_no_check" });
       notify(
         state,
-        `🙋 步骤 \`${step.id}\` 未配置对抗性检查（无 \`check\`），已**跳过对抗性验证**，停在审查门等你放行（纯人工审查，不叠加机器验证）。\n\n确认无误运行 \`/ralphflow-continue\` 进入下一步；需要修改就直接说明，改完重新交卷仍会停在这里。`,
+        `🙋 步骤 \`${step.id}\` 未配置对抗性检查（无 \`check\`/\`check_voting\`），已**跳过对抗性验证**，停在审查门等你放行（纯人工审查，不叠加机器验证）。\n\n确认无误运行 \`/ralphflow-continue\` 进入下一步；需要修改就直接说明，改完重新交卷仍会停在这里。`,
         `🙋 步骤 ${step.id} 已跳过对抗性验证，停在审查门等你放行`,
       );
       return true;
     }
     notify(
       state,
-      `⏭ 步骤 \`${step.id}\` 未配置对抗性检查（无 \`check\`），已**跳过对抗性验证**，直接进入下一步。`,
+      `⏭ 步骤 \`${step.id}\` 未配置对抗性检查（无 \`check\`/\`check_voting\`），已**跳过对抗性验证**，直接进入下一步。`,
       `⏭ 步骤 ${step.id} 已跳过对抗性验证（未配置 check），直接推进`,
     );
     advance(instId, state, wf, step);
     return false;
   }
 
+  /** 发起本步的验证：投票步走 {@link launchVotingRound}（N 票并发），单 check 步走原路径 */
   async function launchVerification(instId: string, state: InstanceState, wf: WorkflowDef, step: StepDef): Promise<void> {
+    if (voterCountOf(step) > 0) {
+      // 全新一轮（DO 重新交卷 / 孤儿恢复后重投）⇒ 上一轮的票一律作废、N 票**全部**重投
+      //（跨轮语义：工作已经变了，上一轮通过的票也不再复用 —— 见 opencode §4.7）。
+      state.verdicts = state.verdicts.filter((v) => !verdictBelongsToStep(v, step.id));
+      await launchVotingRound(instId, state, wf, step, voterIndices(step), 1);
+      return;
+    }
     const checkIndex = state.verdicts.length;
     const runId = `v-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const controller = new AbortController();
-    aborts.set(instId, controller);
+    addAbort(instId, controller);
     /** 验证耗时（§3.2：判定事件必须带耗时）——起算点是委派发起，不是判定落账 */
     const startedAt = Date.now();
     state.delegations.push({
@@ -1436,34 +1628,266 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         : "run_superseded";
       log("warn", "verdict_discarded", { instId, reason: why, status: verdict.status, step: step.id, runId });
       stopHeartbeat(instId, runId); // 本笔已作废：心跳没有任何意义了
+      dropAbort(instId, controller); // 取消句柄同样作废，避免集合里堆积死句柄
       return;
     }
     stopHeartbeat(instId, runId);
     fresh.delegations = fresh.delegations.filter((d) => d.run_id !== runId);
     fresh.verdicts.push(verdict);
-    if (verdict.status === "passed") clearFailCount(fresh, step.id);
-    aborts.delete(instId);
+    dropAbort(instId, controller);
     pushHistory(fresh, `verdict_${verdict.status}`, verdict.reason.slice(0, 300), step.id);
     // 判定入执行日志：`reason` **全文不截断**（§3.2），并带耗时；与报告里的判定字符串同源同值。
     log("info", "verdict", { instId, step: step.id, checkIndex, status: verdict.status, reason: verdict.reason, ms: Date.now() - startedAt });
+    // 单 check 就是「一轮一票」：整体结论 = 这张票的判定，直接套用共享的结论应用段
+    //（暂停 / 返工 / 审查门 / 推进的规则与多验证者投票同一条路径，行为逐字未变）。
+    applyRoundOutcome(instId, fresh, wf, step, { kind: verdict.status, reason: verdict.reason }, startedAt);
+  }
 
-    if (anyInfra(fresh)) {
-      fresh.paused = true;
-      fresh.pause_reason = "check_infra";
-      logPause(instId, fresh, "check_infra", { status: verdict.status, ms: Date.now() - startedAt });
+  // ─── 多验证者投票（check_voting）─────────────────────────────────────────────
+  //
+  // 语义照抄 opencode `src/check-voting.ts`，载体按 dsh 的无相位模型落地：
+  //   · N 票**并发**：每票 = 一笔独立委派 + 一个独立取消句柄 + 一份心跳 + 一份专属提示词；
+  //   · **全部终态才聚合**：任何单票完成都不碰状态机（多票同时落账会互相覆盖读-改-写）；
+  //   · 聚合优先级 `failed > infra > 全过`（`decideVotingOutcome`）——工作问题绝不被故障遮蔽；
+  //   · infra **自动重试一次**，只重跑故障票（已通过的保留）；重试仍 infra 且无 failed →
+  //     `check_infra` 暂停（不计失败次数），`/ralphflow-continue` 只重跑未通过的票；
+  //   · 跨轮（DO 返工后重新交卷）**全部重投**：上一轮的票一律不复用（工作已经变了）。
+  //
+  // 进度不另立文件：每票状态就是 `state.json` 的 `verdicts[]`（终态）+ `delegations[]`（在飞）
+  // ——单根事实源，`/ralphflow-status` 由此现算（见 renderInstance）。
+
+  /**
+   * 每实例一把「判定落账」串行锁：让「读 state → 落票 → 判断本轮是否到齐 → 聚合」成为
+   * **按构造的临界区**。当前实现里这几步都是同步块（单线程下本就原子），锁是防回归护栏：
+   * 任何一处将来引入 await，多票并发就会互相覆盖（丢票 = 本轮永远等不齐）。
+   */
+  const settleChains = new Map<string, Promise<unknown>>();
+  function withStateLock<T>(instId: string, fn: () => T | Promise<T>): Promise<T> {
+    const prev = settleChains.get(instId) ?? Promise.resolve();
+    const run = prev.then(() => fn(), () => fn());
+    settleChains.set(instId, run.then(() => undefined, () => undefined));
+    return run;
+  }
+
+  /** 投票步的票号列表（0 起，与 `Verdict.check_index` 同值） */
+  function voterIndices(step: StepDef): number[] {
+    return Array.from({ length: voterCountOf(step) }, (_, i) => i);
+  }
+
+  /** 一票：委派 → 归一化 → 落账（单票失败不影响别的票：每票独立 catch） */
+  async function runVote(
+    instId: string, state: InstanceState, wf: WorkflowDef, step: StepDef,
+    runId: string, index: number, count: number, attempt: number,
+    controller: AbortController, startedAt: number,
+  ): Promise<void> {
+    const entry = step.check_voting![index]!;
+    let verdict: Verdict;
+    try {
+      verdict = await ports.verify({
+        instId, step, workflow: wf, userTask: state.user_task,
+        ownerSession: state.owner_session, checkIndex: index,
+        // 该票的专属检查依据 + 序号：verify.ts 据此生成「你是 N 个之一」的投票提示词。
+        voter: { index: index + 1, count, check: entry.check },
+        artifactsRelDir: artifactsRelDirOf(instId),
+        // 模型优先级链（对齐 opencode）：**该票 `model`** > 全局 `adversarial_check.model` >
+        // 发起会话当前模型。（`check_voting` 与步骤 `check_model` 同写是加载期硬错误，
+        // 所以这条链上没有 check_model 那一级。）
+        model: resolveCheckModel(entry.model ?? wf.adversarial_check?.model),
+        // 每票一个独立取消句柄：取消 / 重开审查门时 N 票一起中止（见 abortInstance）。
+        signal: controller.signal,
+        logEvent: (level, event, extra) => logEvent(instId, level, event, extra),
+      });
+    } catch (e) {
+      verdict = { check_index: index, status: "infra", reason: `验证未跑成：${msg(e)}`, step_id: step.id, ts: new Date().toISOString() };
+    }
+    dropAbort(instId, controller); // 判定已回（无论成败）：这笔的取消句柄使命结束
+    // 归一化（fail-closed）+ **强制票号**：这一票是哪一号由引擎说了算，端口返回的 check_index 不可信。
+    verdict = { ...normalizeVerdict(verdict, step.id, index), check_index: index };
+    const settled = await settleVote(instId, runId, verdict, step, index, count, attempt, startedAt);
+    // 本票是**最后一张**到终态的票 → 由它触发一次聚合（实例锁 + 该判据保证只有一笔能进来）。
+    if (settled.roundComplete) await aggregateVotingRound(instId, wf, step, attempt, count, startedAt);
+  }
+
+  /**
+   * 单票判定落账（**锁内**读-改-写）+ 实时进度播报。
+   *
+   * 归属校验与单 check 路径同一判据：`delegations` 里仍登记着本 runId（被清掉/被替换 =
+   * 本笔已作废，例如审查门重开 / 取消 / 孤儿恢复）。作废的判定一律丢弃，不写状态机。
+   */
+  async function settleVote(
+    instId: string, runId: string, verdict: Verdict, step: StepDef,
+    index: number, count: number, attempt: number, startedAt: number,
+  ): Promise<{ roundComplete: boolean }> {
+    return withStateLock(instId, () => {
+      const fresh = readState(instId);
+      const ownsRun = !!fresh && fresh.delegations.some((d) => d.run_id === runId);
+      if (!fresh || !fresh.active || fresh.paused || fresh.current_step !== step.id || !ownsRun) {
+        const why = !fresh ? "instance_state_missing"
+          : !fresh.active ? "instance_inactive"
+          : fresh.paused ? "instance_paused"
+          : fresh.current_step !== step.id ? "step_changed"
+          : "run_superseded";
+        log("warn", "verdict_discarded", { instId, reason: why, status: verdict.status, step: step.id, runId, voter: index + 1 });
+        stopHeartbeat(instId, runId); // 本笔已作废：心跳没有任何意义了
+        return { roundComplete: false };
+      }
+      stopHeartbeat(instId, runId);
+      fresh.delegations = fresh.delegations.filter((d) => d.run_id !== runId);
+      fresh.verdicts.push(verdict);
+      // 每票一条轨迹。**刻意不用 `verdict_*` 事件名**：报告里的「失败轮数」按 `verdict_failed`
+      // 计数，逐票记会把「一轮里 2 票失败」错记成 2 轮 —— 轮级结论由聚合那一步写 `verdict_*`。
+      pushHistory(fresh, "voter_verdict", `验证者 ${index + 1}/${count} [${verdict.status}] ${verdict.reason.slice(0, 200)}`, step.id);
       writeState(fresh, instId);
-      notify(fresh, `⏸ 验证未跑成（基础设施问题，不计失败）：${verdict.reason}\n\n修复后运行 \`/ralphflow-continue\` 重新验证。`, `⏸ 验证未跑成（基础设施问题），已暂停步骤 ${step.id}`);
+      // 每票实时进度（对齐 opencode 的 onVoteProgress）：长投票不再无声。
+      const line = voterProgressLine({ index, status: verdict.status, reason: verdict.reason }, step.check_voting![index], count, attempt > 1);
+      notify(fresh, `🔍 ${line.text}`, line.summary);
+      // 判定入执行日志：`reason` **全文不截断**（§3.2），带票号、轮次与耗时。
+      log("info", "voter_verdict", {
+        instId, step: step.id, voter: index + 1, count, attempt,
+        status: verdict.status, reason: verdict.reason, ms: Date.now() - startedAt,
+      });
+      // 全部票都到终态了 → 由**这一笔**（且只有这一笔：每笔只摘掉自己那笔委派，
+      // 只有摘掉最后一笔的那一次会看到空集）触发一次聚合。
+      return { roundComplete: fresh.delegations.length === 0 };
+    });
+  }
+
+  /**
+   * 一轮投票结束后的聚合（**锁内**，只跑一次）：
+   * `failed > infra > 全过`；infra 首轮自动重试一次，重试仍 infra → 暂停（不计失败）。
+   */
+  async function aggregateVotingRound(
+    instId: string, wf: WorkflowDef, step: StepDef, attempt: number, count: number, startedAt: number,
+  ): Promise<void> {
+    await withStateLock(instId, () => {
+      const fresh = readState(instId);
+      // 状态可能已被取消 / 暂停 / 推进（并发的人工动作）——最后一笔判定回来时再校验一次。
+      if (!fresh || !fresh.active || fresh.paused || fresh.current_step !== step.id || fresh.delegations.length > 0) return;
+      const verdicts = fresh.verdicts.filter((v) => verdictBelongsToStep(v, step.id));
+      const asVotes: VoterVerdict[] = verdicts.map((v) => ({ index: v.check_index, status: v.status, reason: v.reason }));
+      const entries = step.check_voting ?? [];
+      const kind = decideVotingOutcome(asVotes);
+      if (kind === "failed") {
+        // 工作问题不被故障遮蔽：即使同时有 infra 票，也直接判失败反馈 DO
+        //（infra 票在下一轮 DO 修复后自然重投）—— 见 opencode §4.3 决策表优先级 2。
+        const reason = formatVotingFailureReason(asVotes, entries, count);
+        pushHistory(fresh, "verdict_failed", reason.slice(0, 300), step.id);
+        applyRoundOutcome(instId, fresh, wf, step, { kind: "failed", reason }, startedAt);
+        return;
+      }
+      if (kind === "infra") {
+        const infraVotes = asVotes.filter((v) => v.status === "infra");
+        if (attempt < 2) {
+          // ── 自动重试一次：只重跑故障票，已通过的保留（照抄 opencode §4.4）──
+          const retry = infraVotes.map((v) => v.index).sort((a, b) => a - b);
+          fresh.verdicts = fresh.verdicts.filter((v) => !(verdictBelongsToStep(v, step.id) && v.status === "infra"));
+          pushHistory(fresh, "voting_infra_retry", `voters=${retry.map((i) => i + 1).join(",")}/${count}`, step.id);
+          log("warn", "voting_infra_retry", { instId, step: step.id, voters: retry, attempt });
+          writeState(fresh, instId);
+          notify(fresh, `🔍 步骤 \`${step.id}\` 有 ${retry.length}/${count} 张票基础设施故障（不计失败），正在**自动重试**这些票；已通过的票不会重跑。`, `🔍 ${retry.length} 张验证票故障，自动重试中（已通过的保留）`);
+          void launchVotingRound(instId, fresh, wf, step, retry, attempt + 1);
+          return;
+        }
+        // 重试仍失败 → 基础设施故障暂停（不计失败次数）；continue 只重跑未通过的票。
+        const reason = formatVotingInfraReason(asVotes, entries, count);
+        pushHistory(fresh, "verdict_infra", reason.slice(0, 300), step.id);
+        applyRoundOutcome(instId, fresh, wf, step, { kind: "infra", reason }, startedAt);
+        return;
+      }
+      const reason = formatVotingPassReason(asVotes, entries, count);
+      pushHistory(fresh, "verdict_passed", reason.slice(0, 300), step.id);
+      applyRoundOutcome(instId, fresh, wf, step, { kind: "passed", reason }, startedAt);
+    });
+  }
+
+  /**
+   * 发起一轮投票（`indices` = 本轮要跑的票号；`attempt` 1 = 首轮 / 2 = infra 自动重试轮）。
+   * 本函数只负责**发起**与等待；聚合与状态机由 {@link aggregateVotingRound} 负责。
+   */
+  async function launchVotingRound(
+    instId: string, state: InstanceState, wf: WorkflowDef, step: StepDef,
+    indices: number[], attempt: number,
+  ): Promise<void> {
+    const count = voterCountOf(step);
+    const startedAt = Date.now();
+    const stamp = new Date().toISOString();
+    const runs = indices.map((index) => {
+      const controller = new AbortController();
+      addAbort(instId, controller);
+      const runId = `v-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-${index}`;
+      state.delegations.push({
+        run_id: runId, check_index: index, attempt, ts: stamp,
+        // 属主运行时（诊断）+ 心跳起点（判活的唯一依据）：N 票各有独立心跳，
+        // 只要还有一笔在刷，别的会话 / 别的沙箱进程就不得把在飞委派当孤儿清掉。
+        owner_runtime: runtimeId(), heartbeat_at: Date.now(),
+      });
+      return { runId, index, controller };
+    });
+    pushHistory(state, "verify_start", `voters=${indices.map((i) => i + 1).join(",")}/${count}${attempt > 1 ? "（infra 自动重试）" : ""}`, step.id);
+    writeState(state, instId);
+    for (const r of runs) startHeartbeat(instId, r.runId);
+    log("info", "verify_start", { instId, step: step.id, voters: indices, count, attempt });
+    // 阶段播报：与单 check 同一套「正在发生什么 / 要不要你操作 / 去哪看进度」，
+    // 只把「一个验证者」换成「N 个验证者并行」这层事实。**依旧绝不给时长预估**。
+    if (attempt > 1) {
+      notify(state, [
+        `🔍 步骤 \`${step.id}\` 的 ${indices.length} 张故障票正在**自动重试**（已通过的票不重跑）。`,
+        "",
+        `**不需要你做任何操作** —— 重试结果会自动汇总。`,
+      ].join("\n"), `🔍 步骤 ${step.id} 的故障票自动重试中（无需操作）`);
+    } else {
+      const basisLines = indices.map((i) => `- ${i + 1}/${count} ${(step.check_voting![i]?.check ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 60) ?? ""}`);
+      notify(state, [
+        `🔍 步骤 \`${step.id}\` 已交卷，${indices.length} 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。`,
+        "",
+        `**本轮检查依据**（供你了解，不用回复）：`,
+        ...basisLines,
+        "",
+        `**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。`,
+        "",
+        `期间你可以：`,
+        `- 直接在此会话补充信息或纠正方向（会被模型看到）`,
+        `- 用 \`/ralphflow-status\` 随时查看每张票的进度与最近轨迹`,
+        `- 想中止就 \`/ralphflow-cancel\``,
+      ].join("\n"), `🔍 步骤 ${step.id} 已交卷，${indices.length} 个独立验证者并行取证（无需操作）`);
+    }
+    // N 票并发：每票独立等待、独立落账、独立 catch（一票失败不影响别的票）。
+    await Promise.all(runs.map((r) => runVote(instId, state, wf, step, r.runId, r.index, count, attempt, r.controller, startedAt)));
+  }
+
+  /**
+   * 把一个**已聚合的**验证结论应用到状态机（T2：推进只由这里按判定算出）。
+   *
+   * 单 `check` 与多验证者投票共用这一段：调用方只提供 `{kind, reason}`（单 check 就是那张票的
+   * 判定；投票是聚合后的整体结论与聚合文案），暂停 / 返工 / 审查门 / 推进的规则逐字沿用，
+   * 保证「有 check 的步骤」的行为不因投票支持而改变。
+   */
+  function applyRoundOutcome(
+    instId: string,
+    state: InstanceState,
+    wf: WorkflowDef,
+    step: StepDef,
+    outcome: { kind: VerdictStatus; reason: string },
+    startedAt: number,
+  ): void {
+    const reason = outcome.reason;
+    if (outcome.kind === "infra") {
+      state.paused = true;
+      state.pause_reason = "check_infra";
+      logPause(instId, state, "check_infra", { status: outcome.kind, ms: Date.now() - startedAt });
+      writeState(state, instId);
+      notify(state, `⏸ 验证未跑成（基础设施问题，不计失败）：${reason}\n\n修复后运行 \`/ralphflow-continue\` 重新验证。`, `⏸ 验证未跑成（基础设施问题），已暂停步骤 ${step.id}`);
       return;
     }
-    if (anyFailed(fresh)) {
-      const failedTimes = bumpFailCount(fresh, step.id);
+    if (outcome.kind === "failed") {
+      const failedTimes = bumpFailCount(state, step.id);
       const max = step.max_fail_count ?? 3;
       if (failedTimes >= max) {
-        fresh.paused = true;
-        fresh.pause_reason = "max_failures";
-        logPause(instId, fresh, "max_failures", { failedTimes, max });
-        writeState(fresh, instId);
-        notify(fresh, `⏸ 步骤 \`${step.id}\` 连续 ${failedTimes} 轮未通过（上限 ${max}），已暂停等你定夺。\n\n验证者的意见：\n${verdict.reason}\n\n处理后可运行 \`/ralphflow-continue\` 重新验证，或 \`/ralphflow-cancel\` 结束。`, `⏸ 步骤 ${step.id} 连续 ${failedTimes} 轮未通过，已暂停等你定夺`);
+        state.paused = true;
+        state.pause_reason = "max_failures";
+        logPause(instId, state, "max_failures", { failedTimes, max });
+        writeState(state, instId);
+        notify(state, `⏸ 步骤 \`${step.id}\` 连续 ${failedTimes} 轮未通过（上限 ${max}），已暂停等你定夺。\n\n验证者的意见：\n${reason}\n\n处理后可运行 \`/ralphflow-continue\` 重新验证，或 \`/ralphflow-cancel\` 结束。`, `⏸ 步骤 ${step.id} 连续 ${failedTimes} 轮未通过，已暂停等你定夺`);
         return;
       }
       // 返工：按 **on_fail** 回退（design §4「按 on_fail 回退」）。on_fail 缺省指自身。
@@ -1471,37 +1895,38 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       const target = stepOf(wf, targetId);
       if (!target) {
         // on_fail 指向 "done" 或不存在的步骤 —— 坏定义，绝不静默跳步
-        fresh.paused = true;
-        fresh.pause_reason = "check_infra";
-        pushHistory(fresh, "rework_target_invalid", `on_fail=${targetId}`, step.id);
-        logPause(instId, fresh, "check_infra", { detail: "rework_target_invalid", target: targetId });
-        writeState(fresh, instId);
-        notify(fresh, `⏸ 步骤 \`${step.id}\` 的 \`on_fail\` 指向 \`${targetId}\`，不是可回退的步骤，已暂停（引擎拒绝跳步）。`, `⏸ 步骤 ${step.id} 的 on_fail 定义无效，已暂停`);
+        state.paused = true;
+        state.pause_reason = "check_infra";
+        pushHistory(state, "rework_target_invalid", `on_fail=${targetId}`, step.id);
+        logPause(instId, state, "check_infra", { detail: "rework_target_invalid", target: targetId });
+        writeState(state, instId);
+        notify(state, `⏸ 步骤 \`${step.id}\` 的 \`on_fail\` 指向 \`${targetId}\`，不是可回退的步骤，已暂停（引擎拒绝跳步）。`, `⏸ 步骤 ${step.id} 的 on_fail 定义无效，已暂停`);
         return;
       }
-      fresh.do_submitted = false;
-      fresh.verdicts = [];
-      stopHeartbeatsOf(instId, fresh.delegations);
-      fresh.delegations = [];
+      state.do_submitted = false;
+      state.verdicts = [];
+      stopHeartbeatsOf(instId, state.delegations);
+      state.delegations = [];
       if (target.id !== step.id) {
-        fresh.current_step = target.id;
-        pushHistory(fresh, "rework_rewind", `${step.id} → ${target.id}`, target.id);
+        state.current_step = target.id;
+        pushHistory(state, "rework_rewind", `${step.id} → ${target.id}`, target.id);
         log("info", "rework_rewind", { instId, from: step.id, to: target.id });
       }
-      writeState(fresh, instId);
-      deliver(fresh, doPrompt(instId, wf, fresh, target, verdict.reason), `🔄 步骤 ${target.id} 验证未通过，自动返工（${step.id} 第 ${failedTimes} 次）`);
+      writeState(state, instId);
+      deliver(state, doPrompt(instId, wf, state, target, reason), `🔄 步骤 ${target.id} 验证未通过，自动返工（${step.id} 第 ${failedTimes} 次）`);
       return;
     }
     // 全 passed（且判定属于当前步）
-    if (isGate(wf, step) && allPassedVerified(fresh, step)) {
+    clearFailCount(state, step.id);
+    if (isGate(wf, step) && allPassedVerified(state, step)) {
       // 审查门打开（有 check：验证通过后停门等放行）
       logEvent(instId, "info", "gate_opened", { step: step.id, kind: "verified", ms: Date.now() - startedAt });
-      writeState(fresh, instId);
-      notify(fresh, `🙋 步骤 \`${step.id}\` 已通过独立验证，停在审查门等你放行。\n\n确认无误运行 \`/ralphflow-continue\` 进入下一步；需要修改就直接说明，改完重新交卷会再次验证。`, `🙋 步骤 ${step.id} 已通过验证，停在审查门等你放行`);
+      writeState(state, instId);
+      notify(state, `🙋 步骤 \`${step.id}\` 已通过独立验证，停在审查门等你放行。\n\n确认无误运行 \`/ralphflow-continue\` 进入下一步；需要修改就直接说明，改完重新交卷会再次验证。`, `🙋 步骤 ${step.id} 已通过验证，停在审查门等你放行`);
       return;
     }
-    writeState(fresh, instId);
-    advance(instId, fresh, wf, step);
+    writeState(state, instId);
+    advance(instId, state, wf, step);
   }
 
   /** 推进（T2）：只有这里改 current_step */
@@ -1540,8 +1965,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     logEvent(instId, "info", "step_start", { step: next.id });
     writeState(state, instId);
     // 播报必须诚实：下一步没有 check 时不得宣称「会自动进入独立验证」（有 check 的分支逐字不变）
-    deliver(state, doPrompt(instId, wf, state, next), stepHasCheck(next)
-      ? `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（完成后会自动进入独立验证）`
+    deliver(state, doPrompt(instId, wf, state, next), stepHasVerification(next)
+      ? (voterCountOf(next) > 0
+        ? `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（完成后会自动进入 ${voterCountOf(next)} 个验证者的并行验证）`
+        : `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（完成后会自动进入独立验证）`)
       : `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（未配置 check：完成后跳过对抗性验证）`);
   }
 
@@ -1771,8 +2198,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       "",
       // 诚实标注：首步没有 check 时**不得预告一次不会发生的独立验证**（与 doPrompt / advance 播报同一口径）。
       // 有 check 的分支与改造前**逐字相同**（回归基线）。
-      stepHasCheck(first)
-        ? "接下来：模型执行本步 → 交卷 → **独立验证者**（独立会话，看不到本对话）取证判定 → 通过则推进，不通过自动返工。"
+      stepHasVerification(first)
+        ? (voterCountOf(first) > 0
+          ? `接下来：模型执行本步 → 交卷 → **${voterCountOf(first)} 个独立验证者**（独立会话，看不到本对话）并行取证判定，**全过才放行** → 通过则推进，不通过自动返工。`
+          : "接下来：模型执行本步 → 交卷 → **独立验证者**（独立会话，看不到本对话）取证判定 → 通过则推进，不通过自动返工。")
         : isGate(wf, first)
           ? "接下来：模型执行本步 → 交卷 → 本步**不配置对抗性检查**，会**跳过对抗性验证**（纯人工审查），停在审查门等你 `/ralphflow-continue` 放行。"
           : "接下来：模型执行本步 → 交卷 → 本步**不配置对抗性检查**，会**跳过对抗性验证**，直接进入下一步。",
@@ -1835,10 +2264,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       // 同一份内容重复交卷 → 不重复烧验证（防止模型一次做完连调两次工具）
       if (text && text === (state.last_submit_summary ?? "")) {
         log("info", "gate_resubmit_identical", { instId });
-        // 无 check 的步骤本来就没有验证：「未重复验证」会读成"验证发生过" → 分文本书写
+        // 无对抗性检查的步骤本来就没有验证：「未重复验证」会读成"验证发生过" → 分文本书写
         return {
           ok: false,
-          text: stepHasCheck(step)
+          text: stepHasVerification(step)
             ? "交卷内容与上一次完全相同，未重复验证。若你确实改动了产出，请简述改动后再交卷。"
             : "交卷内容与上一次完全相同，未重复受理。若你确实改动了产出，请简述改动后再交卷。",
         };
@@ -1848,37 +2277,41 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       state.last_submit_summary = text;
       pushHistory(state, "do_submitted", undefined, step.id);
     logEvent(instId, "info", "do_submitted", { step: step.id });
-      // 无 check 的步骤：不委派验证者，按定义声明（停门 / 直接推进）；skipVerification 内落盘
-      if (!stepHasCheck(step)) {
+      // 无对抗性检查的步骤：不委派验证者，按定义声明（停门 / 直接推进）；skipVerification 内落盘
+      if (!stepHasVerification(step)) {
         const atGate = skipVerification(instId, state, wf, step);
         return {
           ok: true,
           text: atGate
-            ? `⏭ 已受理重新交卷：步骤 \`${step.id}\` 未配置 \`check\`，已跳过对抗性验证（纯人工审查），仍停在审查门等你放行。`
-            : `⏭ 已受理重新交卷：步骤 \`${step.id}\` 未配置 \`check\`，已跳过对抗性验证，直接推进。`,
+            ? `⏭ 已受理重新交卷：步骤 \`${step.id}\` 未配置 \`check\`/\`check_voting\`，已跳过对抗性验证（纯人工审查），仍停在审查门等你放行。`
+            : `⏭ 已受理重新交卷：步骤 \`${step.id}\` 未配置 \`check\`/\`check_voting\`，已跳过对抗性验证，直接推进。`,
         };
       }
       writeState(state, instId);
       void launchVerification(instId, state, wf, step);
-      return { ok: true, text: `🔍 已受理重新交卷，正在重新委派独立验证者检查步骤 \`${step.id}\`。` };
+      return { ok: true, text: voterCountOf(step) > 0
+        ? `🔍 已受理重新交卷，正在重新委派 ${voterCountOf(step)} 个独立验证者并行检查步骤 \`${step.id}\`（全过才放行）。`
+        : `🔍 已受理重新交卷，正在重新委派独立验证者检查步骤 \`${step.id}\`。` };
     }
 
     state.do_submitted = true;
     state.last_submit_summary = text;
     pushHistory(state, "do_submitted", undefined, step.id);
     logEvent(instId, "info", "do_submitted", { step: step.id });
-    if (!stepHasCheck(step)) {
+    if (!stepHasVerification(step)) {
       const atGate = skipVerification(instId, state, wf, step);
       return {
         ok: true,
         text: atGate
-          ? `⏭ 交卷已受理：步骤 \`${step.id}\` 未配置 \`check\`，已跳过对抗性验证（纯人工审查），停在审查门等你放行。`
-          : `⏭ 交卷已受理：步骤 \`${step.id}\` 未配置 \`check\`，已跳过对抗性验证，直接进入下一步。`,
+          ? `⏭ 交卷已受理：步骤 \`${step.id}\` 未配置 \`check\`/\`check_voting\`，已跳过对抗性验证（纯人工审查），停在审查门等你放行。`
+          : `⏭ 交卷已受理：步骤 \`${step.id}\` 未配置 \`check\`/\`check_voting\`，已跳过对抗性验证，直接进入下一步。`,
       };
     }
     writeState(state, instId);
     void launchVerification(instId, state, wf, step);
-    return { ok: true, text: `🔍 交卷已受理，独立验证者（独立会话）正在取证判定。等它返回即可，不要重复交卷。` };
+    return { ok: true, text: voterCountOf(step) > 0
+      ? `🔍 交卷已受理，${voterCountOf(step)} 个独立验证者（独立会话）正在并行取证判定，全过才放行。等它们返回即可，不要重复交卷。`
+      : `🔍 交卷已受理，独立验证者（独立会话）正在取证判定。等它返回即可，不要重复交卷。` };
   }
 
   // ─── 交卷上下文捕获（**只**服务审查门重交去重；不落盘、不触发任何状态迁移）──────
@@ -1952,7 +2385,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       remind: true,
       summary: `⚠️ 步骤 ${step.id} 尚未交卷（第 ${n}/${max} 次提醒）`,
       // 诚实标注：无 check 的步骤本就不验证，不能说「独立验证不会自动开始」（那是另一回事）。
-      message: `[ralphflow] 提醒（第 ${n}/${max} 次）：本步（\`${step.id}\`）还没交卷，${stepHasCheck(step) ? "独立验证不会自动开始" : "工作流不会推进（本步未配置 `check`，交卷后跳过对抗性验证直接继续）"}。\n\n如果任务已完成，请调用 \`ralphflow_submit\` 工具交卷；如果还没做完，继续做。\n如果你正在等用户回答或需要用户介入，请直接说明，不必交卷。`,
+      message: `[ralphflow] 提醒（第 ${n}/${max} 次）：本步（\`${step.id}\`）还没交卷，${stepHasVerification(step) ? "独立验证不会自动开始" : "工作流不会推进（本步未配置 `check`，交卷后跳过对抗性验证直接继续）"}。\n\n如果任务已完成，请调用 \`ralphflow_submit\` 工具交卷；如果还没做完，继续做。\n如果你正在等用户回答或需要用户介入，请直接说明，不必交卷。`,
     };
   }
 
@@ -1989,9 +2422,16 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     // ① 暂停中 → 解除暂停
     if (state.paused) {
       const reason = state.pause_reason;
+      // 投票步的 `check_infra` 恢复：**已通过的票保留**，只重跑未出终态的票
+      // （照抄 opencode §5.3「continue 把 infra_failed 重置为 pending，passed 不动」）。
+      // 其它情形（max_failures / no_submit / 非投票步）保持原语义：清空判定重新验证。
+      const resumeVoting = voterCountOf(step) > 0 && reason === "check_infra" && state.do_submitted;
+      const keptVerdicts = resumeVoting
+        ? state.verdicts.filter((v) => verdictBelongsToStep(v, step.id) && v.status === "passed")
+        : [];
       state.paused = false;
       state.pause_reason = undefined;
-      state.verdicts = [];
+      state.verdicts = keptVerdicts;
       stopHeartbeatsOf(instId, state.delegations);
       state.delegations = [];
       // 重置当前步失败计数：这是投递给模型的机制说明（tools.ts / SHARED_MECHANISM）明确承诺的
@@ -2002,15 +2442,28 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       logEvent(instId, "info", "resume", { step: state.current_step, from: reason });
       writeState(state, instId);
       if (state.do_submitted) {
-        // 无 check 的步骤从不委派验证者（否则会为一步「作者已声明免验证」的步骤凭空造出判定）
-        if (!stepHasCheck(step)) {
+        // 无对抗性检查的步骤从不委派验证者（否则会为一步「作者已声明免验证」的步骤凭空造出判定）
+        if (!stepHasVerification(step)) {
           const atGate = skipVerification(instId, state, wf, step);
           return {
             ok: true,
             text: atGate
-              ? `▶️ 已解除暂停（原因：${reason}）。步骤 \`${step.id}\` 未配置 \`check\`，已跳过对抗性验证，停在审查门等你放行。`
-              : `▶️ 已解除暂停（原因：${reason}）。步骤 \`${step.id}\` 未配置 \`check\`，已跳过对抗性验证，直接进入下一步。`,
+              ? `▶️ 已解除暂停（原因：${reason}）。步骤 \`${step.id}\` 未配置 \`check\`/\`check_voting\`，已跳过对抗性验证，停在审查门等你放行。`
+              : `▶️ 已解除暂停（原因：${reason}）。步骤 \`${step.id}\` 未配置 \`check\`/\`check_voting\`，已跳过对抗性验证，直接进入下一步。`,
           };
+        }
+        if (resumeVoting) {
+          const done = new Set(keptVerdicts.map((v) => v.check_index));
+          const pending = voterIndices(step).filter((i) => !done.has(i));
+          if (pending.length === 0) {
+            // 防御性：全部票都已在手却停在 check_infra（不该发生）→ 按已通过处理，绝不死循环。
+            const votes: VoterVerdict[] = keptVerdicts.map((v) => ({ index: v.check_index, status: v.status, reason: v.reason }));
+            applyRoundOutcome(instId, state, wf, step, { kind: "passed", reason: formatVotingPassReason(votes, step.check_voting ?? [], voterCountOf(step)) }, Date.now());
+            return { ok: true, text: `▶️ 已解除暂停（原因：${reason}）：步骤 \`${step.id}\` 的判定已全部通过，已推进。` };
+          }
+          // 重试预算随用户 continue **重置**（新的一次赦免）：再故障仍会自动重试一次。
+          void launchVotingRound(instId, state, wf, step, pending, 1);
+          return { ok: true, text: `▶️ 已解除暂停（原因：${reason}）：保留已通过的 ${done.size} 票，正在重新验证其余 ${pending.length} 票（基础设施故障不计失败）。` };
         }
         void launchVerification(instId, state, wf, step);
         return { ok: true, text: `▶️ 已解除暂停（原因：${reason}），正在重新委派独立验证者检查步骤 \`${step.id}\`。` };
@@ -2026,7 +2479,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       }
       // 心跳全停了 = 属主已失联（进程崩溃/被重启），判定永远回不来。绝不把用户卡在一个
       // 永远不会结束的「验证中」幽灵状态：按孤儿兜底，并**立刻重新委派**（用户显式动作，
-      // 不必等下一个 restore 触发点）。
+      // 不必等下一个 restore 触发点）。投票步同样只重跑未通过的票。
       stopHeartbeatsOf(instId, state.delegations);
       state.delegations = [];
       pushHistory(state, "orphan_delegation_recovered", "via=continue");
@@ -2038,10 +2491,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
     // ③ 放行判据（design §12.1 精修后的两支，机械可判）：
     //    有 check → 判定齐 ∧ 全 passed ∧ 归属本步；
-    //    无 check → **工作流定义已声明本步免验证**（`stepHasCheck` 只读 StepDef，执行者无法影响）。
-    //    （审查门 / 普通步共用这一条：无 check 的普通步在交卷时已直接推进，走到这里的是门。）
-    if (allPassedVerified(state, step) || !stepHasCheck(step)) {
-      const byDefinition = !stepHasCheck(step);
+    //    无对抗性检查 → **工作流定义已声明本步免验证**（`stepHasVerification` 只读 StepDef，执行者无法影响）。
+    //    （审查门 / 普通步共用这一条：免验证的普通步在交卷时已直接推进，走到这里的是门。）
+    if (allPassedVerified(state, step) || !stepHasVerification(step)) {
+      const byDefinition = !stepHasVerification(step);
       if (byDefinition) noteCheckSkipped(instId, state, step);
       if (isGate(wf, step)) {
         pushHistory(state, "gate_released", undefined, step.id);
@@ -2051,7 +2504,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       return {
         ok: true,
         text: byDefinition
-          ? `⏭ 步骤 \`${step.id}\` 未配置 \`check\`（定义已声明免验证），已跳过对抗性验证并推进。`
+          ? `⏭ 步骤 \`${step.id}\` 未配置 \`check\`/\`check_voting\`（定义已声明免验证），已跳过对抗性验证并推进。`
           : `✅ 步骤 \`${step.id}\` 判定通过，已推进。`,
       };
     }
@@ -2085,8 +2538,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       ?? (instanceRef ? listInstances().find((i) => i.state.active && (i.id === instanceRef || i.id.startsWith(instanceRef))) : undefined);
     if (!info) return { ok: false, text: "当前会话没有活跃实例可取消。" };
     const { id: instId, state } = info;
-    try { aborts.get(instId)?.abort(); } catch {}
-    aborts.delete(instId);
+    // 中止**所有**在飞验证者（投票步是 N 笔）：取消后不留下还在烧 token 的孤儿
+    abortInstance(instId);
     state.active = false;
     state.paused = false;
     state.pause_reason = "user_cancelled";
@@ -2144,6 +2597,29 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return { ok: true, text: "当前没有活跃实例。用 `/ralphflow-start <工作流> <任务>` 启动；已结束的运行见 `/ralphflow-list` 的「历史运行」节。" };
   }
 
+  /**
+   * 每票进度行（派生量，现算不落盘）：终态看 `verdicts[]`，在飞看 `delegations[]`，
+   * 其余为待验证。行格式照抄 opencode 的 status 渲染：
+   * `✓ 验证者 1/3 <检查依据摘要>:<结论摘要>`。
+   */
+  function votingProgressRows(state: InstanceState, step: StepDef): Array<{ status: VoterDisplayStatus; label: string }> {
+    const entries = step.check_voting;
+    if (!Array.isArray(entries) || entries.length === 0) return [];
+    const count = voterCountOf(step);
+    const rows: Array<{ status: VoterDisplayStatus; label: string }> = [];
+    for (let i = 0; i < count; i++) {
+      const verdict = state.verdicts.find((v) => v.check_index === i && verdictBelongsToStep(v, step.id));
+      const running = state.delegations.some((d) => d.check_index === i);
+      const status: VoterDisplayStatus = verdict ? verdict.status : running ? "running" : "pending";
+      const basis = (entries[i]?.check ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 30) ?? "";
+      const detail = verdict && (verdict.status === "passed" || verdict.status === "failed")
+        ? `：${(verdict.reason.split("\n").find((l) => l.trim())?.trim() ?? "").slice(0, 120)}`
+        : verdict ? `：${verdict.reason.slice(0, 120)}` : "";
+      rows.push({ status, label: `${voterStatusLabel(status)} 验证者 ${i + 1}/${count} ${basis}${detail}` });
+    }
+    return rows;
+  }
+
   function renderInstance(info: InstanceInfo): string {
     const { id, state } = info;
     const facts = [
@@ -2154,10 +2630,18 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     ];
     const lines = [`**${id}** — ${facts.join(" · ")}`, "", `任务：${state.user_task}`];
     // 「现在该干什么」——异步验证期间用户最需要的就是这句。
-    // 传入本步有无 check（从 StepDef 现算，零新状态字段）：无 check 的步骤不得宣称「会再次验证」。
+    // 传入本步有无对抗性检查（从 StepDef 现算，零新状态字段）：免验证的步骤不得宣称「会再次验证」。
     const wf = loadWorkflow(state.workflow_name).def;
-    const hint = nextActionHint(state, id, wf ? stepOf(wf, state.current_step) : undefined);
+    const step = wf ? stepOf(wf, state.current_step) : undefined;
+    const hint = nextActionHint(state, id, step);
     if (hint) lines.push("", hint);
+    // 多验证者投票的**每票进度**（对齐 opencode `/ralphflow-status` 的「验证进度」节）：
+    // 不读第二个文件 —— 票的终态在 `verdicts[]`、在飞票在 `delegations[]`，这里现算。
+    const progress = step ? votingProgressRows(state, step) : [];
+    if (progress.length > 0) {
+      const done = progress.filter((r) => r.status === "passed" || r.status === "failed").length;
+      lines.push("", `验证进度（${done}/${progress.length} 票）：`, ...progress.map((r) => `- ${r.label}`));
+    }
     if (state.verdicts.length > 0) {
       lines.push("", "本轮判定：", ...state.verdicts.map((v) => `- [${v.status}] ${v.reason}`));
     }
@@ -2192,7 +2676,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
     if (s.do_submitted) {
       // 无 check 的步骤（纯人工审查/免验证）：不得写「会再次验证」——本步没有独立验证
-      if (step && !stepHasCheck(step)) {
+      if (step && !stepHasVerification(step)) {
         return "**等你放行**：本步未配置 `check`（已**跳过对抗性验证**，纯人工审查）。确认无误运行 `/ralphflow-continue` 进入下一步；要修改就直接说明，改完重新交卷仍会停在这里。";
       }
       return "**等你放行**：确认无误运行 `/ralphflow-continue` 进入下一步；要修改就直接说明，改完重新交卷会再次验证。";
