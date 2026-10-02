@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createEngine, resolveCheckModel, makeArtifactsDirName, stepHasCheck, listWorkflowsIn, stepStats } from "../lib/engine.js";
+import { createEngine, resolveCheckModel, makeArtifactsDirName, stepHasCheck, listWorkflowsIn, stepStats, voterCountOf, expectedVerdicts } from "../lib/engine.js";
 import { buildCheckPrompt } from "../lib/verify.js";
 import { CREATE_GUIDE } from "../lib/create.js";
 
@@ -46,18 +46,58 @@ engine.ensureLayout();
 let n = 0;
 const S = () => `session-${++n}`;
 
+/**
+ * 内置 `loop` 现在是**多验证者投票**步（每票一条检查依据，**全过才放行**）：
+ * 一轮交卷要投满这么多张判定才会聚合，所以脚本化端口一次性入队同样数量的判定。
+ * 票数**现算**（不硬编码）：工作流改了票数，测试跟着走，不会静默漂移。
+ */
+const LOOP_VOTERS = voterCountOf(engine.loadWorkflow("loop").def.steps[0]);
+/** 入队 n 张同样的判定（缺省 = 内置 loop 的票数） */
+const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({ ...v }));
+
 // ── 1) 加载 + 启动 + 通过完成 ────────────────────────────────────────────────
 {
   const s = S();
   const wfs = engine.listWorkflows();
   check("内置 loop/spec 可加载", wfs.length >= 2 && wfs.every((w) => !w.invalid), JSON.stringify(wfs.map((w) => w.name)));
+  // 内置 loop 的**形状**（不是只看告警）：opencode 那三票逐字照抄 + 本仓库第 4 票，投票而非单 check
+  const loopDef = engine.loadWorkflow("loop").def;
+  const loopStep = loopDef.steps[0];
+  check("内置 loop 是多验证者投票步（4 票 · 每票一条检查依据 · 不再写单 check）",
+    expectedVerdicts(loopStep) === 4 && loopStep.check === undefined
+    && loopStep.check_voting?.length === 4 && loopStep.check_voting.every((e) => !e.model),
+    JSON.stringify({ check: loopStep.check, voters: loopStep.check_voting?.map((e) => e.check) }));
+  check("内置 loop 前三条检查依据逐字照抄 opencode 版 loop.yaml",
+    loopStep.check_voting[0].check === "用户任务的每一条要求都已落实"
+    && loopStep.check_voting[1].check === "实现的行为符合预期，真实可用"
+    && loopStep.check_voting[2].check === "没有遗漏的需求，边界情况已覆盖",
+    JSON.stringify(loopStep.check_voting.map((e) => e.check)));
+  check("内置 loop 第 4 票是本仓库自己的「既有行为没有被破坏」口径",
+    loopStep.check_voting[3].check.startsWith("既有行为没有被破坏：仓库自带测试仍全绿")
+    && loopStep.check_voting[3].check.includes("测试往往只覆盖一半"), loopStep.check_voting[3].check);
+  {
+    // 与 opencode 的差异只写在注释里：reset / timeout_ms 都不抄进来（都是加载期告警忽略的键）
+    const raw = fs.readFileSync(new URL("../workflows/loop.yaml", import.meta.url), "utf-8");
+    const active = raw.replace(/^\s*#.*$/gm, "");
+    check("内置 loop 不抄 opencode 的 reset / timeout_ms（只在原处注释说明差异）",
+      !/^\s*reset:/m.test(active) && !/timeout_ms\s*:/m.test(active)
+      && raw.includes("reset: true") && raw.includes("timeout_ms"),
+      raw);
+    const loaded = engine.loadWorkflow("loop");
+    check("内置 loop 仍然零告警零问题（差异注释不产生任何键）",
+      loaded.warnings.length === 0 && loaded.problems.length === 0, JSON.stringify(loaded.warnings));
+  }
   const { r, id } = start("loop", "写一个 hello.html", s);
   check("start 成功且 DO prompt 完整", r.ok && r.text.includes("写一个 hello.html") && r.text.includes("ralphflow_submit"));
-  // 有 check 的首步：start 回执的前导句与改造前**逐字相同**（回归基线）
-  check("有 check 的首步：start 回执仍是原文的独立验证预告",
-    r.text.includes("接下来：模型执行本步 → 交卷 → **独立验证者**（独立会话，看不到本对话）取证判定 → 通过则推进，不通过自动返工。"),
+  // 投票首步：start 回执写明 N 个独立验证者**并行**取证、全过才放行（单 check 的文案不再适用）
+  check("投票首步：start 回执写明 N 个独立验证者并行取证（全过才放行）",
+    r.text.includes(`接下来：模型执行本步 → 交卷 → **${LOOP_VOTERS} 个独立验证者**（独立会话，看不到本对话）并行取证判定，**全过才放行** → 通过则推进，不通过自动返工。`),
     r.text.slice(0, 320));
-  scripted.push({ status: "passed", reason: "文件存在且内容正确" });
+  check("投票首步：DO prompt 写明每票只查一条检查依据、全过才放行",
+    r.text.includes(`${LOOP_VOTERS} 个独立验证者**并行**取证，各自只查一条检查依据，**全过才放行**`)
+    && r.text.includes(`${LOOP_VOTERS} 个独立验证者会立刻**并行**检查你的产出（全过才放行）`),
+    r.text.slice(-420));
+  scripted.push(...votes({ status: "passed", reason: "文件存在且内容正确" }));
   submit(s, "已完成，创建了 hello.html。");
   await settle();
   const st = engine.readState(id);
@@ -73,7 +113,7 @@ const S = () => `session-${++n}`;
   const s = S();
   const { id } = start("loop", "会失败的脚本", s);
   deliveries.length = 0;
-  scripted.push({ status: "failed", reason: "脚本语法错误" });
+  scripted.push({ status: "failed", reason: "脚本语法错误" }, ...votes({ status: "passed", reason: "其余视角通过" }, Math.max(0, LOOP_VOTERS - 1)));
   submit(s, "写完了。");
   await settle();
   const st = engine.readState(id);
@@ -85,12 +125,12 @@ const S = () => `session-${++n}`;
 {
   const s = S();
   const { id } = start("loop", "infra 用例", s);
-  scripted.push({ status: "infra", reason: "provider 不可用" });
+  scripted.push(...votes({ status: "infra", reason: "provider 不可用" }));
   submit(s, "好了。");
   await settle();
   let st = engine.readState(id);
   check("infra → 暂停 check_infra 且 fail_count=0", st.paused && st.pause_reason === "check_infra" && st.fail_count === 0, JSON.stringify({ p: st.pause_reason, f: st.fail_count }));
-  scripted.push({ status: "failed", reason: "还是不行" }); // 先入队：continue 同步消费
+  scripted.push(...votes({ status: "failed", reason: "还是不行" })); // 先入队：continue 同步消费（整轮 4 票）
   const c1 = engine.continueInstance(s); // 解除暂停 → 引擎同步启动重验（消费 scripted[0]）
   check("continue 解除暂停并自动重验", c1.ok);
   await settle();
@@ -155,12 +195,12 @@ const S = () => `session-${++n}`;
   const { id } = start("loop", "fail-closed 用例", s);
   const c1 = engine.continueInstance(s);
   check("未交卷 → 拒绝推进", !c1.ok && c1.text.includes("还没交卷"), c1.text);
-  scripted.push({ status: "failed", reason: "不过" });
+  scripted.push(...votes({ status: "failed", reason: "不过" }));
   submit(s, "交卷。");
   await settle();
   const c2 = engine.continueInstance(s);
   check("判定未通过后 continue 绝不推进（fail-closed）", !c2.ok && (c2.text.includes("不能推进") || c2.text.includes("还没交卷")), c2.text);
-  scripted.push({ status: "passed", reason: "通过了" });
+  scripted.push(...votes({ status: "passed", reason: "通过了" }));
   submit(s, "修好了。");
   await settle();
   const st = engine.readState(id);
@@ -575,10 +615,10 @@ const S = () => `session-${++n}`;
 {
   const s = S();
   const { id } = start("loop", "报告统计用例", s);
-  scripted.push({ status: "failed", reason: "先失败一次" });
+  scripted.push(...votes({ status: "failed", reason: "先失败一次" }));
   submit(s, "第一版");
   await settle();
-  scripted.push({ status: "passed", reason: "修好了" });
+  scripted.push(...votes({ status: "passed", reason: "修好了" }));
   submit(s, "第二版");
   await settle();
   const st = engine.readState(id);

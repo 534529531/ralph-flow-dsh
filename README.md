@@ -33,9 +33,9 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 
 `reset / rewind` 已声明未实现（涉及上下文管理，暂缓）；其余命令与 opencode 版功能看齐。命令语义 = **触发词**：`/ralphflow-*` **一律**由模型自然语言回复（含用法错误与未实现命令），**零程序化卡片返回**，行为与 claude code/opencode 完全一致。
 
-内置工作流：`loop`（单步对抗验证循环）、`spec`（探索→提案→逐任务实现→归档，propose 步带审查门）。自定义工作流按同一方言放到 `<workspace>/.dsh/ralph-flow/workflows/`。
+内置工作流：`loop`（单步对抗验证循环，核对配方 = **4 票 `check_voting`**，前三条逐字照抄 opencode 版、第 4 条是本仓库的「既有行为没有被破坏」）、`spec`（探索→提案→逐任务实现→归档，propose 步带审查门）。自定义工作流按同一方言放到 `<workspace>/.dsh/ralph-flow/workflows/`。
 
-**`check` 决定本步是否被独立验证（与 opencode 一致）**：写了 `check` → 交卷后由独立验证者取证判定；**不写 `check` → 该步跳过对抗性验证**，DO 完成直接进入下一步（**工作流级** `manual_step` 列表里的这类步骤则是**纯人工审查**：停在审查门等你 `/ralphflow-continue` 放行）。跳过时通知、轨迹与归档报告一律写「跳过对抗性验证」——绝不会写成「检查通过」。不在 `manual_step` 列表里的无 `check` 步骤会在加载期与 `/ralphflow-doctor` 告警（提醒它不会被独立验证）；`check` 写了但非字符串（如 `check: true`）仍是加载期硬错误（本意是免验证请直接删掉该键）。内置 `loop`/`spec` 四步全有 `check`，行为不受影响。
+**`check` 决定本步是否被独立验证（与 opencode 一致）**：写了 `check` → 交卷后由独立验证者取证判定；**不写 `check` → 该步跳过对抗性验证**，DO 完成直接进入下一步（**工作流级** `manual_step` 列表里的这类步骤则是**纯人工审查**：停在审查门等你 `/ralphflow-continue` 放行）。跳过时通知、轨迹与归档报告一律写「跳过对抗性验证」——绝不会写成「检查通过」。不在 `manual_step` 列表里的无 `check` 步骤会在加载期与 `/ralphflow-doctor` 告警（提醒它不会被独立验证）；`check` 写了但非字符串（如 `check: true`）仍是加载期硬错误（本意是免验证请直接删掉该键）。内置 `loop`/`spec` 的每一步都有对抗性检查（`loop` 用 4 票 `check_voting`，`spec` 四步各一条 `check`），行为不受影响。
 
 **人工审查门只有一种写法：工作流级（顶层，与 `steps` 同级）的 `manual_step:` 列表**（列表写法，也接受逗号字符串 `"design,review"`；引用不存在的步骤 = 加载期硬错误）。**步骤级 `manual_step` 键已删除**：写进步骤里（不论 `true`/`false`/空值）都是**加载期硬错误**，报错文案会给出正确写法（把该步 id 列进顶层列表）。理由：opencode/pi 只认这个顶层列表，步骤级写法在那边只是「不认识的步骤键」——被警告忽略后**人工审查门静默消失**；静默跳过审查门比报错严重得多，所以这里 fail-fast。
 

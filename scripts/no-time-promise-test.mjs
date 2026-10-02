@@ -20,7 +20,7 @@ import { pathToFileURL } from "node:url";
 import {
   mkEnv, toolOf, cmdOf, execTool, execCommand, textOf, sleep, mkTmp, cleanupTmp,
 } from "./helpers/plugin-harness.mjs";
-import { REPO, buildPluginCopy, revertHonestVerifyNotice, revertMechanismWording } from "./helpers/reverted-build.mjs";
+import { REPO, buildPluginCopy, revertHonestVerifyNotice, revertHonestVotingNotice, revertMechanismWording } from "./helpers/reverted-build.mjs";
 import { findDurationPromises, scanRuntimeSurfaces } from "./helpers/time-promise-scan.mjs";
 
 // HOME 隔离：索引/全局工作流目录都在 ~/.dsh 下，测试绝不读写真实 HOME。
@@ -128,6 +128,9 @@ const fixed = await collectVisibleTexts(PLUGIN_ENTRY, "");
   check("验证中播报保留逃生口：/ralphflow-status 与 /ralphflow-cancel",
     /ralphflow-status/.test(notice) && /ralphflow-cancel/.test(notice), notice.slice(0, 400));
   check("验证中 summary 自带「无需操作」（默认唯一可见行仍可行动）", /无需操作/.test(verifyNotice?.label ?? ""), verifyNotice?.label);
+  // 内置 loop 现在是 N 票投票步：可见播报必须说「N 个独立验证者**并行**取证」（不是单验证者）
+  check("验证中播报与内置 loop 的多验证者形状一致（N 个独立验证者并行取证）",
+    /\d+ 个独立验证者/.test(notice) && /并行/.test(notice), notice.slice(0, 240));
   check("DO 提示词要求模型不要给时长预估", /不要给任何时长预估/.test(fixed.texts.find((t) => t.label === "ralphflow_start 返回")?.text ?? ""));
   cleanupTmp(fixed.ws);
 }
@@ -143,7 +146,12 @@ console.log("\nT3 静态扫描运行时面（src/*.ts 剥注释、workflows/*.ya
 console.log("\nT4【负对照】把文案还原成修复前那句编造的时长承诺 → 同一判据必然判不通过");
 {
   const legacy = buildPluginCopy(
-    { "engine.ts": revertHonestVerifyNotice, "tools.ts": revertMechanismWording },
+    {
+      // 两处验证播报都要还原：单 check 的（它…）与多验证者投票的（它们…）。
+      // 内置 loop 现在走投票路径，只还原单 check 那处负对照就没有鉴别力（锚点找不到会抛错）。
+      "engine.ts": (src) => revertHonestVotingNotice(revertHonestVerifyNotice(src)),
+      "tools.ts": revertMechanismWording,
+    },
     "promise-reverted",
   );
   try {

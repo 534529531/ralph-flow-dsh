@@ -117,7 +117,11 @@ console.log("\nS3 turn-stopping：已交卷 / 无实例 / 暂停中 都不提醒
   await submitTool.execute({}, { agent: { session: { id: pid } }, concludeTurn: undefined });
   delivered.length = 0;
   await listeners.get("agent/turn-stopping")({ agent: { id: pid } });
-  check("已交卷后不提醒", delivered.length === 0, cli(delivered.at(-1)));
+  // 内置 loop 现在是多验证者投票步：交卷后会异步收到**投票进度播报**（每票一行），
+  // 但「还没交卷」的催促绝不能再出现 —— 判据收窄到「有没有提醒」，不是「有没有任何消息」。
+  check("已交卷后不提醒（投票进度播报不算提醒）",
+    delivered.every((m) => !cli(m).includes("提醒（第") && !cli(m).includes("还没交卷")),
+    cli(delivered.at(-1)));
   await sleep(120);
 
   fs.rmSync(ws, { recursive: true, force: true });

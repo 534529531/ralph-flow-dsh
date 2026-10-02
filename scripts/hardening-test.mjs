@@ -6,7 +6,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createEngine } from "../lib/engine.js";
+import { createEngine, voterCountOf } from "../lib/engine.js";
 
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
 // 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
@@ -39,6 +39,13 @@ let n = 0;
 const S = () => `hardening-session-${++n}`;
 
 engine.ensureLayout();
+
+/**
+ * 内置 `loop` 现在是**多验证者投票**步（每票一条检查依据，全过才放行）：
+ * 一轮交卷要投满这么多张判定才会聚合 —— 脚本化端口按票数入队（票数现算，不硬编码）。
+ */
+const LOOP_VOTERS = voterCountOf(engine.loadWorkflow("loop").def.steps[0]);
+const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({ ...v }));
 
 /**
  * spec 是 4 步（explore → propose → implement → archive），审查门在 **propose**（第 2 步）。
@@ -144,7 +151,7 @@ console.log("\nH5 对照：非门的已判定步骤，重复交卷不重复验�
 {
   const s = S();
   const { id } = start("loop", "非门重复交卷", s);
-  scripted.push({ status: "passed", reason: "通过并完成" });
+  scripted.push(...votes({ status: "passed", reason: "通过并完成" }));
   submit(s, "一\n");
   await sleep();
   const reportPath = path.join(engine.reportsDir, `${id}.md`);
@@ -163,14 +170,14 @@ console.log("\nH6 对照：DO 阶段未判定时重复交卷不重复验证");
 {
   const s = S();
   const { id } = start("loop", "DO 重复交卷", s);
-  scripted.push({ status: "failed", reason: "不通过" });
+  scripted.push(...votes({ status: "failed", reason: "不通过" }));
   submit(s, "一\n");
   await sleep();
   const st1 = engine.readState(id);
   check("失败后回到 DO（do_submitted=false）", !st1.do_submitted && st1.fail_count === 1);
   const before = st1.history.filter((h) => h.event === "verify_start").length;
   // 此时 do_submitted=false，重复文本会正常重新交卷（这是期望行为：模型确实重做了）
-  scripted.push({ status: "passed", reason: "重做后通过" });
+  scripted.push(...votes({ status: "passed", reason: "重做后通过" }));
   submit(s, "二\n");
   await sleep();
   // 通过后实例已销毁 → 验证次数从归档报告里数
@@ -199,10 +206,10 @@ console.log("\nH8 判定丢弃必须可诊断（交卷丢失告警的姊妹缺�
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-discard-"));
   const logs = [];
-  let resolveVerify;
+  const inFlight = [];
   const e = createEngine(ws, {
     deliver: () => true,
-    verify: () => new Promise((r) => { resolveVerify = r; }),
+    verify: (req) => new Promise((r) => inFlight.push({ resolve: r, index: req.checkIndex })),
     log: (lvl, ev, d) => logs.push({ lvl, ev, d }),
   });
   e.ensureLayout();
@@ -215,7 +222,8 @@ console.log("\nH8 判定丢弃必须可诊断（交卷丢失告警的姊妹缺�
   // 外部删除实例（模拟工作区被清理）——单根模型下没有索引要同步，删目录即除名
   fs.rmSync(e.instanceDir(iid), { recursive: true, force: true });
 
-  resolveVerify({ check_index: 0, step_id: "loop", ts: new Date().toISOString(), status: "passed", reason: "迟到的判定" });
+  check("投票步在飞委派 = 票数（每票一笔）", inFlight.length === LOOP_VOTERS, `inFlight=${inFlight.length}`);
+  for (const p of inFlight) p.resolve({ check_index: p.index, step_id: "loop", ts: new Date().toISOString(), status: "passed", reason: "迟到的判定" });
   await sleep(120);
 
   const discard = logs.find((l) => l.ev === "verdict_discarded");

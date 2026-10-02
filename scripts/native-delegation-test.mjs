@@ -16,7 +16,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createEngine } from "../lib/engine.js";
+import { createEngine, voterCountOf } from "../lib/engine.js";
 import { runVerifier, parseVerdict, VERIFIER_PERSONA } from "../lib/verify.js";
 
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
@@ -100,7 +100,8 @@ console.log("\nD2 取消能真正中止在飞验证者（原生取消语义）")
   const iid = e.listInstances().at(-1).id;
   e.onSubmit(sid, "完成");
   await sleep(80);
-  check("验证在飞", e.readState(iid).delegations.length === 1);
+  // 内置 loop 是多验证者投票步：一次交卷并发 N 笔委派（每票一笔），取消要**全部**传播
+  check("验证在飞（每票一笔并发委派）", e.readState(iid).delegations.length === voterCountOf(e.loadWorkflow("loop").def.steps[0]));
 
   e.cancelInstance(sid, undefined, "用户中止");
   await sleep(80);

@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createEngine } from "../lib/engine.js";
+import { createEngine, voterCountOf } from "../lib/engine.js";
 
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
 // 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
@@ -108,13 +108,15 @@ console.log("\nV2 暂停中的迟到判定：必须丢弃，不得推进/投递 
   fs.writeFileSync(path.join(e.instanceDir(iid), "state.json"), JSON.stringify(st0, null, 2));
   notes.length = 0;
 
-  resolvers[0]({ check_index: 0, step_id: "loop", ts: new Date().toISOString(), status: "passed", reason: "迟到的通过" });
+  // 内置 loop 是多验证者投票步：这一轮有 N 笔在飞委派（每票一笔），**每一笔**迟到判定都要被丢
+  for (const r of resolvers) r({ check_index: 0, step_id: "loop", ts: new Date().toISOString(), status: "passed", reason: "迟到的通过" });
   await sleep();
   const st = e.readState(iid);
   check("① 仍处于暂停（未被迟到判定推进）", st.paused && st.active, JSON.stringify({ p: st.paused, a: st.active }));
   check("② 未投递 DO 提示（模型不会白干）", !notes.some((t) => t.includes("本步要做什么")), notes.at(-1)?.slice(0, 50));
-  check("② 丢弃原因标注 instance_paused",
-    log.some((l) => l.ev === "verdict_discarded" && l.d?.reason === "instance_paused"), JSON.stringify(log.filter((l) => l.ev === "verdict_discarded")));
+  check("② 每一笔迟到判定都被丢弃、原因标注 instance_paused",
+    log.filter((l) => l.ev === "verdict_discarded" && l.d?.reason === "instance_paused").length === resolvers.length,
+    JSON.stringify(log.filter((l) => l.ev === "verdict_discarded")));
   clean(ws);
 }
 
@@ -329,7 +331,9 @@ console.log("\nV8 state.json：老格式可读（迁移）+ 派生量不落盘�
     JSON.stringify({ fc: migrated.fail_count, counts: migrated.fail_counts }));
 
   // ② 触发一次写盘，确认落盘的 JSON 里没有派生量 fail_count
-  sc.push({ status: "failed", reason: "写盘一次" });
+  // 整轮失败（内置 loop = N 票投票步：一轮要投满 N 张才聚合，任一票失败 → 整体失败并返工写盘）
+  const voters = voterCountOf(e.loadWorkflow("loop").def.steps[0]);
+  for (let i = 0; i < voters; i++) sc.push({ status: "failed", reason: "写盘一次" });
   e.onSubmit(sid, "v8 交卷");
   await sleep();
   const persisted = JSON.parse(fs.readFileSync(path.join(e.instanceDir(iid), "state.json"), "utf-8"));

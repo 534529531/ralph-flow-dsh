@@ -28,7 +28,7 @@ fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** 被测库：缺省本仓库 lib/；负对照时指向「还原实现」的基线 lib（验收 7） */
 const LIB = process.env.RF_LIB ? path.resolve(process.env.RF_LIB) : path.join(HERE, "..", "lib");
-const { createEngine } = await import(path.join(LIB, "engine.js"));
+const { createEngine, voterCountOf } = await import(path.join(LIB, "engine.js"));
 const { runVerifier } = await import(path.join(LIB, "verify.js"));
 const { Context } = await import("@deepseek-ai/cordis");
 
@@ -62,6 +62,14 @@ function parseJsonl(file) {
 const eventsOf = (j) => j.lines.map((l) => l.event);
 const hasEvent = (j, ev) => eventsOf(j).includes(ev);
 const eventOf = (j, ev) => j.lines.find((l) => l.event === ev);
+const eventsOfAll = (j, ev) => j.lines.filter((l) => l.event === ev);
+
+/**
+ * 内置 `loop` 现在是**多验证者投票**步（每票一条检查依据，全过才放行）：一次交卷会并发 N 笔
+ * 委派 —— 执行日志里因此是 N 条 `verifier_prompt` / `verifier_result` / `voter_verdict`
+ * （只有单 check 步骤才有聚合后的那一条 `verdict`）。票数现算，不硬编码。
+ */
+const loopVotersOf = (engine) => voterCountOf(engine.loadWorkflow("loop").def.steps[0]);
 
 /**
  * 引擎 + 全量捕获的端口。`scripted` 是预置判定队列；`ports` 可覆盖端口
@@ -69,13 +77,24 @@ const eventOf = (j, ev) => j.lines.find((l) => l.event === ev);
  */
 function mkEngine(ws, { scripted = [], ports = {} } = {}) {
   const logs = [], notes = [], requests = [];
+  /**
+   * `scripted` 的**一条 = 一轮验证**：投票步（内置 `loop` 现在是 N 票）一轮会并发 N 笔委派，
+   * 每笔都拿同一条脚本判定（票数按**当前步**现算 —— 单 check 步骤仍是 1 张，语义与改造前一致）。
+   * 队列空 = 本轮没有预置判定 → 照旧抛错（上层端口把它转成 infra，与改造前同一行为）。
+   */
+  let round = null;
   const engine = createEngine(ws, {
     deliver: (_sid, text, summary) => { notes.push({ text, summary }); return true; },
     verify: async (req) => {
       requests.push(req);
-      const v = scripted.shift();
-      if (!v) throw new Error("no scripted verdict");
-      return { check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), ...v };
+      const voters = Math.max(1, voterCountOf(req.step));
+      if (!round || round.left <= 0) {
+        const v = scripted.shift();
+        if (!v) throw new Error("no scripted verdict");
+        round = { left: voters, v };
+      }
+      round.left -= 1;
+      return { check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), ...round.v };
     },
     log: (lvl, ev, d) => logs.push({ lvl, ev, d }),
     ...ports,
@@ -109,13 +128,13 @@ console.log("L1 运行期 JSONL → 归档 → 报告指路 → 可复盘（验�
   const sid = `l1-${RUN}`;
   // 真实验证者链路（verify.ts）：提示词原文由 verify.ts 经引擎端口写进实例日志。
   const ctx = new Context();
-  let sentPrompt = null;
+  const sentPrompts = [];
   const REASON = `验收判定原文：逐条核对通过 ✓\n第二行必须原样保留-${"长".repeat(400)}-END`;
   ctx.provide("subagents", {
     list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
     start: async (_n, req) => {
-      sentPrompt = req.prompt?.[0]?.text ?? null;
+      sentPrompts.push(req.prompt?.[0]?.text ?? null);
       return { id: "child", result: Promise.resolve({ structured: { passed: true, reason: REASON }, output: [], stopReason: "completed" }) };
     },
   });
@@ -145,19 +164,28 @@ console.log("L1 运行期 JSONL → 归档 → 报告指路 → 可复盘（验�
     report.includes(`- 执行日志：\`.dsh/ralph-flow/reports/${id}-execution.log\``));
   check("验收2：报告里这样的行**恰好一行**", (report.match(/^- 执行日志：/gm) ?? []).length === 1);
 
-  const promptEv = eventOf(arch, "verifier_prompt");
-  check("验收3①：日志里有发给验证者的提示词原文，且与真正发出去的一致",
-    !!promptEv && typeof promptEv.prompt === "string" && promptEv.prompt === sentPrompt && promptEv.prompt.includes("## 检查依据"),
-    JSON.stringify(promptEv ?? null).slice(0, 200));
-  const verdictEv = eventOf(arch, "verdict");
+  const VOTERS = loopVotersOf(engine);
+  const promptEvs = eventsOfAll(arch, "verifier_prompt");
+  check("验收3①：每个验证者的提示词原文都入日志，且与真正发出去的一一对应",
+    promptEvs.length === VOTERS && promptEvs.every((e) => typeof e.prompt === "string" && e.prompt.includes("## 你的检查依据（专属视角）"))
+    && promptEvs.every((e) => sentPrompts.includes(e.prompt)),
+    JSON.stringify({ logged: promptEvs.length, sent: sentPrompts.length }));
+  check("验收3①：每票的检查依据不同（逐票专属提示词，不是同一份发 N 次）",
+    new Set(promptEvs.map((e) => e.prompt)).size === VOTERS, JSON.stringify(promptEvs.map((e) => e.checkIndex)));
+  const verdictEv = eventOf(arch, "voter_verdict");
   check("验收3②：判定原文全文入日志（长 reason 不截断）", !!verdictEv && verdictEv.reason === REASON,
     `log=${String(verdictEv?.reason).length} expect=${REASON.length}`);
+  check("验收3②：每票一条判定事件（投票步没有聚合后的单条 verdict）",
+    eventsOfAll(arch, "voter_verdict").length === VOTERS && !hasEvent(arch, "verdict"),
+    JSON.stringify({ votes: eventsOfAll(arch, "voter_verdict").length, aggregated: hasEvent(arch, "verdict") }));
   check("验收3②：日志里的判定字符串与报告里的判定字符串一致",
     !!verdictEv && report.includes(verdictEv.reason) && report.includes(`[${verdictEv.status}] ${verdictEv.step}`));
-  check("验收3③：判定事件带耗时（ms）", typeof verdictEv?.ms === "number" && verdictEv.ms >= 0);
-  check("验收3④：验证者原始输出（解析前）也留证", hasEvent(arch, "verifier_result"));
+  check("验收3③：判定事件带耗时（ms）",
+    eventsOfAll(arch, "voter_verdict").every((e) => typeof e.ms === "number" && e.ms >= 0));
+  check("验收3④：验证者原始输出（解析前）也留证（每票一条）",
+    eventsOfAll(arch, "verifier_result").length === VOTERS, String(eventsOfAll(arch, "verifier_result").length));
 
-  for (const ev of ["start", "step_start", "do_submitted", "verify_start", "verdict", "advance", "complete", "destroy"]) {
+  for (const ev of ["start", "step_start", "do_submitted", "verify_start", "voter_verdict", "advance", "complete", "destroy"]) {
     check(`生命周期事件 ${ev} 已入日志`, hasEvent(arch, ev), JSON.stringify(eventsOf(arch)));
   }
   check("日志不改变推进：实例已销毁 + 报告状态「完成」+ 判定 passed",
@@ -190,7 +218,7 @@ console.log("L1 运行期 JSONL → 归档 → 报告指路 → 可复盘（验�
     console.log("  ⚠️  未设 RF_BASELINE_LIB，跳过「报告逐字节相同」的跨库比对（md5 留档见 regression-probe.mjs）");
   }
   check("日志写入不污染诊断端口（事件名与载荷形状不变）",
-    logs.some((l) => l.ev === "instance_start") && logs.some((l) => l.ev === "verify_start") && logs.some((l) => l.ev === "verdict"),
+    logs.some((l) => l.ev === "instance_start") && logs.some((l) => l.ev === "verify_start") && logs.some((l) => l.ev === "voter_verdict"),
     JSON.stringify(logs.map((l) => l.ev)));
   forget(ws);
 }
@@ -400,7 +428,8 @@ if (typeof process.getuid === "function" && process.getuid() === 0) {
   check("验收5：日志不可写时不抛异常", threw === null, String(threw));
   check("验收5：工作流照常跑完并推进（实例销毁 + 报告归档「完成」）",
     engine.readState(id) === null && report.includes("- 状态：**完成**"), report.slice(0, 200));
-  check("验收5：推进判定未被改变（判定仍是 passed）", report.includes("[passed] loop:"));
+  check("验收5：推进判定未被改变（判定仍是 passed，且 N 票都在报告里）",
+    (report.match(/\[passed\] loop:/g) ?? []).length === loopVotersOf(engine));
   check("验收5：只多一条 warning（execution_log_write_failed）",
     logs.some((l) => l.lvl === "warn" && l.ev === "execution_log_write_failed"), JSON.stringify(logs.map((l) => `${l.lvl}:${l.ev}`)));
   check("验收5：除日志写失败外没有任何新增告警",

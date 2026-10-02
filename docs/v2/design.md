@@ -174,6 +174,7 @@
 - 所有者：用户手写（进 git）；`ralphflow_create` 交互式创建器推迟（v0 只声明）。
 - **内置工作流不落盘**（对齐 opencode/claude 的 `ensureProjectWorkflows`）：`loadWorkflow` 回落插件目录，内置因此**始终是随插件发布的最新版**。播种副本会遮蔽插件目录、并在插件升级后变成陈旧副本——**实测踩过**：工作区里那份 7 步 `spec` 副本把新版 4 步内置整个挡住了，改内置却"没生效"。定制入口是"放同名文件遮蔽内置"（有意行为）。
 - **内置 `spec` = 4 步**（`explore → propose → implement → archive`），与 opencode 现行版同源；7 步是 opencode 在 2.6.0 废弃的旧版（我们此前从 claude 版抄来）。**唯一差异**：opencode 给 `propose`/`implement` 标了 `reset: true`（重置门），而本版本未支持重置门，故以**注释**保留、reset 落地后启用。依据与完整分析见 `spec-4step-brief.md`。
+- **内置 `loop` = 4 票 `check_voting`**：前三条**逐字照抄** opencode 版 `loop.yaml`（用户任务的每一条要求都已落实 / 实现的行为符合预期，真实可用 / 没有遗漏的需求，边界情况已覆盖），第 4 条是本仓库自己的口径「**既有行为没有被破坏**：仓库自带测试仍全绿，且任务里声明「不得改变」的行为逐字未变（有基线就拿基线比对，不要只看测试通过）」。与 opencode 版的**差异只写在注释里**（不抄进来）：它的 `reset: true`（本版本未支持重置门）与 `adversarial_check.timeout_ms`（本端已从公开契约删除）——两项都是加载期告警忽略的键，抄进来只会得到告警。形状由 `scripts/engine-test.mjs` §1 断言钉住（票数 / 三条逐字文案 / 第 4 票 / 不含 `reset`·`timeout_ms` 键 / 零告警），不只断言告警。
 - 坏文件 fail-fast 说人话（§8 方言容错）。
 
 ## 10. 宪法（违反即回退）

@@ -9,7 +9,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createEngine, makeArtifactsDirName } from "../lib/engine.js";
+import { createEngine, makeArtifactsDirName, voterCountOf } from "../lib/engine.js";
 
 // HOME 隔离：索引与全局工作流目录都在这里；必须在 createEngine 之前设置。
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
@@ -34,15 +34,22 @@ const artifactsDirOfName = (ws, name) => path.join(ws, ".dsh", "ralph-flow", "ar
 const stateFileOf = (ws, id) => path.join(ws, ".dsh", "ralph-flow", "instances", id, "state.json");
 
 function mkEngine(ws, scripted = [], logs = [], deliveries = []) {
-  return createEngine(ws, {
+  const queue = [];
+  const engine = createEngine(ws, {
     deliver: (_sid, text) => { deliveries.push(text); return true; },
     verify: async (req) => {
-      const v = scripted.shift();
+      const v = queue.shift();
       if (!v) throw new Error("no scripted verdict");
       return { check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), ...v };
     },
     log: (lvl, ev, d) => logs.push({ lvl, ev, d }),
   });
+  // 内置 `loop` 现在是**多验证者投票**步（每票一条检查依据，全过才放行）：一轮交卷要投满
+  // N 张判定才聚合。本文件关心的是生命周期而不是投票，所以 `scripted` 的**一条** = **一轮**
+  // （展开成 N 张同样的判定；票数现算，不硬编码 —— 工作流改票数这里跟着走）。
+  const voters = voterCountOf(engine.loadWorkflow("loop").def.steps[0]);
+  for (const v of scripted) for (let i = 0; i < voters; i++) queue.push({ ...v });
+  return engine;
 }
 /** start 并返回活跃实例 id（listInstances 只含活跃实例） */
 function start(engine, wf, task, sid) {
@@ -296,10 +303,10 @@ console.log("\nL9 迟到判定：销毁后到达的验证回调不得复活实�
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-lc9-"));
   const logs = [];
-  let resolveVerify;
+  const inFlight = [];
   const engine = createEngine(ws, {
     deliver: () => true,
-    verify: () => new Promise((r) => { resolveVerify = r; }),
+    verify: (req) => new Promise((r) => inFlight.push({ resolve: r, index: req.checkIndex })),
     log: (lvl, ev, d) => logs.push({ lvl, ev, d }),
   });
   engine.ensureLayout();
@@ -311,7 +318,7 @@ console.log("\nL9 迟到判定：销毁后到达的验证回调不得复活实�
   check("取消后实例目录已销毁", !fs.existsSync(engine.instanceDir(id)));
 
   // 模拟真实 dsh driver 的 aborted 路径：被中止的委派仍会「正常 resolve」一笔判定。
-  resolveVerify({ check_index: 0, step_id: "loop", ts: new Date().toISOString(), status: "passed", reason: "迟到的通过" });
+  for (const p of inFlight) p.resolve({ check_index: p.index, step_id: "loop", ts: new Date().toISOString(), status: "passed", reason: "迟到的通过" });
   await sleep(120);
 
   check("迟到判定被丢弃（记 instance_state_missing）",

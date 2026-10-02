@@ -96,3 +96,14 @@ export function revertMechanismWording(src) {
   if (!src.includes(honest)) throw new Error("负对照锚点（机制说明文案）不见了 —— 修复被改写，请同步更新负对照");
   return src.replace(honest, "通常需要 1–5 分钟，期间不需要你做任何操作，跑完会自动唤醒本会话。");
 }
+
+/**
+ * 【问题二的还原·第三处】多验证者投票的验证中播报：同一句诚实措辞的**复数形态**
+ * （`它们…它们在做什么`）。内置 `loop` 改成投票步之后，可见文本里出现的是这一句，
+ * 只还原单 check 那一处会让负对照失去鉴别力（见 no-time-promise-test T4）。
+ */
+export function revertHonestVotingNotice(src) {
+  const honest = "它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。";
+  if (!src.includes(honest)) throw new Error("负对照锚点（投票播报的诚实措辞）不见了 —— 修复被改写，请同步更新负对照");
+  return src.replace(honest, "通常需要 1–5 分钟（它们要真的去读文件、跑命令取证）。");
+}

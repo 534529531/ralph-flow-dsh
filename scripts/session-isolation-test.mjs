@@ -77,8 +77,10 @@ async function runIsolationCase(entryUrl, via) {
   const sidA = `iso-a-${RUN}-${via}`;
   const sidB = `iso-b-${RUN}-${via}`;
 
-  let resolveVerify;
-  const hangingStart = () => ({ id: "child-A", result: new Promise((r) => { resolveVerify = r; }) });
+  // 内置 loop 是多验证者投票步：一次交卷会并发 N 笔委派（每票一个验证者会话），
+  // 所以这里收集**全部**悬挂的 resolver —— 只 resolve 一个票是凑不齐一轮的。
+  const resolveAll = [];
+  const hangingStart = () => ({ id: "child-A", result: new Promise((r) => resolveAll.push(r)) });
 
   // ── 会话 A：起工作流 → 交卷 → 验证在飞（subagents.start 永远不 resolve）──
   const A = mkEnv(ws, sidA, { start: hangingStart });
@@ -111,6 +113,8 @@ async function runIsolationCase(entryUrl, via) {
   const afterState = readTextFile(statePathOf(ws, instId));
   const st = JSON.parse(afterState);
   const obs = {
+    // 在飞委派数在「别处动手」之前就记下来：判据是「一笔都没被改」，不是硬编码的 1 笔
+    delegationsBefore: (JSON.parse(beforeState).delegations ?? []).length,
     via,
     instId,
     listOutput: bListOutput,
@@ -127,7 +131,7 @@ async function runIsolationCase(entryUrl, via) {
     ws,
   };
 
-  resolveVerify({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" });
+  for (const r of resolveAll) r({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" });
   await sleep(250);
   obs.verifyLanded = !fs.existsSync(instanceDirOf(ws, instId)) && fs.existsSync(reportPathOf(ws, instId));
   return obs;
@@ -135,15 +139,17 @@ async function runIsolationCase(entryUrl, via) {
 
 /** 唯一的一份判据：A 完全不受影响 ∧ 在飞验证照样落地 */
 const isolationHolds = (o) =>
-  o.stateTouched === false && o.paused === false && o.delegations === 1 && o.recovered === false
+  o.stateTouched === false && o.paused === false
+  && o.delegations === o.delegationsBefore && o.delegationsBefore >= 1 && o.recovered === false
   && o.pauseNotices === 0 && o.verifyLanded === true;
 
 /** 两种「别处」跑同一组断言（措辞只有这一处） */
 function assertIsolation(label, obs) {
   check(`${label}：A 的 state.json 一个字节都没被改（没暂停、委派还在、updated_at 没动）`,
     obs.stateTouched === false, `touched=${obs.stateTouched} paused=${obs.paused} reason=${obs.pauseReason}`);
-  check(`${label}：A 的在飞委派仍是 1 笔，轨迹里没有 orphan_delegation_recovered`,
-    obs.delegations === 1 && obs.recovered === false, JSON.stringify({ d: obs.delegations, recovered: obs.recovered }));
+  check(`${label}：A 的在飞委派一笔不少（仍是 ${obs.delegationsBefore} 笔），轨迹里没有 orphan_delegation_recovered`,
+    obs.delegations === obs.delegationsBefore && obs.delegationsBefore >= 1 && obs.recovered === false,
+    JSON.stringify({ d: obs.delegations, before: obs.delegationsBefore, recovered: obs.recovered }));
   check(`${label}：A 没有收到任何暂停/孤儿播报`, obs.pauseNotices === 0, `n=${obs.pauseNotices}`);
   check(`${label}：别处确实看到了 A 的实例且在验证中（证明它真的碰了 ralphflow）`,
     obs.bSawInstance === true, obs.listOutput.slice(0, 200));
@@ -198,7 +204,8 @@ console.log("\nI3 同一次 restore() 里两件事同时成立：心跳停的老
   const liveBefore = readTextFile(statePathOf(ws, liveId));
 
   const orphan = readStateFile(ws, orphanId);
-  orphan.delegations[0].heartbeat_at = Date.now() - DELEGATION_HEARTBEAT_TTL_MS - 5_000; // 心跳停了
+  // 投票步 = N 笔委派：**每一笔**的心跳都要停，否则「还有一笔活着」会让整个实例被判活
+  for (const d of orphan.delegations) d.heartbeat_at = Date.now() - DELEGATION_HEARTBEAT_TTL_MS - 5_000;
   fs.writeFileSync(statePathOf(ws, orphanId), JSON.stringify(orphan, null, 2));
 
   // 第三个会话（**另一个进程**）碰 ralphflow → 触发一次 restore()，两个实例在同一趟里被判断
@@ -245,8 +252,8 @@ console.log("\nI4 判据边界：心跳新鲜/过期/缺字段，以及「在飞
   // 心跳必须**真的在走**：否则上面所有判活都是空谈
   const ws = mkTmp("iso-heartbeat");
   process.env.RALPHFLOW_WORKSPACE = ws;
-  let resolveVerify;
-  const A = mkEnv(ws, `hb-${RUN}`, { start: () => ({ id: "child", result: new Promise((r) => { resolveVerify = r; }) }) });
+  const resolveAll = [];
+  const A = mkEnv(ws, `hb-${RUN}`, { start: () => ({ id: "child", result: new Promise((r) => resolveAll.push(r)) }) });
   const plugin = await import(PLUGIN_ENTRY);
   plugin.apply(A.ctx);
   await execTool(toolOf(A.registered, "ralphflow_start"), { workflow: "loop", task: "心跳用例" }, A.sid);
@@ -260,7 +267,7 @@ console.log("\nI4 判据边界：心跳新鲜/过期/缺字段，以及「在飞
   const later = readStateFile(ws, instId).delegations[0];
   check("等了 6.5s 后心跳**确实往前走了**（属主在持续续期，TTL 判活才有意义）",
     later.heartbeat_at > first.heartbeat_at, JSON.stringify({ first: first.heartbeat_at, later: later.heartbeat_at }));
-  void resolveVerify;
+  void resolveAll;
   cleanupTmp(ws);
 }
 
