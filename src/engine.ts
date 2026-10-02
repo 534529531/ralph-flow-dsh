@@ -279,16 +279,46 @@ export const SUBWORKFLOW_ID_SEP = "/";
  *
  * ralphflow 面向长程工作流：2000 是「够长程」与「一次误配不会把引擎拖死」之间的取舍。
  * 计数贯穿整条调用链（子工作流被多个调用点引用时**每个调用点各算一次**，因为它会被
- * 就地展开成多份步骤）。opencode 用「运行时嵌套深度 5」兜住失控递归；静态展开没有运行时
- * 栈，等价兜底就是这条静态上限 + 加载期成环硬错误。
+ * 就地展开成多份步骤）。
+ *
+ * 它**只管步数、不管深度**：一条每层只有调用点（自身零步骤）的链，步数可以是 1 而层数上千
+ * —— 那种情况由 {@link MAX_SUBWORKFLOW_DEPTH} 拦（展开器是递归的，步数上限兜不住调用深度）。
  */
 export const MAX_EXPANDED_STEPS = 2000;
+
+/**
+ * 子工作流**嵌套深度**上限（调用链层数，含最外层工作流；**加载期硬错误**）。
+ *
+ * 为什么必须有它：展开器是**递归**的（每层 `loadWorkflow` 一帧），而 {@link MAX_EXPANDED_STEPS}
+ * 只数步骤 —— 实测「1900 个互相串联的工作流文件、每个自身零步骤」时步数只有 1，步数上限
+ * 完全不触发，递归却深到把宿主 JS 调用栈打爆（`RangeError: Maximum call stack size exceeded`
+ * 冒泡出 `loadWorkflow`，调用方拿到的是崩溃而不是硬错误）。本上限在**展开任何一层之前**就
+ * 拒绝过深的链，保证加载器只会返回「说人话的硬错误」。
+ *
+ * 取值 32：opencode 的运行时深度上限是 5 层，这里比它宽松得多；而真实复用链（2–3 层）
+ * 离 32 极远，所以既不会误伤正常组合，又远低于任何宿主栈上限。
+ */
+export const MAX_SUBWORKFLOW_DEPTH = 32;
 
 /** 上限报错的统一标签（跨层识别用：子层报过就不再重复报） */
 const CAP_TAG = "展开后步骤总数超过上限";
 
 /** 成环报错的统一标签（跨层识别用：直接透传检测到的那一条，不再套「无法加载」） */
 const CYCLE_TAG = "子工作流成环";
+
+/** 嵌套过深报错的统一标签（同上） */
+const DEPTH_TAG = "子工作流嵌套过深";
+
+/**
+ * 把调用链渲染成人话（过长时首尾保留、中间折叠）：报错里给出**可辨认**的路径，
+ * 而不是把 33 个名字一股脑铺开。
+ */
+function formatCallChain(chain: string[], max = 6): string {
+  if (chain.length <= max) return chain.join(" → ");
+  const head = chain.slice(0, 3);
+  const tail = chain.slice(-2);
+  return `${head.join(" → ")} → …（省略 ${chain.length - head.length - tail.length} 层）→ ${tail.join(" → ")}`;
+}
 
 /**
  * 子工作流**加载期静态展开**的递归上下文（相对 opencode 的运行时状态栈方案，本实现把
@@ -1156,8 +1186,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 全按普通步骤走 —— **零新增 InstanceState 字段**（opencode 用运行期状态栈，本实现刻意不用）。
    *
    * 加载期硬错误（说得清楚、指得明白，绝不静默、绝不拖到运行期）：子工作流文件加载不出来、
-   * 子工作流成环、id 含 {@link SUBWORKFLOW_ID_SEP} 撞展开、展开后步骤总数超
-   * {@link MAX_EXPANDED_STEPS}、展开后 id 撞名、调用点 workflow 名非法。
+   * 子工作流成环、**嵌套深度超 {@link MAX_SUBWORKFLOW_DEPTH}**（递归展开器的栈保护：过深的链
+   * 一律在这里拿到硬错误，绝不冒泡 RangeError）、id 含 {@link SUBWORKFLOW_ID_SEP} 撞展开、
+   * 展开后步骤总数超 {@link MAX_EXPANDED_STEPS}、展开后 id 撞名、调用点 workflow 名非法。
    *
    * `ctx` 只在**作为子工作流被展开**时传入（携带调用链、继承的验证模型、共享的展开计数器）；
    * 用户/工具直接加载某个工作流时不传，行为与改造前逐字一致（无调用点的工作流零差异）。
@@ -1169,6 +1200,18 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const counter = ctx?.counter ?? { count: 0 };
     /** 从最外层到**当前**工作流的名字链：成环检测 + 报错里说清调用路径 */
     const chain = [...(ctx?.chain ?? []), name];
+    // 嵌套过深：**展开任何一层之前**就拒绝。展开器是递归的，没有这道闸，一条每层零步骤的
+    // 长链（步数上限看不见）会把宿主 JS 调用栈打爆，抛 RangeError 给调用方 —— 那是崩溃，
+    // 不是加载期硬错误（见 MAX_SUBWORKFLOW_DEPTH 的实测记录）。
+    if (chain.length > MAX_SUBWORKFLOW_DEPTH) {
+      problems.push(
+        `${DEPTH_TAG}（加载期硬错误）：调用链已到第 ${chain.length} 层，超过上限 ${MAX_SUBWORKFLOW_DEPTH} 层。`
+        + `调用链：${formatCallChain(chain)}。`
+        + `请把链拆浅 —— 复用同一个子工作流（而不是逐层生成/复制工作流文件），或把深层流程直接内联到父工作流里。`
+        + `展开器是递归的：宿主 JS 调用栈装不下无界递归，所以在**展开任何一层之前**就拒绝，绝不把 RangeError 抛给调用方。`,
+      );
+      return { def: null, problems, warnings };
+    }
     const capProblem = (): string =>
       `${CAP_TAG} ${MAX_EXPANDED_STEPS}（加载期硬错误，展开已立刻中止）：工作流 \`${name}\` 展开到第 ${counter.count} 步时超限。`
       + `子工作流按调用点**就地展开**（同一个子工作流被多个调用点引用会重复展开），请缩减调用点数量或子工作流规模。`;
@@ -1418,9 +1461,11 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       }
       const sub = loadWorkflow(subName, { chain, inheritedModel: effectiveModel, counter });
       if (sub.problems.some((p) => p.includes(CAP_TAG))) { capHit = true; break; }
-      // 成环的路径由检测到的那一层给出（已含完整调用链）——直接透传，不再套一层「无法加载」
-      if (sub.problems.some((p) => p.includes(CYCLE_TAG))) {
-        problems.push(...sub.problems.filter((p) => p.includes(CYCLE_TAG)));
+      // 成环 / 嵌套过深的路径由检测到的那一层给出（已含完整调用链）——直接透传，
+      // 不再套一层「无法加载」（否则每往上一层都套一遍，最终变成一坨嵌套报错）
+      const fatal = sub.problems.filter((p) => p.includes(CYCLE_TAG) || p.includes(DEPTH_TAG));
+      if (fatal.length > 0) {
+        problems.push(...fatal);
         break;
       }
       if (!sub.def) {

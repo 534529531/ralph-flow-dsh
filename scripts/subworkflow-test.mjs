@@ -14,7 +14,11 @@
  *      子步骤耗尽 max_fail_count → 暂停等人（不自动走父级 on_fail）、调用点除 id/desc/workflow/on_pass
  *      外逐键告警 + 指路（manual_step 标调用点 = 整段跑完停门）；
  *   5) 回归：内置 loop/spec 零告警、平铺工作流行为不变；零新增 InstanceState 字段（落盘键集合）。
- *   6) 负对照：`buildPluginCopy` 按锚点把「调用点识别」还原成「没有子工作流」→ **同一批判据必须为假**；
+ *   6) **极深调用链**（本次缺陷）：1900 个互相串联、每层零步骤的工作流文件 → 步数上限看不见它，
+ *      递归展开器必须给出**说人话的加载期硬错误**（嵌套过深 + 调用链 + 改法），绝不冒泡
+ *      `RangeError: Maximum call stack size exceeded`；边界（恰好上限可加载 / 超一层即拒）逐条钉住。
+ *   7) 负对照：`buildPluginCopy` 按锚点把「调用点识别」还原成「没有子工作流」、把「嵌套深度闸」
+ *      摘掉 → **同一批判据必须为假**（摘掉深度闸后 1900 链重新变成 RangeError 崩溃）；
  *      也支持 `RF_LIB=<基线 lib 目录>` 跑同一支测试（正判据应当失败）。
  *
  * 纪律：一律 `mkdtempSync` 造工作区 + 隔离 `process.env.HOME`；绝不读写真实 ~/.dsh 或真实工作区。
@@ -33,7 +37,7 @@ fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** 被测库：缺省本仓库 lib/；负对照时指向「还原实现」的基线 lib（RF_LIB） */
 const LIB = process.env.RF_LIB ? path.resolve(process.env.RF_LIB) : path.join(HERE, "..", "lib");
-const { createEngine, MAX_EXPANDED_STEPS, SUBWORKFLOW_ID_SEP } = await import(pathToFileURL(path.join(LIB, "engine.js")).href);
+const { createEngine, MAX_EXPANDED_STEPS, MAX_SUBWORKFLOW_DEPTH, SUBWORKFLOW_ID_SEP } = await import(pathToFileURL(path.join(LIB, "engine.js")).href);
 
 let pass = 0, fail = 0;
 function check(name, cond, extra = "") {
@@ -574,6 +578,95 @@ console.log("\n7) 负对照（还原实现 → 判据必须为假；锚点找不
       child.status !== 0 && childOut.includes("✗") && /(\d+) failed/.test(childOut),
       `status=${child.status} tail=${childOut.slice(-400)}`);
     rev.cleanup();
+  }
+}
+
+// ═══ 8) 极深调用链：递归展开器的栈保护（说人话的硬错误，绝不 RangeError 崩溃）════════
+// 缺陷原文：1900 个互相串联、**每层零步骤**的工作流文件 → 展开后步数只有 1，2000 步上限完全
+// 看不见它，递归展开器却深到把宿主 JS 调用栈打爆（RangeError 冒泡出 loadWorkflow = 崩溃）。
+console.log("\n8) 极深调用链 → 加载期硬错误（不爆栈崩溃）");
+{
+  /** 造一条 n 个文件互相串联的链：w0 → w1 → … → w(n-1)（最后一层带 1 个普通步骤） */
+  const chainWriter = (engine, n) => {
+    for (let i = 0; i < n; i++) {
+      const lines = i + 1 < n
+        ? ["steps:", "  - id: n", `    workflow: w${i + 1}`]
+        : ["steps:", "  - id: leaf", "    do: 做", "    check: 查"];
+      fs.writeFileSync(path.join(engine.workflowsDir, `w${i}.yaml`), lines.join("\n"));
+    }
+  };
+  /** 判据（负对照复用同一条）：过深链必须拿到硬错误，且**不抛异常**、错误里不是栈溢出原文 */
+  const deepCriteria = (engine, n) => {
+    chainWriter(engine, n);
+    try {
+      const r = engine.loadWorkflow("w0");
+      return {
+        threw: false,
+        hardError: !r.def,
+        depthMessage: r.problems.some((p) => p.includes("嵌套过深") && p.includes(`上限 ${MAX_SUBWORKFLOW_DEPTH}`)),
+        noStackOverflowText: r.problems.every((p) => !/Maximum call stack/i.test(p)),
+      };
+    } catch (e) {
+      return { threw: true, crash: e?.constructor?.name ?? String(e), crashText: String(e?.message ?? e).slice(0, 60), hardError: false, depthMessage: false, noStackOverflowText: false };
+    }
+  };
+
+  const D = mkEngine("deep1900");
+  const t0 = Date.now();
+  const repro = deepCriteria(D.engine, 1900);
+  const ms = Date.now() - t0;
+  check("复现用例（1900 链）→ 不抛异常、返回加载期硬错误（本次缺陷的验收）",
+    !repro.threw && repro.hardError, JSON.stringify(repro));
+  check("硬错误说人话：写明「嵌套过深」+ 深度上限，而不是栈溢出原文",
+    repro.depthMessage && repro.noStackOverflowText, JSON.stringify(repro));
+  const deepProblem = D.engine.loadWorkflow("w0").problems.join("\n");
+  check("报错带调用链（过长时首尾保留、中间折叠）+ 改法指引",
+    deepProblem.includes("调用链：w0 → w1 → w2 → …") && deepProblem.includes("请把链拆浅")
+    && deepProblem.includes(`第 ${MAX_SUBWORKFLOW_DEPTH + 1} 层`), deepProblem.slice(0, 260));
+  check("过深链在 list/doctor 里是显式 ❌（不静默、不崩溃）",
+    D.engine.listWorkflows().find((w) => w.name === "w0")?.invalid === true
+    && D.engine.diagnose().text.includes("❌"));
+  check("拒绝发生在展开之前（1900 个文件在场也只读前若干层，毫秒级返回）",
+    ms < 2000, `${ms}ms`);
+
+  // 边界：恰好等于上限的链照常可用（上限不误伤正常组合）
+  const okEngine = mkEngine("deep-ok");
+  chainWriter(okEngine.engine, MAX_SUBWORKFLOW_DEPTH);
+  const okRes = okEngine.engine.loadWorkflow("w0");
+  check(`边界：恰好 ${MAX_SUBWORKFLOW_DEPTH} 层的链照常加载（展开成 1 步、id 逐层叠加）`,
+    !!okRes.def && okRes.def.steps.length === 1
+    && okRes.def.steps[0].id.split(SUBWORKFLOW_ID_SEP).length === MAX_SUBWORKFLOW_DEPTH,
+    JSON.stringify({ def: !!okRes.def, steps: okRes.def?.steps.length, id: okRes.def?.steps[0]?.id, problems: okRes.problems }));
+  const overEngine = mkEngine("deep-over");
+  chainWriter(overEngine.engine, MAX_SUBWORKFLOW_DEPTH + 1);
+  const overRes = overEngine.engine.loadWorkflow("w0");
+  check(`边界：${MAX_SUBWORKFLOW_DEPTH + 1} 层的链立刻硬错误（第 ${MAX_SUBWORKFLOW_DEPTH + 1} 层被拦）`,
+    !overRes.def && overRes.problems.some((p) => p.includes(`第 ${MAX_SUBWORKFLOW_DEPTH + 1} 层`)),
+    JSON.stringify(overRes.problems).slice(0, 200));
+
+  // 负对照：按锚点摘掉深度闸 → 同一判据必须为假（回到修复前的 RangeError 崩溃）
+  if (!process.env.RF_SUBWF_CHILD) {
+    const revDepth = buildPluginCopy({
+      "engine.ts": (src) => {
+        const anchor = "if (chain.length > MAX_SUBWORKFLOW_DEPTH) {";
+        if (!src.includes(anchor)) throw new Error("负对照锚点（嵌套深度闸）不见了 —— 实现被改写，请同步更新本负对照");
+        return src.replace(anchor, "if (false) { // 负对照：还原为「不设嵌套深度上限」");
+      },
+    }, "subworkflow-depth-off");
+    const revDepthLib = await import(pathToFileURL(path.join(revDepth.dir, "lib", "engine.js")).href);
+    const revDepthEngine = revDepthLib.createEngine(revDepth.dir + "-ws", {
+      deliver: () => true,
+      verify: async () => { throw new Error("负对照不该走到验证"); },
+      log: () => {},
+    });
+    revDepthEngine.ensureLayout();
+    // 用更深的链跑负对照：确保在任何机器上都真的把栈打爆（而不是撞上各机器不同的栈上限）
+    const reverted = deepCriteria(revDepthEngine, 4000);
+    check("负对照：摘掉深度闸的构建里同一判据为假（RangeError 冒泡 = 修复前的崩溃）",
+      reverted.threw === true && reverted.crash === "RangeError", JSON.stringify(reverted));
+    check("负对照：崩溃原文就是 Maximum call stack size exceeded（缺陷真实存在）",
+      reverted.threw === true && /Maximum call stack size exceeded/.test(reverted.crashText ?? ""), JSON.stringify(reverted));
+    revDepth.cleanup();
   }
 }
 
