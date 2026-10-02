@@ -685,16 +685,26 @@ const S = () => `session-${++n}`;
   // 文本侧：不得再出现与实测相反的陈述
   check("指引不再声称 doctor 报告「可启动」", !CREATE_GUIDE.includes("报告「可启动」") && !CREATE_GUIDE.includes("直到「可启动」"));
   check("指引明确 input 只进 CHECK 提示词", CREATE_GUIDE.includes("只进 CHECK 提示词"));
-  check("指引明确子工作流形状是硬错误（不再说「不报错」）", CREATE_GUIDE.includes("硬错误、工作流无法启动") && !CREATE_GUIDE.includes("见到会警告并忽略，不报错"));
+  check("指引教了子工作流调用点的写法（workflow: 代替 do:）", CREATE_GUIDE.includes("代替 `do:`") && CREATE_GUIDE.includes("workflow: analyze"));
+  check("指引写明子工作流的加载期硬错误清单与 2000 步上限", CREATE_GUIDE.includes("子工作流的加载期硬错误") && CREATE_GUIDE.includes("2000"));
+  check("指引不再声称本版本没有子工作流 / 不再说它是无法启动的形状",
+    !CREATE_GUIDE.includes("本版本没有子工作流") && !CREATE_GUIDE.includes("硬错误、工作流无法启动"));
   check("指引把 on_pass/on_fail/max_fail_count 标为可选", !CREATE_GUIDE.includes("必填：下个步骤") && CREATE_GUIDE.includes("可选，缺省"));
 
   const guideFile = (name, lines) => {
     fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
     return engine.loadWorkflow(name);
   };
-  // 行为侧 1：子工作流形状（无 do）确实无法启动
+  // 行为侧 1：子工作流调用点 —— 子文件加载不出来 = 加载期硬错误；子文件在 → 静态展开可加载
+  //（此处原为「子工作流形状（无 do）硬错误、无法启动」；语义按任务书升级，断言随之改写：
+  //  负对照从「形状不支持」换成「引用不存在／成环／上限」这些真正该硬错误的情形）
   const sub = guideFile("guide-sub", ["steps:", "  - id: delegate", "    workflow: child", "    on_pass: done", "    on_fail: delegate", "    max_fail_count: 3"]);
-  check("子工作流形状（无 do）硬错误、无法启动", !sub.def && sub.problems.some((p) => p.includes("do")), JSON.stringify(sub.problems));
+  check("调用点引用不存在的子文件 → 加载期硬错误（报错含调用链，不再拖到运行期）",
+    !sub.def && sub.problems.some((p) => p.includes("child") && p.includes("无法加载")), JSON.stringify(sub.problems));
+  guideFile("guide-child", ["steps:", "  - id: inner", "    do: X", "    check: Y", "    on_pass: done"]);
+  const subOk = guideFile("guide-sub2", ["steps:", "  - id: delegate", "    workflow: guide-child"]);
+  check("子文件在 → 静态展开可加载、id 前缀化（指引所述「加载期静态展开」成立）",
+    !!subOk.def && subOk.def.steps.length === 1 && subOk.def.steps[0].id === "delegate/inner", JSON.stringify(subOk.problems));
   // 行为侧 2：只写 id/do/check 即可加载 → 三者确为可选
   const min = guideFile("guide-min", ["steps:", "  - id: a", "    do: X", "    check: c"]);
   check("只写 id/do/check 可加载（on_pass/on_fail/max_fail_count 确为可选）", !!min.def, JSON.stringify(min.problems));

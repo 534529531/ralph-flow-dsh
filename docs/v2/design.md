@@ -74,7 +74,7 @@
 
 - **不存相位**（ADR-0004）：相位是派生量，存了就有两个写入者。v1 的 34 处文件标记位即此教训。
 - 每次运行一个 JSON，原子写（临时文件 + rename）。
-- 完成/取消后：归档报告到 `<workspace>/.dsh/ralph-flow/reports/<instId>.md`，然后**销毁实例目录**（`state.json` 随之消失）。`instances/` 因此只装活跃实例，历史从 `reports/` 读出（`listHistory()`）。`artifacts_dir_name` 是 state 里唯一"非派生"的额外字段：产出目录名在启动时固定，之后无法重算（子工作流会改写 `user_task`）。
+- 完成/取消后：归档报告到 `<workspace>/.dsh/ralph-flow/reports/<instId>.md`，然后**销毁实例目录**（`state.json` 随之消失）。`instances/` 因此只装活跃实例，历史从 `reports/` 读出（`listHistory()`）。`artifacts_dir_name` 是 state 里唯一"非派生"的额外字段：产出目录名在启动时固定，之后无法重算（原设想的理由是子工作流会改写 `user_task`；**本实现的子工作流是加载期静态展开、不改写 `user_task`**，但名字仍在启动时固定落盘：重算依赖实例 id 尾段与当时的原始任务，事后不保证重算出同一个目录名）。
 
 **推进规则（T2 的落点，引擎唯一决策）：**
 
@@ -202,6 +202,7 @@
 | v0.3 | `create` 交互式、`doctor` 薄版（fail-fast 的人话出口） | 手写 YAML 开始成为摩擦 |
 | v0.4 | UI（页头/抽屉，复用 v1 配方） | loop+spec 在 ≥20 个真实任务上跑过；命令卡渲染作为本次实测问题的补药 |
 | v0.5+ | 验证者沙箱化、reset/rewind、通知 | 各自的最小版失败证据 |
+| v0.6 | **子工作流（`workflow:` 代替 `do:`）已实现** —— **加载期静态展开**：调用点就地内联成子步骤（id 加 `调用点id/` 前缀），子工作流出口接到调用点的 `on_pass`。**零新增 InstanceState 字段**（不用 opencode 的运行时状态栈：`current_step` 仍是单字符串、失败预算仍按步记账）。与 opencode 的四处刻意差异：① 它静默忽略或拖到运行期才炸的（成环 / 子文件加载不出来 / id 含 `/` 撞展开）一律**加载期硬错误**；② 展开后步骤总数上限 **2000**（展开中计数、超了立刻中止）；③ 子步骤耗尽 `max_fail_count` → **暂停等人**（不做「自动走父级 `on_fail`」）；④ 调用点只认 `id`/`desc`/`workflow`/`on_pass`，其余键**逐键告警 + 指路**，`manual_step` 标调用点 = **整段子工作流跑完后停门**（opencode 禁止这种写法）。子文件里的 `adversarial_check.model` 下沉到它各步的 `check_model`（逐层继承）；不传参（`inputs` 告警忽略）。验收 `scripts/subworkflow-test.mjs`（含负对照） | 作者**直接指示**（同 v0.2：未按原准入收集最小版失败证据，如实记录）。与 `subworkflow-nesting-research.md` 的推荐（独立子实例 + `awaiting_child` 指针）方向不同——该调研的两条主要顾虑（展开会把一次逻辑失败拆成多个物理步骤、运行时状态栈与宪法冲突）正是本实现正面绕开的：展开后失败预算仍按**步**记账，且不引入任何栈 |
 
 ## 12. 验收（v0 完成判据）
 

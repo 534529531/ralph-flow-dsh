@@ -165,6 +165,18 @@ export interface StepDef {
   id: string;
   desc?: string;
   do?: string;
+  /**
+   * **子工作流调用点**：用 `workflow:` 代替 `do:`，整步委托给另一个工作流（对齐 opencode 的
+   * 「子工作流步骤」）。本实现的落地方式是**加载期静态展开**（见 {@link MAX_EXPANDED_STEPS} 与
+   * `loadWorkflow`）：调用点被就地替换成子工作流的步骤，每个子步骤 id 加 `调用点id/` 前缀，
+   * 子工作流的出口接到调用点的 `on_pass`。
+   *
+   * 这是**加载期字段**：`loadWorkflow` 返回的 `steps` 里绝不会留下它（调用点已被展开掉）。
+   * 调用点只认 `id` / `desc` / `workflow` / `on_pass`（外加工作流级 `manual_step` 列表里的
+   * 调用点 id = 整段子工作流跑完后停门）；其余键（`do`/`check*`/`input`/`output`/`on_fail`/
+   * `max_fail_count`/`inputs`/`reset`…）一律**加载期告警并指路**，绝不静默生效。
+   */
+  workflow?: string;
   check?: string;
   /**
    * 多验证者投票（对齐 opencode 2.8.0 的 `check_voting`）：1–5 个验证者**并行**检查，
@@ -251,6 +263,139 @@ export function expectedVerdicts(step: Pick<StepDef, "check" | "check_voting">):
   const voters = voterCountOf(step);
   if (voters > 0) return voters;
   return stepHasCheck(step) ? 1 : 0;
+}
+
+/**
+ * 子工作流展开后的步骤 id 分隔符（`<调用点 id>/<子步骤 id>`，多层继续叠加）。
+ *
+ * 之所以是硬约束：调用点 id 与子工作流里的步骤 id **都不允许含**这个字符 —— 否则
+ * `a` + `b/c` 与 `a/b` + `c` 会展开出同一个 id，展开就不再是一一对应。两处都由
+ * `loadWorkflow` 在**加载期硬错误**（绝不等到运行期才炸）。
+ */
+export const SUBWORKFLOW_ID_SEP = "/";
+
+/**
+ * 展开后步骤总数上限（**加载期**计数，超了立刻中止展开）。
+ *
+ * ralphflow 面向长程工作流：2000 是「够长程」与「一次误配不会把引擎拖死」之间的取舍。
+ * 计数贯穿整条调用链（子工作流被多个调用点引用时**每个调用点各算一次**，因为它会被
+ * 就地展开成多份步骤）。opencode 用「运行时嵌套深度 5」兜住失控递归；静态展开没有运行时
+ * 栈，等价兜底就是这条静态上限 + 加载期成环硬错误。
+ */
+export const MAX_EXPANDED_STEPS = 2000;
+
+/** 上限报错的统一标签（跨层识别用：子层报过就不再重复报） */
+const CAP_TAG = "展开后步骤总数超过上限";
+
+/** 成环报错的统一标签（跨层识别用：直接透传检测到的那一条，不再套「无法加载」） */
+const CYCLE_TAG = "子工作流成环";
+
+/**
+ * 子工作流**加载期静态展开**的递归上下文（相对 opencode 的运行时状态栈方案，本实现把
+ * 嵌套彻底消化在 `loadWorkflow` 里：展开后的 `steps` 就是实例看到的全部步骤，
+ * `current_step` 仍是单字符串 —— **零新增 InstanceState 字段**）。
+ */
+export interface SubWorkflowLoadCtx {
+  /** 从最外层到**当前**工作流（含）的名字链：成环检测 + 报错里说清调用路径 */
+  chain: string[];
+  /** 调用链上生效的验证模型（`adversarial_check.model` 逐字段继承的父级值） */
+  inheritedModel?: ModelRef;
+  /** 展开计数器（整条链共享一个对象，任一层的超限都会被立刻读到） */
+  counter: { count: number };
+}
+
+/** 子工作流「跑完回父级」的出口占位符：展开时先占位，兄弟步骤都展开完再回填调用点的有效 on_pass */
+const SUBWORKFLOW_EXIT = "\u0000subworkflow-exit";
+
+/** 调用点 desc 与子步骤 desc 的组合（调用点被展开掉后，它的 desc 只能这样留痕） */
+function composeDesc(callDesc: string | undefined, subDesc: string | undefined): string | undefined {
+  const a = callDesc?.trim();
+  const b = subDesc?.trim();
+  if (a && b) return `${a} · ${b}`;
+  return a || b || undefined;
+}
+
+/**
+ * 前缀化一个子工作流的步骤：id 加调用点前缀、`on_pass`/`on_fail` 重指到展开后的 id、
+ * 子工作流出口（`on_pass: done` 或末步的顺序出口）先用 {@link SUBWORKFLOW_EXIT} 占位。
+ *
+ * 三条重指规则（与 opencode 的「子工作流跑完回父级继续」等价，只是时机从运行期挪到加载期）：
+ *   1. `on_pass` 指向子工作流内的步骤 → 前缀化；
+ *   2. `on_pass: done` → 占位（= 子工作流跑完，交回调用点的 on_pass）；
+ *   3. 末步没有 `on_pass`（顺序出口）→ 占位；非末步没有 `on_pass` → 顺序下一步。
+ */
+function prefixSubWorkflowSteps(sub: WorkflowDef, callId: string, callDesc: string | undefined): StepDef[] {
+  const pre = callId + SUBWORKFLOW_ID_SEP;
+  return sub.steps.map((s, i) => {
+    const next = i + 1 < sub.steps.length ? sub.steps[i + 1]!.id : undefined;
+    const onPass = s.on_pass !== undefined
+      ? (s.on_pass === "done" ? SUBWORKFLOW_EXIT : pre + s.on_pass)
+      : (next !== undefined ? pre + next : SUBWORKFLOW_EXIT);
+    return {
+      ...s,
+      id: pre + s.id,
+      desc: composeDesc(callDesc, s.desc),
+      on_pass: onPass,
+      // 缺省 on_fail = 自身（展开后就是带前缀的那个 id，语义不变）
+      on_fail: s.on_fail ? pre + s.on_fail : undefined,
+    };
+  });
+}
+
+/**
+ * 把生效的验证模型下沉到各步（**只在子工作流里做**，见 `loadWorkflow` 的调用点）。
+ *
+ * 对齐 opencode 的「`adversarial_check` 沿子工作流调用链逐字段继承」：子工作流里填了且
+ * 有效的 `model` 覆盖父工作流；没填（或填了但解析不出 provider/model）就回退到父级值。
+ * 静态展开后父级的 `adversarial_check.model` 是**整份定义**的兜底，不会区分层次，所以
+ * 子层必须在展开时把它固化到具体步骤上：单 `check` 步 → `check_model`（本步自己的有效
+ * `check_model` 优先），投票步 → 缺 `model` 的票（票自己的 `model` 优先 —— `check_model`
+ * 与 `check_voting` 同写是硬错误，所以投票步只能走票条目）。
+ */
+function sinkVerificationModel(steps: StepDef[], model: ModelRef | undefined): void {
+  if (!resolveCheckModel(model)) return;
+  for (const s of steps) {
+    if (Array.isArray(s.check_voting) && s.check_voting.length > 0) {
+      for (const entry of s.check_voting) {
+        if (!resolveCheckModel(entry.model)) entry.model = model;
+      }
+      continue;
+    }
+    if (stepHasCheck(s) && !resolveCheckModel(s.check_model)) s.check_model = model;
+  }
+}
+
+/**
+ * 调用点上「除 `id` / `desc` / `workflow` / `on_pass` 外」的键：一律**加载期告警并指路**
+ * （不生效、不静默、不硬错误 —— 作者的本意多半是把配置写到错误的层级，指路比拒收有用）。
+ *
+ * 照 opencode 的方言，子工作流步骤上还允许 `input`/`output`/`inputs`/`on_fail`/
+ * `max_fail_count`/`reset`；本实现**刻意**一条都不兑现（见 design/变更说明的四条差异），
+ * 所以每一条都要说清「不生效 + 该写到哪儿」。
+ */
+function callPointKeyWarning(callId: string, key: string, subName: string): string {
+  const head = (what: string) => `调用点 \`${callId}\` 的 \`${key}\` 不生效：${what}`;
+  switch (key) {
+    case "do":
+      return head(`调用点不做 DO —— 整步委托给子工作流 \`${subName}\`，子工作流的每个步骤自带 \`do\`。把这段指令写进子工作流内对应步骤的 \`do\`。`);
+    case "input":
+    case "output":
+      return head(`\`${key}\` 只属于子工作流里的普通步骤（调用点没有 DO/CHECK 阶段）。请在子工作流内需要它的步骤上写。`);
+    case "on_fail":
+      return head(`子工作流内的失败由各子步骤自己的 \`on_fail\` 处理；某个子步骤耗尽 \`max_fail_count\` 会**暂停等你定夺**，不会回到调用点的 \`on_fail\`。请把 \`on_fail\` 写到子工作流内的步骤上。`);
+    case "max_fail_count":
+      return head(`失败预算是**步骤级**属性，请写到子工作流内需要它的步骤上（缺省 3）。`);
+    case "check":
+    case "check_voting":
+    case "check_model":
+      return head(`调用点没有 DO 阶段、不跑独立验证；验证配置属于具体步骤，请写到子工作流内需要验证的步骤上（子工作流的 \`adversarial_check.model\` 会自动下沉到它各步）。`);
+    case "inputs":
+      return head(`本实现的子工作流不接收参数：任务描述原样传给子工作流的每个步骤（DO 提示词的「## 任务」就是它），要传信息请写进任务描述或子步骤的 \`do\`。`);
+    case "reset":
+      return head(`本版本未支持重置门（与 opencode 的差异之一）。`);
+    default:
+      return head(`调用点只认 \`id\` / \`desc\` / \`workflow\` / \`on_pass\`（外加工作流级 \`manual_step\` 列表里的调用点 id = 整段子工作流跑完后停门），其余键一律忽略。`);
+  }
 }
 
 export interface WorkflowDef {
@@ -1002,9 +1147,31 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     });
   }
 
-  function loadWorkflow(name: string): { def: WorkflowDef | null; problems: string[]; warnings: string[] } {
+  /**
+   * 加载一份工作流定义：YAML → 硬校验 → **子工作流加载期静态展开** → lint。
+   *
+   * 子工作流调用点（`workflow:` 代替 `do:`）在这里就被**就地展开**：调用点换成一串子步骤，
+   * 每个子步骤 id 是 `调用点id/子步骤id`，子工作流的出口接到调用点的 `on_pass`。于是
+   * 「嵌套」对运行期完全不可见：`current_step`、`fail_counts`、`advance`、审查门、验证者
+   * 全按普通步骤走 —— **零新增 InstanceState 字段**（opencode 用运行期状态栈，本实现刻意不用）。
+   *
+   * 加载期硬错误（说得清楚、指得明白，绝不静默、绝不拖到运行期）：子工作流文件加载不出来、
+   * 子工作流成环、id 含 {@link SUBWORKFLOW_ID_SEP} 撞展开、展开后步骤总数超
+   * {@link MAX_EXPANDED_STEPS}、展开后 id 撞名、调用点 workflow 名非法。
+   *
+   * `ctx` 只在**作为子工作流被展开**时传入（携带调用链、继承的验证模型、共享的展开计数器）；
+   * 用户/工具直接加载某个工作流时不传，行为与改造前逐字一致（无调用点的工作流零差异）。
+   */
+  function loadWorkflow(name: string, ctx?: SubWorkflowLoadCtx): { def: WorkflowDef | null; problems: string[]; warnings: string[] } {
     const problems: string[] = [];
     const warnings: string[] = [];
+    /** 展开计数器：整条调用链共享，任一层的超限都立刻被读到（超了就地中止，绝不先展开完再说） */
+    const counter = ctx?.counter ?? { count: 0 };
+    /** 从最外层到**当前**工作流的名字链：成环检测 + 报错里说清调用路径 */
+    const chain = [...(ctx?.chain ?? []), name];
+    const capProblem = (): string =>
+      `${CAP_TAG} ${MAX_EXPANDED_STEPS}（加载期硬错误，展开已立刻中止）：工作流 \`${name}\` 展开到第 ${counter.count} 步时超限。`
+      + `子工作流按调用点**就地展开**（同一个子工作流被多个调用点引用会重复展开），请缩减调用点数量或子工作流规模。`;
     let raw: string | undefined;
     let usedPath: string | undefined;
     for (const p of workflowPaths(name)) {
@@ -1040,17 +1207,71 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       problems.push(`${usedPath} 缺少非空的 steps 列表。`);
       return { def: null, problems, warnings };
     }
-    const steps: StepDef[] = [];
+    // ── adversarial_check 容错（design §8 Q13 口径：自己不兑现的键一律 warn+ignore）──
+    // 公开契约只允许 `model` 一个字段。其余字段（含已删除的 agent / system_prompt /
+    // timeout_ms）与「整个值不是对象」都在**加载期**告警并忽略：不拒收、不静默、
+    // 不改作别的含义。告警必须在这里出现，不能拖到验证阶段。
+    //
+    // 解析提前到步骤之前：**展开子工作流时要拿它当「逐字段继承」的父级模型**
+    // （opencode 的 `adversarial_check` 沿调用链继承，见 sinkVerificationModel）。
+    const acRaw: unknown = doc.adversarial_check;
+    // `undefined` / `null`（YAML 里只写了键名、没写值）= 没写，按缺省处理（与 manual_step 同口径）；
+    // 其余非对象（true / "foo" / [...]）一律告警忽略。
+    const acIsMap = acRaw !== undefined && acRaw !== null && typeof acRaw === "object" && !Array.isArray(acRaw);
+    if (acRaw !== undefined && acRaw !== null && !acIsMap) {
+      warnings.push(`\`adversarial_check\` 必须是对象（当前是${describeValueKind(acRaw)}），已忽略。本版本只支持 \`model\` 一个字段。`);
+    }
+    if (acIsMap) {
+      for (const k of Object.keys(acRaw as Record<string, unknown>)) {
+        if (k === "model") continue;
+        if (k === "agent") {
+          warnings.push("`adversarial_check.agent` 已从公开契约中删除（验证者子代理由 Ralphflow 按能力自动选择），已忽略。");
+        } else if (k === "system_prompt") {
+          warnings.push("`adversarial_check.system_prompt` 已从公开契约中删除（验证者职责是 Ralphflow 的内部定义），已忽略。");
+        } else if (k === "timeout_ms") {
+          warnings.push("`adversarial_check.timeout_ms` 本版本未支持（验证超时交给宿主 dsh 的原生看门狗），已忽略。");
+        } else {
+          warnings.push(`\`adversarial_check.${k}\` 本版本未支持，已忽略。`);
+        }
+      }
+    }
+    // 全局验证模型（adversarial_check.model）：字符串 "provider/model" 与对象 {providerID, modelID}
+    // 两种形态都支持（对齐 opencode/claude）。解析不出的（裸名 / 对象缺字段 / 类型非法）→
+    // 告警并回退到发起会话当前模型，绝不静默忽略——否则用户以为换了验证模型，实际没换。
+    const acModelRaw = acIsMap ? (acRaw as { model?: unknown }).model : undefined;
+    const globalModel = parseModelRef(acModelRaw);
+    if (acModelRaw !== undefined && acModelRaw !== null && globalModel === undefined) {
+      warnings.push(`\`adversarial_check.model\` 类型非法（当前是${describeValueKind(acModelRaw)}），已忽略并回退到发起会话当前模型（需要 "provider/model" 字符串或 {providerID, modelID} 对象）。`);
+    } else if (globalModel !== undefined && !resolveCheckModel(globalModel)) {
+      warnings.push(`\`adversarial_check.model\` 是${describeModelRef(globalModel)}，解析不出 provider/model，该配置被忽略并回退到发起会话当前模型（需要 "provider/model" 或 {providerID, modelID} 两个非空字符串）。`);
+    }
+    /** 本文件自己填了且**有效**的验证模型（无效 = 没填，逐字段继承时回退父级） */
+    const fileModel = resolveCheckModel(globalModel) ? globalModel : undefined;
+    /** 本层（含祖先链）生效的验证模型：子工作流填了有效 model 就覆盖父级，否则回退父级 */
+    const effectiveModel = fileModel ?? ctx?.inheritedModel;
+
+    // ── 步骤解析 ───────────────────────────────────────────────────────────────
+    /** 每个步骤：`call = true` 表示它是子工作流调用点（`workflow:` 代替 `do:`），展开时才消费 */
+    const entries: Array<{ step: StepDef; call: boolean }> = [];
     const ids = new Set<string>();
     stepsRaw.forEach((s: any, i: number) => {
       if (!s || typeof s !== "object") { problems.push(`第 ${i + 1} 个步骤不是映射。`); return; }
       if (!s.id || typeof s.id !== "string") { problems.push(`第 ${i + 1} 个步骤缺少 id。`); return; }
       if (ids.has(s.id)) { problems.push(`步骤 id 重复：\`${s.id}\`。`); return; }
       ids.add(s.id);
+      // 子工作流调用点：出现 `workflow` 键即是（值非法另报硬错误）。
+      const isCall = Object.prototype.hasOwnProperty.call(s, "workflow");
+      // 被当作子工作流展开的文件里，步骤 id 不能含展开分隔符：`a` + `b/c` 与 `a/b` + `c`
+      // 会展开出同一个 id（展开不再一一对应）。**加载期硬错误**，不留到撞名时才炸。
+      if (ctx && s.id.includes(SUBWORKFLOW_ID_SEP)) {
+        problems.push(`步骤 \`${s.id}\` 的 id 含 \`${SUBWORKFLOW_ID_SEP}\`：本工作流被当作子工作流展开时，这一步的 id 会变成 \`调用点id${SUBWORKFLOW_ID_SEP}${s.id}\`，含分隔符会与展开结果撞名。请改成不含 \`${SUBWORKFLOW_ID_SEP}\` 的 id。`);
+      }
       for (const k of Object.keys(s)) {
         // 步骤级 `manual_step` 有专用硬错误（下面），不走「未知键 = 警告忽略」：
         // 这里的偏差会让人工审查门**静默消失**，必须 fail-fast。
         if (k === "manual_step") continue;
+        // 调用点的键有专用告警（下面，逐键指路），不走通用「未知键」文案。
+        if (isCall) continue;
         if (!KNOWN_STEP_KEYS.has(k)) warnings.push(`步骤 \`${s.id}\` 的键 \`${k}\` 本版本未支持，已忽略。`);
       }
       // ── 步骤级 `manual_step` 已删除（只保留工作流级列表）──────────────────
@@ -1065,10 +1286,37 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           + `步骤级写法在 opencode 那边只是「不认识的步骤键」，会被忽略——人工审查门静默消失，因此这里硬错误而不是告警忽略。`,
         );
       }
+      // ── 子工作流调用点：只认 id / desc / workflow / on_pass ─────────────────
+      if (isCall) {
+        const subName = typeof s.workflow === "string" ? s.workflow.trim() : "";
+        if (subName === "") {
+          problems.push(`步骤 \`${s.id}\` 写了 \`workflow\` 但没有给出要调用的工作流名（必须是非空字符串，例如 \`workflow: analyze\`）。调用点用 \`workflow:\` 代替 \`do:\`。`);
+        } else if (/[\\/]/.test(subName)) {
+          problems.push(`步骤 \`${s.id}\` 的 \`workflow: ${subName}\` 含路径分隔符：\`workflow\` 只能是工作流**名**（对应 \`${workflowsDir}/<名字>.yaml\`、全局目录或内置同名文件），不能是路径。`);
+        }
+        if (s.id.includes(SUBWORKFLOW_ID_SEP)) {
+          problems.push(`调用点 \`${s.id}\` 的 id 含 \`${SUBWORKFLOW_ID_SEP}\`：展开后步骤 id 是 \`调用点id${SUBWORKFLOW_ID_SEP}子步骤id\`，调用点 id 含分隔符会与展开结果撞名。请把 id 改成不含 \`${SUBWORKFLOW_ID_SEP}\` 的名字。`);
+        }
+        // 其余键一律**告警且指路**：不生效、不静默、也不硬错误（作者多半只是写错了层级）。
+        for (const k of Object.keys(s)) {
+          if (k === "manual_step" || k === "id" || k === "desc" || k === "workflow" || k === "on_pass") continue;
+          warnings.push(callPointKeyWarning(s.id, k, subName || "(未命名)"));
+        }
+        entries.push({
+          call: true,
+          step: {
+            id: s.id,
+            desc: typeof s.desc === "string" ? s.desc : undefined,
+            workflow: subName || undefined,
+            on_pass: typeof s.on_pass === "string" ? s.on_pass : undefined,
+          },
+        });
+        return;
+      }
       // ── §1.1 加载期硬校验：写错了却没有任何信号 = 缺陷（要么硬错误，要么 doctor 告警）
       // do 缺失：没有可执行的指令，整步无意义 → 硬错误（不再静默接受空步）。
       if (typeof s.do !== "string" || s.do.trim() === "") {
-        problems.push(`步骤 \`${s.id}\` 缺少 \`do\`（必填：主会话执行的指令；缺失、非字符串或空串都不接受）。`);
+        problems.push(`步骤 \`${s.id}\` 缺少 \`do\`（必填：主会话执行的指令；缺失、非字符串或空串都不接受）。要把这一步委托给另一个工作流，用 \`workflow: <工作流名>\` 代替 \`do:\`。`);
       }
       // ── 对抗性检查：`check`（单验证者）与 `check_voting`（多验证者投票）二选一，都不写 = 免验证 ──
       // 校验顺序照抄 opencode：**互斥优先于类型检查**——即使 check 类型写错，只要两字段都在就报
@@ -1108,29 +1356,128 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           warnings.push(`步骤 \`${s.id}\` 的 \`check_model\` 是${describeModelRef(parsed)}，解析不出 provider/model，该配置被忽略并回退（优先全局 \`adversarial_check.model\`，未设则用发起会话当前模型）（需要 "provider/model" 或 {providerID, modelID} 两个非空字符串）。`);
         }
       }
-      steps.push({
-        id: s.id,
-        desc: typeof s.desc === "string" ? s.desc : undefined,
-        do: typeof s.do === "string" ? s.do : undefined,
-        check: typeof s.check === "string" ? s.check : undefined,
-        input: typeof s.input === "string" ? s.input : undefined,
-        output: typeof s.output === "string" ? s.output : undefined,
-        on_pass: typeof s.on_pass === "string" ? s.on_pass : undefined,
-        on_fail: typeof s.on_fail === "string" ? s.on_fail : undefined,
-        max_fail_count: typeof s.max_fail_count === "number" ? s.max_fail_count : undefined,
-        check_model: parseModelRef(checkModelRaw),
-        // 只有通过上面校验的投票步才会走到这里（有 problems 时整份定义已被拒收）；
-        // 非法条目里的坏值不带进定义，避免运行期拿到半成品配置。
-        check_voting: Array.isArray(s.check_voting) && !hasCheckKey
-          ? (s.check_voting as any[])
-            .filter((e) => e && typeof e === "object" && typeof e.check === "string" && e.check.trim() !== "")
-            .slice(0, MAX_VOTERS)
-            .map((e) => ({ check: String(e.check).trim(), model: parseModelRef(e.model) }))
-          : undefined,
+      entries.push({
+        call: false,
+        step: {
+          id: s.id,
+          desc: typeof s.desc === "string" ? s.desc : undefined,
+          do: typeof s.do === "string" ? s.do : undefined,
+          check: typeof s.check === "string" ? s.check : undefined,
+          input: typeof s.input === "string" ? s.input : undefined,
+          output: typeof s.output === "string" ? s.output : undefined,
+          on_pass: typeof s.on_pass === "string" ? s.on_pass : undefined,
+          on_fail: typeof s.on_fail === "string" ? s.on_fail : undefined,
+          max_fail_count: typeof s.max_fail_count === "number" ? s.max_fail_count : undefined,
+          check_model: parseModelRef(checkModelRaw),
+          // 只有通过上面校验的投票步才会走到这里（有 problems 时整份定义已被拒收）；
+          // 非法条目里的坏值不带进定义，避免运行期拿到半成品配置。
+          check_voting: Array.isArray(s.check_voting) && !hasCheckKey
+            ? (s.check_voting as any[])
+              .filter((e) => e && typeof e === "object" && typeof e.check === "string" && e.check.trim() !== "")
+              .slice(0, MAX_VOTERS)
+              .map((e) => ({ check: String(e.check).trim(), model: parseModelRef(e.model) }))
+            : undefined,
+        },
       });
     });
-    // 引用校验：on_pass 必须指向存在的步骤或 done；on_fail 必须指向存在的步骤
-    // （`on_fail: done` 非法 —— 失败不能「结束工作流」，见 design §4 / CREATE_GUIDE 方言说明）
+    if (problems.length > 0) return { def: null, problems, warnings };
+
+    // ─── 子工作流：加载期静态展开 ──────────────────────────────────────────────
+    //
+    // 「嵌套」在这里被彻底消化：调用点就地换成一串**普通步骤**（id 加调用点前缀），子工作流的
+    // 出口接到调用点的 `on_pass`。运行期因此不需要任何栈 / 父子指针 —— `current_step` 仍是
+    // 单字符串，`fail_counts` 仍按步记账，零新增 InstanceState 字段。
+    //
+    // 四条刻意差异里的两条落在这段：
+    //   · opencode 把成环 / 子文件加载不出来留到运行期才炸（doctor 只告警）——这里**加载期硬错误**；
+    //   · 它用「运行时嵌套深度 5」兜住失控递归 —— 这里用**展开步骤总数上限**兜住
+    //     （{@link MAX_EXPANDED_STEPS}，展开过程中计数，超了立刻中止）。
+    // 另两条：子步骤耗尽 max_fail_count → 暂停等人（applyRoundOutcome 的既有行为，这里不接线到父级
+    // on_fail）；调用点只认 id/desc/workflow/on_pass，manual_step 标调用点 = 整段跑完停门（下面映射）。
+    const steps: StepDef[] = [];
+    /** 原始调用点 id → 展开后的入口步骤 id（指向调用点的 on_pass/on_fail 接到入口） */
+    const callEntry = new Map<string, string>();
+    /** 待回填出口的展开区间：出口 = 调用点的有效 on_pass，只有后面的兄弟都展开完才知道 */
+    const pending: Array<{ call: StepDef; start: number; end: number }> = [];
+    /** 子工作流自带的人工审查门（前缀化后并入父级的 manual_step） */
+    const subGates: string[] = [];
+    let capHit = false;
+    for (const e of entries) {
+      if (!e.call) {
+        if (++counter.count > MAX_EXPANDED_STEPS) { capHit = true; break; }
+        steps.push(e.step);
+        continue;
+      }
+      const call = e.step;
+      const subName = call.workflow!; // 上面已硬校验非空（有 problems 时走不到这里）
+      // 成环（含自调用）：加载期硬错误，并给出环上的完整路径
+      const at = chain.indexOf(subName);
+      if (at >= 0) {
+        problems.push(`${CYCLE_TAG}（加载期硬错误）：${[...chain.slice(at), subName].join(" → ")}。环上的调用点会被无限展开，请打破环。`);
+        break;
+      }
+      const sub = loadWorkflow(subName, { chain, inheritedModel: effectiveModel, counter });
+      if (sub.problems.some((p) => p.includes(CAP_TAG))) { capHit = true; break; }
+      // 成环的路径由检测到的那一层给出（已含完整调用链）——直接透传，不再套一层「无法加载」
+      if (sub.problems.some((p) => p.includes(CYCLE_TAG))) {
+        problems.push(...sub.problems.filter((p) => p.includes(CYCLE_TAG)));
+        break;
+      }
+      if (!sub.def) {
+        problems.push([
+          `步骤 \`${call.id}\` 引用的子工作流 \`${subName}\` 无法加载（加载期硬错误，不再拖到运行到该步时才炸）：`,
+          ...sub.problems.map((p) => `  - ${p}`),
+          `调用链：${chain.join(" → ")} → ${subName}`,
+        ].join("\n"));
+        break;
+      }
+      // 子工作流自己的告警一并带上来（医生也会在子工作流名下报一遍；这里保证父级上下文里不静默）
+      for (const w of sub.warnings) warnings.push(`子工作流 \`${subName}\`：${w}`);
+      const expanded = prefixSubWorkflowSteps(sub.def, call.id, call.desc);
+      callEntry.set(call.id, expanded[0]!.id); // sub.def.steps 非空（空 steps 在加载期已硬错误）
+      const start = steps.length;
+      steps.push(...expanded);
+      pending.push({ call, start, end: steps.length });
+      for (const g of sub.def.manual_step ?? []) subGates.push(`${call.id}${SUBWORKFLOW_ID_SEP}${g}`);
+    }
+    if (capHit) problems.push(capProblem());
+    if (problems.length > 0) return { def: null, problems, warnings };
+
+    // ── 回填出口：调用点的有效 on_pass（显式 on_pass 优先；缺省 = 紧随其后的展开步骤；末步 = done）──
+    /** 调用点 id → 它的出口步骤 id（= 子工作流「跑完回父级」的那些步骤） */
+    const callExits = new Map<string, string[]>();
+    for (const p of pending) {
+      const explicit = p.call.on_pass && p.call.on_pass.trim() !== "" ? p.call.on_pass : undefined;
+      const rawExit = explicit ?? (p.end < steps.length ? steps[p.end]!.id : "done");
+      // 出口本身可能指向另一个调用点 → 接到那个调用点的入口步骤
+      const exit = callEntry.get(rawExit) ?? rawExit;
+      const exits: string[] = [];
+      for (let i = p.start; i < p.end; i++) {
+        const st = steps[i]!;
+        if (st.on_pass === SUBWORKFLOW_EXIT) { st.on_pass = exit; exits.push(st.id); }
+      }
+      callExits.set(p.call.id, exits);
+    }
+    // 指向调用点的引用（普通步骤的 on_pass/on_fail、调用点的出口）→ 接到展开后的入口步骤
+    //（语义：写到调用点上的连线 = 进入该子工作流；on_fail 回退到调用点 = 从子工作流入口重跑）
+    for (const st of steps) {
+      if (st.on_pass && callEntry.has(st.on_pass)) st.on_pass = callEntry.get(st.on_pass)!;
+      if (st.on_fail && callEntry.has(st.on_fail)) st.on_fail = callEntry.get(st.on_fail)!;
+    }
+
+    // 展开后 id 去重：调用点 id / 被展开的子步骤 id 含 `/` 已在上面硬错误；这里兜住
+    // 「子工作流展开出来的 id 与另一个步骤撞名」——静默重复 id 会让 current_step 指到错的那一步。
+    const finalIds = new Set<string>();
+    const dupIds: string[] = [];
+    for (const s of steps) {
+      if (finalIds.has(s.id)) { if (!dupIds.includes(s.id)) dupIds.push(s.id); continue; }
+      finalIds.add(s.id);
+    }
+    if (dupIds.length > 0) {
+      problems.push(`子工作流展开后步骤 id 撞名：${dupIds.map((d) => `\`${d}\``).join("、")}。展开后的 id 形如 \`调用点id${SUBWORKFLOW_ID_SEP}子步骤id\`，请重命名撞名的步骤。`);
+    }
+    // 引用校验（在**展开后**的 id 集合上做）：on_pass 必须指向存在的步骤或 done；
+    // on_fail 必须指向存在的步骤（`on_fail: done` 非法 —— 失败不能「结束工作流」，见 design §4）。
     for (const s of steps) {
       for (const [key, target] of [["on_pass", s.on_pass], ["on_fail", s.on_fail]] as const) {
         if (target === undefined) continue;
@@ -1138,7 +1485,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           if (key === "on_fail") problems.push(`步骤 \`${s.id}\` 的 on_fail 指向 \`done\`；失败重试目标必须是存在的步骤 id（不允许 done）。`);
           continue;
         }
-        if (!ids.has(target)) problems.push(`步骤 \`${s.id}\` 的 ${key} 指向不存在的步骤 \`${target}\`。`);
+        if (!finalIds.has(target)) problems.push(`步骤 \`${s.id}\` 的 ${key} 指向不存在的步骤 \`${target}\`。`);
       }
     }
     if (problems.length > 0) return { def: null, problems, warnings };
@@ -1154,54 +1501,37 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     } else if (doc.manual_step !== undefined && doc.manual_step !== null) {
       warnings.push("顶层 manual_step 既不是列表也不是字符串，已忽略。");
     }
+    // 审查门映射（与 opencode 的**刻意差异**）：opencode 禁止把 manual_step 标在子工作流
+    // 调用点上（硬错误）；这里允许，语义是**整段子工作流跑完后停门** —— 映射到子工作流的
+    // 出口步骤（谁把控制权交回父级，谁就是门）。子工作流自己的 manual_step 前缀化后原样生效。
+    const manualSet = new Set<string>(subGates);
+    for (const m of manual) {
+      if (!callEntry.has(m)) { manualSet.add(m); continue; }
+      const exits = callExits.get(m) ?? [];
+      if (exits.length === 0) {
+        problems.push(`manual_step 里的调用点 \`${m}\` 展开后没有任何「跑完回父级」的出口步骤（子工作流内部不会回到调用点的 on_pass），审查门永远不会触发。请把 manual_step 标到子工作流内最后一个普通步骤上，或修好子工作流的出口。`);
+        continue;
+      }
+      for (const x of exits) manualSet.add(x);
+    }
+    if (problems.length > 0) return { def: null, problems, warnings };
     // manual_step 引用不存在的步骤 → 硬错误：用户以为有审查门，实际会一路自动跑过去，
     // 这个偏差没有任何其它信号（create.ts 早已自称是硬规则，此前只是没实现）。
-    const unknownManual = manual.filter((id) => !ids.has(id));
+    const unknownManual = [...manualSet].filter((id) => !finalIds.has(id));
     if (unknownManual.length > 0) {
       problems.push(`manual_step 引用了不存在的步骤：${unknownManual.map((m) => `\`${m}\``).join("、")}（审查门会静默失效，必须修正拼写或删掉）。`);
       return { def: null, problems, warnings };
     }
+    // 子工作流里的 `adversarial_check.model` 下沉到它各步的 `check_model`（对齐 opencode 的
+    // 逐字段继承）：**只在子层加载时**做，且只填「自己没填或填了但无效」的步骤 ——
+    // 父级的 `adversarial_check` 是整份定义的兜底、不区分层次，帮不了子层。
+    if (ctx) sinkVerificationModel(steps, effectiveModel);
     // §1.2 doctor 覆盖的 lint：引擎只在运行时（或永远不）暴露的问题，加载成功后补告警。
-    warnings.push(...lintWorkflow(steps, new Set(manual)));
-    // ── adversarial_check 容错（design §8 Q13 口径：自己不兑现的键一律 warn+ignore）──
-    // 公开契约只允许 `model` 一个字段。其余字段（含已删除的 agent / system_prompt /
-    // timeout_ms）与「整个值不是对象」都在**加载期**告警并忽略：不拒收、不静默、
-    // 不改作别的含义。告警必须在这里出现，不能拖到验证阶段。
-    const acRaw: unknown = doc.adversarial_check;
-    // `undefined` / `null`（YAML 里只写了键名、没写值）= 没写，按缺省处理（与 manual_step 同口径）；
-    // 其余非对象（true / "foo" / [...]）一律告警忽略。
-    const acIsMap = acRaw !== undefined && acRaw !== null && typeof acRaw === "object" && !Array.isArray(acRaw);
-    if (acRaw !== undefined && acRaw !== null && !acIsMap) {
-      warnings.push(`\`adversarial_check\` 必须是对象（当前是${describeValueKind(acRaw)}），已忽略。本版本只支持 \`model\` 一个字段。`);
-    }
-    if (acIsMap) {
-      for (const k of Object.keys(acRaw as Record<string, unknown>)) {
-        if (k === "model") continue;
-        if (k === "agent") {
-          warnings.push("`adversarial_check.agent` 已从公开契约中删除（验证者子代理由 Ralphflow 按能力自动选择），已忽略。");
-        } else if (k === "system_prompt") {
-          warnings.push("`adversarial_check.system_prompt` 已从公开契约中删除（验证者职责是 Ralphflow 的内部定义），已忽略。");
-        } else if (k === "timeout_ms") {
-          warnings.push("`adversarial_check.timeout_ms` 本版本未支持（验证超时交给宿主 dsh 的原生看门狗），已忽略。");
-        } else {
-          warnings.push(`\`adversarial_check.${k}\` 本版本未支持，已忽略。`);
-        }
-      }
-    }
-    // 全局验证模型（adversarial_check.model）：字符串 "provider/model" 与对象 {providerID, modelID}
-    // 两种形态都支持（对齐 opencode/claude）。解析不出的（裸名 / 对象缺字段 / 类型非法）→
-    // 告警并回退到发起会话当前模型，绝不静默忽略——否则用户以为换了验证模型，实际没换。
-    const acModelRaw = acIsMap ? (acRaw as { model?: unknown }).model : undefined;
-    const globalModel = parseModelRef(acModelRaw);
-    if (acModelRaw !== undefined && acModelRaw !== null && globalModel === undefined) {
-      warnings.push(`\`adversarial_check.model\` 类型非法（当前是${describeValueKind(acModelRaw)}），已忽略并回退到发起会话当前模型（需要 "provider/model" 字符串或 {providerID, modelID} 对象）。`);
-    } else if (globalModel !== undefined && !resolveCheckModel(globalModel)) {
-      warnings.push(`\`adversarial_check.model\` 是${describeModelRef(globalModel)}，解析不出 provider/model，该配置被忽略并回退到发起会话当前模型（需要 "provider/model" 或 {providerID, modelID} 两个非空字符串）。`);
-    }
+    warnings.push(...lintWorkflow(steps, manualSet));
     const def: WorkflowDef = {
       name,
       description: typeof doc.description === "string" ? doc.description : "",
-      manual_step: manual,
+      manual_step: [...manualSet],
       // 只保留公开契约里的 `model`；其余字段已在上面告警忽略，绝不带进定义。
       adversarial_check: acIsMap ? { model: globalModel } : undefined,
       steps,

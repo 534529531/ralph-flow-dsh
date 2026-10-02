@@ -60,6 +60,30 @@ steps:
 
 > **内置工作流不落盘**（对齐 opencode/claude）：它们只存在于插件目录，加载时回落取用，因此**始终是随插件发布的最新版本**。要定制，就在 `<workspace>/.dsh/ralph-flow/workflows/` 放一个同名文件——它会遮蔽内置（这是唯一的定制入口，也是有意行为）。
 
+**子工作流（`workflow:` 代替 `do:`，行为对齐 opencode 的「子工作流步骤 / 工作流嵌套」）**：一步可以整段委托给另一个工作流，多层可嵌套，通用流程因此可以做成可复用资产：
+
+```yaml
+steps:
+  - id: analyze
+    desc: 需求分析
+    workflow: analyze      # 调用 workflows/analyze.yaml
+    on_pass: build         # 整段子工作流跑完后去哪（缺省 = 顺序下一步）
+  - id: build
+    desc: 实现
+    workflow: build
+```
+
+落地方式是**加载期静态展开**（不用 opencode 的运行时状态栈）：调用点被就地替换成子工作流的步骤，子步骤 id 是 `调用点id/子步骤id`（多层继续叠加），子工作流的出口接到调用点的 `on_pass`。所以运行期「嵌套」不可见——`current_step` 仍是单字符串、失败预算仍按步记账、审查门与验证者全按普通步骤走，**零新增实例状态字段**。
+
+调用点**只认** `id` / `desc` / `workflow` / `on_pass`（外加工作流级 `manual_step` 里的调用点 id）；其余键（`on_fail`/`max_fail_count`/`check*`/`input`/`output`/`inputs`/`reset`/`do`）一律**加载期告警 + 指路**（它们属于子工作流内部的具体步骤），绝不静默生效。与 opencode 的四处**刻意差异**：
+
+1. 它静默忽略、或拖到运行期才炸的，这里一律**加载期硬错误**：子工作流文件加载不出来（报错含完整调用链）、**子工作流成环**（含自调用，打印环路径）、调用点 id 或子步骤 id 含 `/` 撞展开、展开后 id 撞名、`workflow` 名含路径分隔符。
+2. 展开后步骤总数上限 **2000**（面向长程工作流；展开过程中计数，超了立刻中止）。
+3. 子工作流内某步耗尽 `max_fail_count` → **暂停等人**（不做它那条「自动走父级 `on_fail`」）。
+4. `manual_step` 标在调用点 = **整段子工作流跑完后停门**（映射到子工作流的出口步骤；opencode 禁止这种写法）。子工作流内部的 `manual_step` 前缀化后原样生效。
+
+另外：子文件里的 `adversarial_check.model` **下沉到它各步的 `check_model`**（投票步则填进缺 `model` 的票），子层没填就逐层回退父级，所以最外层统一配一次即可；`inputs` 不生效（子工作流各步的「## 任务」就是父级任务描述）。展开是**复制**：同一个子工作流被 N 个调用点引用就展开 N 份。验收见 `scripts/subworkflow-test.mjs`。
+
 ## 工作区结构
 
 实例与资产沉淀在**发起会话的工作区**（dot-dir，与 opencode `.opencode/ralph-flow/`、claude `.claude/ralph-flow/` 形状一致）：
@@ -89,13 +113,13 @@ steps:
 - **验证者**：全新独立会话（按能力自动选择全新上下文的后端，与名称无关），只见任务 + 检查依据 +（可读的）产出目录——**看不到执行者的交卷摘要**；只读工具白名单，结构化判定 + 文本兜底，fail-closed。
 - **验证者配置（YAML `adversarial_check`）**：**只接受 `model` 一个字段**（可选，`"provider/model"` 或 `{providerID, modelID}`），步骤级 `check_model` 可覆盖它；都不写就沿用发起会话当前模型。验证者的身份与职责是插件内部定义，工作流不再能配置它。写了其它字段（或 `adversarial_check` 不是对象）会在加载期告警并忽略，`/ralphflow-doctor` 同样报出。模型优先级链：`check_voting` 条目 `model` > 步骤 `check_model` > 全局 `adversarial_check.model` > 发起会话当前模型。
 - **多验证者投票**：N 票各自独立会话、独立提示词（共享上下文 + 该票专属检查依据 + 「你是 N 个之一」约束）、独立取消句柄与心跳；**全部终态才聚合**，聚合优先级 `failed > infra > 全过`（工作问题绝不被基础设施故障遮蔽）。
-- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；多验证者投票验收见 `scripts/voting-test.mjs`（加载校验/提示词变体/聚合优先级/infra 重试与续跑/跨轮重投/每票进度/取消传播/单 check 回归）；引擎验证测试见 `scripts/engine-test.mjs`（含布局/产出目录/加载期硬校验/doctor lint/报告统计/**单根发现面**/CREATE_GUIDE 一致性），实例生命周期验收见 `scripts/lifecycle-test.mjs`，执行日志（JSONL）验收见 `scripts/execution-log-test.mjs`（JSONL 合法性 / 归档与报告指路 / 提示词与判定原文可复盘 / 轮转 / 写失败不致命 / 零状态字段；`RF_LIB=<基线库>` 即负对照）。
+- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；多验证者投票验收见 `scripts/voting-test.mjs`（加载校验/提示词变体/聚合优先级/infra 重试与续跑/跨轮重投/每票进度/取消传播/单 check 回归）；引擎验证测试见 `scripts/engine-test.mjs`（含布局/产出目录/加载期硬校验/doctor lint/报告统计/**单根发现面**/CREATE_GUIDE 一致性），子工作流验收见 `scripts/subworkflow-test.mjs`（静态展开/出口接线/审查门映射/模型下沉/上限与成环等加载期硬错误 + 负对照），实例生命周期验收见 `scripts/lifecycle-test.mjs`，执行日志（JSONL）验收见 `scripts/execution-log-test.mjs`（JSONL 合法性 / 归档与报告指路 / 提示词与判定原文可复盘 / 轮转 / 写失败不致命 / 零状态字段；`RF_LIB=<基线库>` 即负对照）。
 - **生命周期不变量**（违反即回退）：实例是临时的、报告与产出是永久的；先除名（`unlink(state.json)`）后删物理文件（否则部分删除失败会留下幽灵实例）；销毁前先写完报告、先读出产出目录名；产出只用非递归 `rmdir`（非空即保留）；销毁后不再写 `state.json`（`writeState` 会 `mkdirSync` 复活的实例目录）。
 
 ## v0 范围（诚实声明）
 
-有：YAML 引擎、loop + spec、审查门、续跑/接管、失败重试、按工作区单根、崩溃 fail-safe、报告归档（含每步耗时与重试）、产出目录、实例生命周期（终止即归档并销毁实例目录 + 历史运行列表 + doctor 实例目录体检）、执行日志（JSONL，机器可读，随报告归档 + 轮转）、create/doctor 实现、**多验证者投票（`check_voting`）**。
-无：reset/rewind、子工作流、客户端 UI、系统通知、验证者沙箱。每项的准入触发条件见设计文档 §11。
+有：YAML 引擎、loop + spec、审查门、续跑/接管、失败重试、按工作区单根、崩溃 fail-safe、报告归档（含每步耗时与重试）、产出目录、实例生命周期（终止即归档并销毁实例目录 + 历史运行列表 + doctor 实例目录体检）、执行日志（JSONL，机器可读，随报告归档 + 轮转）、create/doctor 实现、**多验证者投票（`check_voting`）**、**子工作流（`workflow:`，加载期静态展开）**。
+无：reset/rewind、客户端 UI、系统通知、验证者沙箱。每项的准入触发条件见设计文档 §11。
 
 ## 许可
 
