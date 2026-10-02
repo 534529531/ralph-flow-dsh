@@ -178,7 +178,6 @@ export interface StepDef {
   check_voting?: CheckVotingEntry[];
   input?: string;
   output?: string;
-  manual_step?: boolean;
   on_pass?: string;
   on_fail?: string;
   max_fail_count?: number;
@@ -257,7 +256,13 @@ export function expectedVerdicts(step: Pick<StepDef, "check" | "check_voting">):
 export interface WorkflowDef {
   name: string;
   description?: string;
-  /** 审查门步骤（方言形态：顶层 id 列表） */
+  /**
+   * 审查门步骤（方言形态：**顶层** id 列表，与 `steps` 同级）。
+   *
+   * 这是审查门的**唯一**写法：步骤级 `manual_step` 键已从方言中删除，
+   * 出现即加载期硬错误（`loadWorkflow`；opencode 只认列表，步骤级写法在那边
+   * 会被当作「不认识的步骤键」忽略 → 人工审查门静默消失）。
+   */
   manual_step?: string[];
   adversarial_check?: AdversarialConfig;
   steps: StepDef[];
@@ -615,7 +620,7 @@ export function lintWorkflow(steps: StepDef[], manual: Set<string>): string[] {
   //   · manual 步 → 纯人工审查是**刻意的默认**，不是问题（不告警）。
   // 通用兜底配方已随本语义退役（见 verify.ts buildCheckPrompt），文案不得再提它。
   for (const s of steps) {
-    if (!stepHasVerification(s) && !manual.has(s.id) && s.manual_step !== true) {
+    if (!stepHasVerification(s) && !manual.has(s.id)) {
       warnings.push(`步骤 \`${s.id}\` 未配置对抗性检查（无 \`check\`/\`check_voting\`），DO 完成后直接进入下一步，不会被独立验证。`);
     }
   }
@@ -966,7 +971,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   // ─── 工作流加载与校验（坏文件 fail-fast 说人话）────────────────────────────
 
-  const KNOWN_STEP_KEYS = new Set(["id", "desc", "do", "check", "check_voting", "check_model", "input", "output", "manual_step", "on_pass", "on_fail", "max_fail_count"]);
+  const KNOWN_STEP_KEYS = new Set(["id", "desc", "do", "check", "check_voting", "check_model", "input", "output", "on_pass", "on_fail", "max_fail_count"]);
   const KNOWN_WF_KEYS = new Set(["description", "manual_step", "adversarial_check", "steps"]);
 
   function knownWorkflowDirs(): string[] {
@@ -1043,7 +1048,22 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       if (ids.has(s.id)) { problems.push(`步骤 id 重复：\`${s.id}\`。`); return; }
       ids.add(s.id);
       for (const k of Object.keys(s)) {
+        // 步骤级 `manual_step` 有专用硬错误（下面），不走「未知键 = 警告忽略」：
+        // 这里的偏差会让人工审查门**静默消失**，必须 fail-fast。
+        if (k === "manual_step") continue;
         if (!KNOWN_STEP_KEYS.has(k)) warnings.push(`步骤 \`${s.id}\` 的键 \`${k}\` 本版本未支持，已忽略。`);
+      }
+      // ── 步骤级 `manual_step` 已删除（只保留工作流级列表）──────────────────
+      // 两种写法在本引擎里曾语义相同、纯冗余；但 opencode/pi 只认**工作流级列表**，
+      // 步骤级写法在那边只是「不认识的步骤键」→ 警告忽略 → **人工审查门静默消失**。
+      // 静默跳过审查门比报错严重得多，故这里不论值是什么（true/false/null）都硬错误，
+      // 并在文案里直接给出正确写法。键存在与否用 hasOwnProperty 判（`manual_step:` 空值也算写了）。
+      if (Object.prototype.hasOwnProperty.call(s, "manual_step")) {
+        problems.push(
+          `步骤 \`${s.id}\` 写了步骤级 \`manual_step\`：该写法已删除，不论值是什么（true/false/空值）都不再有效。`
+          + `正确写法是把该步 id 列进工作流级 \`manual_step:\` 列表（顶层，与 \`steps\` 同级），即 \`manual_step: [${s.id}]\`（或写成 \`manual_step:\` 下的列表项 \`- ${s.id}\`）。`
+          + `步骤级写法在 opencode 那边只是「不认识的步骤键」，会被忽略——人工审查门静默消失，因此这里硬错误而不是告警忽略。`,
+        );
       }
       // ── §1.1 加载期硬校验：写错了却没有任何信号 = 缺陷（要么硬错误，要么 doctor 告警）
       // do 缺失：没有可执行的指令，整步无意义 → 硬错误（不再静默接受空步）。
@@ -1095,7 +1115,6 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         check: typeof s.check === "string" ? s.check : undefined,
         input: typeof s.input === "string" ? s.input : undefined,
         output: typeof s.output === "string" ? s.output : undefined,
-        manual_step: s.manual_step === true,
         on_pass: typeof s.on_pass === "string" ? s.on_pass : undefined,
         on_fail: typeof s.on_fail === "string" ? s.on_fail : undefined,
         max_fail_count: typeof s.max_fail_count === "number" ? s.max_fail_count : undefined,
@@ -1123,7 +1142,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       }
     }
     if (problems.length > 0) return { def: null, problems, warnings };
-    // manual_step 方言：列表与**逗号字符串**两种写法都支持（对齐 opencode）。
+    // manual_step 方言：**只有工作流级（顶层）一种写法**，列表与逗号字符串都接受（对齐 opencode）。
+    // 步骤级 `manual_step` 已删除 = 上面的加载期硬错误——绝不静默放过（审查门会静默消失）。
     const manual: string[] = [];
     if (Array.isArray(doc.manual_step)) {
       manual.push(...doc.manual_step
@@ -1351,7 +1371,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   }
 
   function isGate(wf: WorkflowDef, step: StepDef): boolean {
-    return (wf.manual_step ?? []).includes(step.id) || step.manual_step === true;
+    // 审查门只有一个来源：工作流级（顶层）`manual_step` 列表。步骤级写法已在加载期硬错误。
+    return (wf.manual_step ?? []).includes(step.id);
   }
 
   function nextStepId(wf: WorkflowDef, step: StepDef): string {

@@ -329,6 +329,73 @@ const S = () => `session-${++n}`;
   check("manual_step 逗号字符串写法被接受", !!ok.def && ok.def.manual_step.join(",") === "a,b", JSON.stringify(ok.def?.manual_step));
 }
 
+// ── 11c) manual_step 只有「工作流级列表」一种写法（步骤级 = 加载期硬错误）───────
+// 背景：步骤级 `manual_step: true` 与本引擎的工作流级列表曾语义等价、纯冗余；但 opencode/pi
+// **只认顶层列表**，步骤级写法在那边只是「不认识的步骤键」→ 警告忽略 → **人工审查门静默消失**。
+// 故步骤级键（不论值）必须 fail-fast（说清正确写法），而列表行为逐字不变。
+{
+  const wfFile = (name, lines) => {
+    fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
+    return engine.loadWorkflow(name);
+  };
+  const stepLines = (manualLine) => [
+    "steps:", "  - id: a", "    do: X", "    check: c",
+    ...(manualLine === undefined ? [] : [manualLine]),
+    "    on_pass: done", "    on_fail: a", "    max_fail_count: 1",
+  ];
+  for (const [label, line] of [["true", "    manual_step: true"], ["false", "    manual_step: false"], ["空值", "    manual_step:"]]) {
+    const r = wfFile(`bad-step-manual-${label}`, stepLines(line));
+    check(`步骤级 manual_step（${label}）→ 硬错误`, !r.def && r.problems.some((p) => p.includes("manual_step")), JSON.stringify(r.problems));
+    check(`步骤级 manual_step（${label}）报错给出正确写法（工作流级列表 + 该步 id）`,
+      r.problems.some((p) => p.includes("工作流级") && p.includes("manual_step: [a]")), JSON.stringify(r.problems));
+    check(`步骤级 manual_step（${label}）不降级成「未知键警告忽略」`,
+      !r.warnings.some((w) => w.includes("manual_step")), JSON.stringify(r.warnings));
+    check(`步骤级 manual_step（${label}）定义被拒收`, r.def === null);
+  }
+  // 用户可见入口（start）也必须 fail-fast，而不是加载成功后一路跑过去
+  wfFile("bad-step-manual-start", stepLines("    manual_step: true"));
+  {
+    const rs = engine.start("bad-step-manual-start", "步骤级写法必须被拒", S());
+    check("start 直接拒绝步骤级 manual_step（回执说人话、给出正确写法）",
+      !rs.ok && rs.text.includes("manual_step") && rs.text.includes("工作流级") && rs.text.includes("manual_step: [a]"), rs.text);
+  }
+  // doctor 同样报成 ❌ 阻塞项（硬错误口径），不是「⚠️ 未知键已忽略」
+  {
+    const diag = engine.diagnose();
+    check("doctor 把步骤级 manual_step 报成 ❌（不是告警忽略）",
+      diag.text.includes("❌") && diag.text.includes("bad-step-manual-true") && diag.text.includes("步骤级"),
+      diag.text.slice(0, 700));
+  }
+
+  // 列表写法照常生效：通过后停在审查门，continue 才放行（行为与改造前逐字一致）
+  const good = wfFile("ok-step-manual-list", [
+    "description: 工作流级列表是审查门的唯一写法", "manual_step: [g]", "steps:",
+    "  - id: g", "    desc: 门步", "    do: 做 G", "    check: 检查 G",
+    "    on_pass: h", "    on_fail: g", "    max_fail_count: 3",
+    "  - id: h", "    desc: 收尾步", "    do: 做 H", "    check: 检查 H",
+    "    on_pass: done", "    on_fail: h", "    max_fail_count: 3",
+  ]);
+  check("工作流级列表照常加载（零问题、零告警）",
+    !!good.def && good.problems.length === 0 && good.warnings.length === 0,
+    JSON.stringify({ p: good.problems, w: good.warnings }));
+  check("工作流级列表解析为 [g]", JSON.stringify(good.def?.manual_step) === '["g"]', JSON.stringify(good.def?.manual_step));
+  {
+    const s = S();
+    scripted.push({ status: "passed", reason: "G 独立取证通过" });
+    const { id } = start("ok-step-manual-list", "列表写法的审查门用例", s);
+    submit(s, "G 做完了。");
+    await settle();
+    const st = engine.readState(id);
+    check("列表里的门步：验证通过后停在审查门（不推进、未暂停、无在飞委派）",
+      !!st && st.active && !st.paused && st.current_step === "g" && st.verdicts.length === 1 && st.delegations.length === 0,
+      JSON.stringify({ step: st?.current_step, active: st?.active, paused: st?.paused, v: st?.verdicts.length }));
+    const c = engine.continueInstance(s);
+    await settle();
+    const st2 = engine.readState(id);
+    check("列表里的门步：continue 放行推进到下一步", c.ok && !!st2 && st2.current_step === "h", `ok=${c.ok} step=${st2?.current_step}`);
+  }
+}
+
 // ── 11b) A1 三端资产兼容：check_model / 模型引用两形态（对齐 opencode 2.8.0）─────
 {
   const wfFile = (name, lines) => {
