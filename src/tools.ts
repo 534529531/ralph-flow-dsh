@@ -3,11 +3,17 @@
  *
  * 命令语义 = 触发词：/ralphflow-* 注入指令给模型，由模型调用同名工具并自然回复。
  * 已实现：start / list / status / continue / cancel / create / doctor + 工作流快捷命令（/ralphflow-<工作流名>）；
- * `/ralphflow-reset` / `/ralphflow-rewind` **命令**仍只声明（重做/回退当前步，暂缓）。
+ * `/ralphflow-rewind` **命令**仍只声明（回退到上游步骤，暂缓）。
  *
- * 注意别把两者搞混：**步骤级方言 `reset: true`（重置门）已经实现**（进入该步前整段替换会话
- * 可见面，载体见 `src/reset.ts`）——它是工作流作者写在步骤上的键，不是模型可调用的命令，
- * 所以这里**不注册** `ralphflow_reset` 工具（工具面保持固定）。
+ * **`/ralphflow-reset` 是唯一的例外路径，但不是例外「命令面」**：它由命令处理器**直接**调用
+ * 引擎的 `resetCurrent` 完成机械动作（换干净上下文 + 重投当前步 DO，不赦免失败），
+ * 再把结果交回模型自然语言回复。为什么不做成 `ralphflow_reset` 工具：
+ *   · 重置是**机械程序**的职责（不赦免失败才守得住 `max_fail_count`），不该要求模型记得去调；
+ *   · design §10.10 的边界 —— 不给模型任何「可调用的修复入口」（工具面保持固定）。
+ *
+ * 注意别把三者搞混：**步骤级 `reset: true` / 工作流级 `auto_reset: true`（重置门）**是工作流
+ * 作者写的键（载体见 `src/reset.ts`）；`/ralphflow-reset` 是**用户**手里的手动入口，两者走
+ * 引擎的同一根接线（`deliverStepDo` 的 `opts.manual`），语义一致（只换上下文、不赦免失败）。
  */
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
@@ -61,7 +67,7 @@ export interface ToolContext {
 export type ToolHandler = (args: any, agent: Agent | undefined) => Promise<string> | string;
 
 /** 可用命令清单 —— 单一事实源：未实现命令的说明与兜底回执共用同一份，避免两处各写一遍后走样。 */
-const AVAILABLE_COMMANDS = "`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`";
+const AVAILABLE_COMMANDS = "`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-reset`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`";
 
 function sessionIdOf(agent: Agent | undefined): string | null {
   return (agent as { session?: { id?: string } } | undefined)?.session?.id ?? null;
@@ -220,11 +226,14 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     }));
   }
 
-  // reset / rewind：只声明不实现（design §8 / 宪法 §10.10）。
-  // 它们**不注册为工具** —— 注册了就等于给模型一个可调用、会返回内容的实现，
-  // 与「命令面固定 + 只声明不实现」的边界冲突。命令处理面（/ralphflow-reset、
-  // /ralphflow-rewind）仍然把指令交给模型，由模型自然语言解释暂缓原因。
-  for (const n of ["reset", "rewind"]) handlers.set(`ralphflow_${n}`, unimplHandler);
+  // `/ralphflow-rewind`：只声明不实现（design §8 / 宪法 §10.10）。
+  // 它**不注册为工具** —— 注册了就等于给模型一个可调用、会返回内容的实现，
+  // 与「命令面固定 + 只声明不实现」的边界冲突。命令处理面（/ralphflow-rewind）
+  // 仍然把指令交给模型，由模型自然语言解释暂缓原因。
+  //
+  // （`ralphflow_reset` 同样**不注册**：`/ralphflow-reset` 是命令处理器直接驱动引擎的机械路径，
+  //   不给模型可调用的修复入口；见文件头注释。）
+  handlers.set("ralphflow_rewind", unimplHandler);
 
   return handlers;
 }
@@ -250,9 +259,17 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
     description: string;
     input?: { hint: string };
     /** 参数合法时返回给模型的指令；否则返回渲染给用户的卡片（用法错误/未实现） */
-    shim(inv: { rawInput: string; agent: Agent; signal: AbortSignal }):
+    shim?(inv: { rawInput: string; agent: Agent; signal: AbortSignal }):
       | { kind: "directive"; text: string }
       | { kind: "card"; text: string };
+    /**
+     * **机械命令**（目前只有 `/ralphflow-reset`）：命令处理器直接驱动引擎做事、
+     * 再把结果交回模型自然语言回复 —— 不经过「模型记得去调同名工具」这一步。
+     * 与 `shim` 二选一（`run` 优先）。
+     */
+    run?(inv: { rawInput: string; agent: Agent; signal: AbortSignal }): Promise<
+      { kind: "success"; text?: string } | { kind: "error"; text: string }
+    >;
   }> = [
     {
       name: "ralphflow-start",
@@ -344,11 +361,25 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
     },
     {
       name: "ralphflow-reset",
-      description: "（本版本未实现）重做当前步。",
-      shim: () => ({
-        kind: "directive",
-        text: `用户执行了 /ralphflow-reset（重做当前步，涉及上下文管理，本版本暂缓实现）。**不要调用任何工具**，用自然语言说明：该命令本版本未实现、暂缓原因（涉及上下文管理），以及当前可用命令 ${AVAILABLE_COMMANDS}；如用户确实想重做，可建议重新交卷触发自动返工，或取消后重启。注意与**重置门**区分：工作流步骤上的 \`reset: true\` 是另一回事（进入该步前重置上下文），它已实现，不是这个命令。`,
-      }),
+      description: "重做当前步：只换干净上下文（失败计数保留，不赦免失败）；暂停中请用 /ralphflow-continue。示例：/ralphflow-reset",
+      run: async (inv) => {
+        const sid = messageSessionId(inv.agent);
+        if (!sid) return { kind: "error", text: "当前会话已离线，无法重置上下文。请刷新后重试。" };
+        // 机械动作在**命令处理器**里完成（不经过模型调工具）：重置是程序的职责，
+        // 「不赦免失败」也只有在程序手里才守得住。失败绝不抛，如实回。
+        const res = deps.engineFor(deps.workspaceOfSession?.(sid)).resetCurrent(sid);
+        if (res.ok) {
+          // 成功：引擎已在**空闲窗口**排入整段替换，并会把当前步 DO 重投 + 发一条可见告知。
+          // 不给程序化卡片（命令语义 = 触发词，回复由模型/引擎消息承担）。
+          return { kind: "success" };
+        }
+        // 拒绝：把原因交回模型自然语言转达，并叫停重复尝试（命令语义不变）。
+        deps.deliver(
+          sid,
+          `[ralphflow] 用户执行了 /ralphflow-reset，但**被拒绝**：${res.text}\n\n请用自然语言如实向用户说明拒绝原因与下一步（暂停中指向 \`/ralphflow-continue\`；验证/审查门中请等结果）。**不要调用任何工具**，不要替用户重试重置。`,
+        );
+        return { kind: "success" };
+      },
     },
     {
       name: "ralphflow-rewind",
@@ -368,7 +399,9 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
         ...(def.input ? { input: { hint: def.input.hint } } : {}),
         handler: async (inv: { rawInput: string; agent: Agent; signal: AbortSignal }) => {
           try {
-            const out = def.shim({ rawInput: inv.rawInput, agent: inv.agent, signal: inv.signal });
+            // 机械命令：处理器直接驱动引擎，结果交回模型自然回复（零程序化卡片返回）
+            if (def.run) return await def.run({ rawInput: inv.rawInput, agent: inv.agent, signal: inv.signal });
+            const out = def.shim!({ rawInput: inv.rawInput, agent: inv.agent, signal: inv.signal });
             if (out.kind === "directive") {
               const sid = messageSessionId(inv.agent);
               if (sid) {

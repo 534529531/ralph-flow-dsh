@@ -138,7 +138,7 @@
 
 ## 8. 命令面与 v0 范围
 
-**命令/工具（与 claude/opencode 同名，心智通用）。命令语义＝「触发词，回复＝大模型」**（迭代 1 实测定案）：`/ralphflow-*` **一律**给模型注入一条指令（`source: plugin`），由模型调用同名工具、自然回复——**含用法错误与未实现命令**（向 opencode 看齐：参数不全由模型说明用法并追问，reset/rewind 由模型解释暂缓原因与可用命令）——**零程序化卡片返回**。这也根治了「dsh web 新会话首条命令结果不渲染」：命令全部走普通消息路径，平台命令卡渲染缺陷不再涉及。唯一兜底是会话离线时给一行错误提示。工具侧不变：模型可随时直接调用 `ralphflow_*`。
+**命令/工具（与 claude/opencode 同名，心智通用）。命令语义＝「触发词，回复＝大模型」**（迭代 1 实测定案）：`/ralphflow-*` **一律**给模型注入一条指令（`source: plugin`），由模型调用同名工具、自然回复——**含用法错误与未实现命令**（向 opencode 看齐：参数不全由模型说明用法并追问，rewind 由模型解释暂缓原因与可用命令）——**零程序化卡片返回**。这也根治了「dsh web 新会话首条命令结果不渲染」：命令全部走普通消息路径，平台命令卡渲染缺陷不再涉及。唯一兜底是会话离线时给一行错误提示。工具侧不变：模型可随时直接调用已实现的 `ralphflow_*` 工具。**唯一例外是 `/ralphflow-reset`**：机械动作在命令处理器里直接驱动引擎完成（重置是本程序的职责，不要求模型记得去调），结果仍交回模型自然语言回复（零程序化卡片返回不变），且**不注册** `ralphflow_reset` 工具（不给模型可调用的修复入口，见 §10.10）。
 
 | 命令 | 工具 | v0 形态 |
 |---|---|---|
@@ -150,12 +150,13 @@
 | `/ralphflow-create` | `ralphflow_create` | 实现（引导式设计指引 → `ralphflow_doctor` 校验到全部 ✅ 且无告警） |
 | `/ralphflow-doctor` | `ralphflow_doctor` | 实现（工作流/实例诊断，坏文件说人话） |
 | `/ralphflow-<工作流名>` | — | 动态注册的工作流快捷命令，如 `/ralphflow-loop`、`/ralphflow-spec`（命名与 claude code 版一致） |
-| `/ralphflow-reset` `/ralphflow-rewind` | 命令只声明不实现（重做/回退当前步，涉及上下文管理，作者定案暂缓）。**注意**：步骤级方言 `reset: true`（重置门）**已实现**，见下方 §8 与 `docs/v2/reset-feasibility.md` |
+| `/ralphflow-reset` | —（不注册同名工具） | **实现**：命令处理器直接驱动引擎做机械重置（换干净上下文 + 重投当前步 DO），结果交回模型自然语言回复。**不赦免失败**（`fail_counts` 原样保留），**暂停中拒绝**并指向 `/ralphflow-continue`，只在 DO 阶段生效。不注册 `ralphflow_reset` 工具——不给模型可调用的修复入口（§10.10）。见下方 §8 |
+| `/ralphflow-rewind` | 命令只声明不实现（回退到上游步骤，涉及上下文管理，作者定案暂缓） |
 | —（无命令，DO 阶段由模型自动调用） | `ralphflow_submit` | DO 交卷（dsh 原生工具调用；取代 `<promise>done</promise>` 文本标记）。见 §5 三时刻① |
 
-**reset 门（步骤级 `reset: true`，已实现）**：进入该步前，在**步骤边界的空闲窗口**（`agent.runMaintenance`，phase ≠ idle 即放弃）把属主会话可见面的 `nodes[1]` 到末尾**整段替换**成一条 ralphflow 自己写的「交接稿」，使模型收到的 messages = **系统提示 + 交接稿 + 本步 DO**。载体 = `src/reset.ts`（自有 plugin source `{kind:'plugin', plugin:'ralphflow'}`，**不冒用压缩检查点**、不发任何 `compaction/*` 事件）；策略与三处投递 = 引擎的 `deliverStepDo`（advance / 返工）+ `EnginePorts.resetSurface`。交接稿只写**能现算**的四项（工作流名 / 第几步 / 产出目录 / 交互契约，**零新增状态字段**）；另发一条 append 来源的**可见告知**（Chat 可见），它被同一次替换一并遮蔽，因此不进模型上下文（决定②：不让「用户看到的 ≠ 模型看到的」变成静默）。两条结构性边界：**工作流首步无法重置**（首步 DO 是 `ralphflow_start` 的工具返回值，替换会落在工具调用内部 → 孤儿 `tool/result` → 静默损坏会话），启动回执如实说明；**面不平衡时放弃本次替换**，DO 照常投递并把原因写进播报行。`/ralphflow-reset` **命令**仍未实现——两者不是一回事。
+**reset 门（已实现）**：进入该步前，在**步骤边界的空闲窗口**（`agent.runMaintenance`，phase ≠ idle 即放弃）把属主会话可见面的 `nodes[1]` 到末尾**整段替换**成一条 ralphflow 自己写的「交接稿」，使模型收到的 messages = **系统提示 + 交接稿 + 本步 DO**。载体 = `src/reset.ts`（自有 plugin source `{kind:'plugin', plugin:'ralphflow'}`，**不冒用压缩检查点**、不发任何 `compaction/*` 事件）；策略与投递 = 引擎的 `deliverStepDo` + `EnginePorts.resetSurface`。三种触发**行为完全一致**、只按来源分措辞：步骤级 `reset: true`、工作流级 `auto_reset: true`（= 给所有步骤标 reset，含失败重试）、手动 `/ralphflow-reset`（`resetCurrent`，用户发起、无论该步有没有标都强制重置）。交接稿只写**能现算**的四项（工作流名 / 第几步 / 产出目录 / 交互契约，**零新增状态字段**）；另发一条 append 来源的**可见告知**（Chat 可见），它被同一次替换一并遮蔽，因此不进模型上下文（决定②：不让「用户看到的 ≠ 模型看到的」变成静默）。两条结构性边界：**工作流首步的初次进入无法重置**（首步 DO 是 `ralphflow_start` 的工具返回值，替换会落在工具调用内部 → 孤儿 `tool/result` → 静默损坏会话），启动回执如实说明（并**按来源分两支**：`auto_reset` 带出的重置绝不说成「本步标了 `reset: true`」——作者没标；子工作流的 `auto_reset` 在加载期静态展开下沉为子步骤 `reset: true` 时**同时打来源标记 `reset_from_auto`**，否则合成键会冒充作者标记、让这句错话重新出现）；**面不平衡时放弃本次替换**，DO 照常投递并把原因写进播报行。手动重置另有三条机械护栏：**不赦免失败**（`fail_counts` 原样保留，否则反复 reset 就能绕过 `max_fail_count`）、**暂停中拒绝**并指向 `/ralphflow-continue`（那条路径才是显式的失败赦免）、**只在 DO 阶段**（已交卷 = 验证在飞/审查门，重置会打断验证）。手动重置是异步落地的（等空闲窗口），而命令处理器当场已回 `success`（零程序化卡片）——因此空闲窗口复查若判定实例已交卷/推进/取消，必须**发一条可见告知**（写 `manual_reset_dropped` 进执行日志）说明这次重置没有生效，绝不静默作废。
 
-**v0 没有**（**v0.2 已激活多验证者投票；reset 门（步骤级方言）已实现**）：rewind、客户端 UI、HTTP 通道、通知、沙箱。
+**v0 没有**（**v0.2 已激活多验证者投票；重置门（步骤级 `reset` / 工作流级 `auto_reset` / 手动 `/ralphflow-reset`）已实现**）：rewind、客户端 UI、HTTP 通道、通知、沙箱。
 
 **v0 有**：YAML 引擎、内置 `loop` + `spec`、审查门、续跑、落盘、失败重试、多实例、报告归档、崩溃 fail-safe。
 
@@ -191,7 +192,7 @@
 7. **主会话永远不委派验证者**。委派只从引擎发出。
 8. **不移植 opencode/claude 引擎**。只移植"裁判权在程序"语义与用户旅程，机制用 dsh 原生件组合。
 9. **客户端代码禁止先于内核**（v0 没有客户端；UI 见 §11 门槛）。
-10. **不允许引入自动修复类命令的实现**（`unbrick`；`/ralphflow-reset` / `/ralphflow-rewind` **命令**只声明不实现，见 §8 命令表）。`ralphflow_doctor` 是**诊断**命令——只报问题与修法，绝不代替用户修，因此不属本禁令；需要自动修复 = 设计错了。**边界**：步骤级方言 `reset: true`（重置门）是工作流作者写的键、由引擎在步骤边界机械执行，不是「命令」、也不给模型任何可调用的修复入口，故不在本禁令内。
+10. **不允许引入自动修复类命令的实现**（`unbrick`；`/ralphflow-rewind` **命令**只声明不实现，见 §8 命令表）。`ralphflow_doctor` 是**诊断**命令——只报问题与修法，绝不代替用户修，因此不属本禁令；需要自动修复 = 设计错了。**边界**：重置门（步骤级 `reset: true`、工作流级 `auto_reset: true`）是工作流作者写的键、由引擎在步骤边界机械执行，不是「命令」、也不给模型任何可调用的修复入口，故不在本禁令内。`/ralphflow-reset` **是作者已放行的例外**（原定「只声明不实现」）：它是用户手里的**手动重做当前步**入口，由命令处理器直接驱动引擎（不给模型工具），且**只换干净上下文、不赦免失败** —— 反复 reset 不能绕过 `max_fail_count`（推进权仍在机械程序手里），暂停态一律拒绝并指向 `/ralphflow-continue` 这条显式赦免路径。
 11. **每个功能入场合规**：带"最小版失败"的复现记录（§11 准入列）。
 12. **不支持的方言键 = 警告忽略，不兼容、不加工作量**（Q13 定案）。
 
@@ -205,8 +206,9 @@
 | v0.2 | 多验证者投票（`check_voting` 激活）**已实现** | 原准入是「单验证者 ≥3 次误放/误烧的证据」；本次由作者**直接指示**实现，**未按原样收集该证据**（如实记录，不补造）。行为对齐 opencode `check-voting.ts` + `voting-progress.ts`（权威参考），载体按 dsh 无相位模型落地：进度不另立文件（`state.json` 单根事实源） |
 | v0.3 | `create` 交互式、`doctor` 薄版（fail-fast 的人话出口）**已实现** | 手写 YAML 开始成为摩擦 |
 | v0.4 | UI（页头/抽屉，复用 v1 配方） | loop+spec 在 ≥20 个真实任务上跑过；命令卡渲染作为本次实测问题的补药 |
-| v0.5+ | 验证者沙箱化、`/ralphflow-reset`·`/ralphflow-rewind` **命令**、通知 | 各自的最小版失败证据 |
+| v0.5+ | 验证者沙箱化、`/ralphflow-rewind` **命令**、通知 | 各自的最小版失败证据 |
 | v0.7 | **reset 门（步骤级 `reset: true`）已实现** —— 进入该步前在步骤边界的空闲窗口整段替换会话可见面（交接稿 = 系统提示之后唯一内容），模型收到的 messages = 系统提示 + 交接稿 + 本步 DO。载体 `src/reset.ts`（`agent.runMaintenance` 互斥 + `toolPairingBalancedAfter` 自检 + 自有 plugin source），策略/投递在引擎（`deliverStepDo` + `EnginePorts.resetSurface`）。**零新增状态字段**（交接稿只写能现算的四项）；**首步无法重置**（首步 DO 是工具返回值）→ 启动回执如实说明；**面不平衡时放弃替换**且 DO 照常投递。验收 `scripts/reset-surface-test.mjs`（真实 Session + 真实插件装配的端到端 + 负对照 + 五条硬约束负例）。预研与五条硬约束见 `reset-feasibility.md` | 作者**直接指示**（同 v0.2/v0.6：未按原准入收集最小版失败证据，如实记录）；预研阶段已完成五路源码取证 |
+| v0.8 | **reset 补齐两处已实现**：① 工作流级 `auto_reset: true`（= 给所有步骤标 reset，含失败重试；子工作流的 `auto_reset` 在加载期静态展开时下沉为子步骤 `reset: true` **并保留来源标记 `reset_from_auto`**，嵌套 auto_reset 的措辞仍走 auto 支）；② 手动 `/ralphflow-reset`（`resetCurrent`）。同一根接线（`deliverStepDo` 的 `opts.manual`）、同一语义（只换干净上下文、**不赦免失败**），三种来源只按**措辞**分述（`auto_reset` 绝不说成「本步标了 `reset: true`」——作者没标）。`/ralphflow-reset` 是命令处理器直接驱动引擎的机械路径，**不注册** `ralphflow_reset` 工具（§10.10：不给模型可调用的修复入口）；暂停中拒绝并指向 `/ralphflow-continue`，只在 DO 阶段生效；在回合进行中按下、回合以交卷收尾而被丢弃时**发可见告知并写执行日志 `manual_reset_dropped`**（绝不静默作废）。`auto_reset` 非布尔 = 加载期硬错误；纯线性流配 `auto_reset` 给 doctor 成本提示 | 作者**直接指示**（同 v0.2/v0.6/v0.7：未按原准入收集最小版失败证据，如实记录）。第二轮对抗验证抓出两个反例后修复：嵌套 auto_reset 来源被合成键抹掉、手动重置在「模型在飞」时静默失败 |
 | v0.6 | **子工作流（`workflow:` 代替 `do:`）已实现** —— **加载期静态展开**：调用点就地内联成子步骤（id 加 `调用点id/` 前缀），子工作流出口接到调用点的 `on_pass`。**零新增 InstanceState 字段**（不用 opencode 的运行时状态栈：`current_step` 仍是单字符串、失败预算仍按步记账）。与 opencode 的四处刻意差异：① 它静默忽略或拖到运行期才炸的（成环 / 子文件加载不出来 / id 含 `/` 撞展开）一律**加载期硬错误**；② 展开后步骤总数上限 **2000**（展开中计数、超了立刻中止）与**嵌套深度上限 32 层**（含最外层：展开器是递归的，1900 个「每层零步骤」的串联文件步数只有 1、步数上限看不见，深度闸在展开任何一层之前拒绝，绝不冒泡 `RangeError`）；③ 子步骤耗尽 `max_fail_count` → **暂停等人**（不做「自动走父级 `on_fail`」）；④ 调用点只认 `id`/`desc`/`workflow`/`on_pass`，其余键**逐键告警 + 指路**，`manual_step` 标调用点 = **整段子工作流跑完后停门**（opencode 禁止这种写法）。子文件里的 `adversarial_check.model` 下沉到它各步的 `check_model`（逐层继承）；不传参（`inputs` 告警忽略）。验收 `scripts/subworkflow-test.mjs`（含负对照） | 作者**直接指示**（同 v0.2：未按原准入收集最小版失败证据，如实记录）。与 `subworkflow-nesting-research.md` 的推荐（独立子实例 + `awaiting_child` 指针）方向不同——该调研的两条主要顾虑（展开会把一次逻辑失败拆成多个物理步骤、运行时状态栈与宪法冲突）正是本实现正面绕开的：展开后失败预算仍按**步**记账，且不引入任何栈 |
 
 ## 12. 验收（v0 完成判据）

@@ -29,6 +29,7 @@ import {
   createUserMessage,
 } from "@deepseek-ai/dsh-llm";
 import * as plugin from "../lib/index.js";
+import { createEngine, resetCauseOf, stepWantsReset } from "../lib/engine.js";
 import { createResetSurface } from "../lib/reset.js";
 import { cleanupTmp, mkTmp, textOf, toolOf } from "./helpers/plugin-harness.mjs";
 
@@ -104,6 +105,92 @@ steps:
     on_pass: done
     on_fail: b
     max_fail_count: 3
+`;
+// 工作流级 auto_reset：三步，每步推进都该恰一次替换（首步结构上除外）
+const WF_AUTO = `description: auto_reset 验收
+auto_reset: true
+steps:
+  - id: a
+    desc: 第一步（首步：结构上无法重置）
+    do: 做 A 的工作
+    check: A 是否真的完成
+    on_pass: b
+    on_fail: a
+    max_fail_count: 3
+  - id: b
+    desc: 第二步
+    do: 做 B 的工作
+    check: B 是否真的完成
+    on_pass: c
+    on_fail: b
+    max_fail_count: 3
+  - id: c
+    desc: 第三步
+    do: 做 C 的工作
+    check: C 是否真的完成
+    on_pass: done
+    on_fail: c
+    max_fail_count: 3
+`;
+// 手动 /ralphflow-reset 验收：第二步**没有**标 reset（证明手动路径强制重置），max_fail_count=2
+// （第一次失败 → fail_count=1 返工不暂停；第二次失败 → 2>=2 暂停，用来验证暂停中拒绝）
+const WF_MANUAL = `description: 手动 reset 验收
+steps:
+  - id: first
+    desc: 第一步
+    do: 做第一步的工作
+    check: 第一步是否真的完成
+    on_pass: second
+    on_fail: first
+    max_fail_count: 3
+  - id: second
+    desc: 第二步（未标 reset：手动重置也要生效）
+    do: 做第二步的工作
+    check: 第二步是否真的完成
+    on_pass: done
+    on_fail: second
+    max_fail_count: 2
+`;
+// 嵌套 auto_reset：子工作流自带 auto_reset，父工作流首步就是调用点（展开后首步 = call/s1）。
+// 用来钉死「合成 reset 绝不能冒充作者标了这一步」这条措辞要求。
+const WF_SUB_AUTO = `description: 子工作流带 auto_reset
+auto_reset: true
+steps:
+  - id: s1
+    desc: 子第一步
+    do: 做子工作流 s1 的工作
+    check: s1 是否真的完成
+    on_pass: done
+    on_fail: s1
+    max_fail_count: 3
+`;
+const WF_PARENT_CALLS_AUTO = `description: 父工作流首步即调用带 auto_reset 的子工作流（父级没写 auto_reset）
+steps:
+  - id: call
+    workflow: subauto
+    on_pass: done
+`;
+const WF_PARENT_AUTO_CALLS_AUTO = `description: 父子都 auto_reset，首步是调用点
+auto_reset: true
+steps:
+  - id: call
+    workflow: subauto
+    on_pass: done
+`;
+// 父级有普通首步，第二步才是调用点 —— 让「子工作流 auto_reset 下沉」的步骤在**运行期**
+// 真正走一次替换（首步结构上无法替换，单步流只能靠返工触发）。
+const WF_PARENT_NORMAL_THEN_CALLS_AUTO = `description: 父首步普通，第二步调用带 auto_reset 的子工作流
+steps:
+  - id: p1
+    desc: 父第一步
+    do: 做父 p1 的工作
+    check: p1 是否真的完成
+    on_pass: call
+    on_fail: p1
+    max_fail_count: 3
+  - id: call
+    workflow: subauto
+    on_pass: done
 `;
 
 // ─── 宿主替身（真实 Session + 真实插件装配）──────────────────────────────────
@@ -313,6 +400,15 @@ async function runToSecondStep(H, { breakBalance = false } = {}) {
 const replacementEventsOf = (session) =>
   session.snapshotEvents().filter((e) => e.surfaceOp && typeof e.surfaceOp === "object" && e.surfaceOp.op === "replace");
 const allEvents = (session) => session.snapshotEvents();
+/** 当前工作区里所有实例的 execution.log 拼起来（执行日志可复盘性断言用） */
+const execLogTextOf = (ws) => {
+  const root = path.join(ws, ".dsh", "ralph-flow", "instances");
+  let names = [];
+  try { names = fs.readdirSync(root); } catch { return ""; }
+  return names.map((n) => {
+    try { return fs.readFileSync(path.join(root, n, "execution.log"), "utf-8"); } catch { return ""; }
+  }).join("\n");
+};
 
 // ═══ 1) 真实跑一次：交接后 messages 只剩 系统提示 + 交接稿 + DO ═══════════════
 console.log("\n1) 真实跑一次（reset: true 的第二步）");
@@ -516,8 +612,8 @@ console.log("\n7) 装配面（不把 reset 门误当成 /ralphflow-reset 命令�
   check("工具面固定：没有 ralphflow_reset 工具（reset 是步骤级方言，不是模型可调用的命令）",
     !names.includes("ralphflow_reset") && names.includes("ralphflow_start") && names.includes("ralphflow_submit"), names.join(","));
   const resetCmd = H.registered.commands.find((c) => c.name === "ralphflow-reset");
-  check("/ralphflow-reset 命令仍在（命令面固定），且其指令仍说明暂缓实现",
-    !!resetCmd, H.registered.commands.map((c) => c.name).join(","));
+  check("/ralphflow-reset 命令仍在（命令面固定），且**仍然不注册** ralphflow_reset 工具（机械动作在命令处理器里做，不给模型可调用的修复入口）",
+    !!resetCmd && !names.includes("ralphflow_reset"), H.registered.commands.map((c) => c.name).join(","));
   cleanupTmp(H.ws);
 }
 
@@ -697,6 +793,351 @@ console.log("\n11) DO 延迟投递期间：turn-stopping 不得误判「忘了�
   check("DO 送达之后：真「忘了交卷」仍会被提醒（护栏没有把正常路径也吞掉）",
     H.inbox.some((m) => textOf(m).includes("还没交卷")),
     JSON.stringify(H.inbox.map((m) => textOf(m).slice(0, 60))));
+  cleanupTmp(H.ws);
+}
+
+// ═══ 12) 工作流级 auto_reset: true：每步推进恰一次替换 + 回执措辞按来源分 ═══════
+console.log("\n12) 工作流级 auto_reset: true（每步推进恰一次替换）");
+{
+  const H = setup({ rfauto: WF_AUTO }, "rfauto");
+  seedPrior(H.session);
+  const startText = await H.turn(async () => {
+    const out = await H.call("ralphflow_start", { workflow: "rfauto", task: "任务书 AUTO" });
+    H.appendToolExchange("auto-start", "ralphflow_start", out);
+    return out;
+  });
+  // 措辞按来源分两支（任务书硬要求）：auto_reset 带出的重置**不得**被说成「本步标了 reset: true」
+  check("auto_reset 启动回执说的是工作流级 auto_reset，绝不出现「本步标了 `reset: true`」（作者没标）",
+    startText.includes("本工作流标了 `auto_reset: true`") && !startText.includes("本步标了 `reset: true`"),
+    startText.slice(0, 500));
+  check("auto_reset 首步回执同样如实说明「首步初次进入无法重置」与「重试会重置」",
+    startText.includes("工作流首步的初次进入无法做上下文重置") && startText.includes("重试时会正常重置"),
+    startText.slice(0, 500));
+  check("首步初次进入确实没有替换（结构边界：首步 DO 是工具返回值）",
+    replacementEventsOf(H.session).length === 0, `count=${replacementEventsOf(H.session).length}`);
+
+  // a → b：推进恰一次替换
+  await H.turn(async () => {
+    const out = await H.call("ralphflow_submit", { summary: "a 完成" });
+    H.appendToolExchange("auto-sub-a", "ralphflow_submit", out);
+    return out;
+  });
+  await H.waitInbox(1); H.drainInbox();
+  await H.waitVerifier(); H.releaseVerifier(true);
+  await H.waitInbox(1); await sleep(20);
+  const doB = H.drainInbox();
+  check("auto_reset：推进到第二步**恰发生 1 次**替换",
+    replacementEventsOf(H.session).length === 1, `count=${replacementEventsOf(H.session).length}`);
+  {
+    const msgs = H.session.deriveMessages();
+    const texts = msgs.map((m) => textOf(m));
+    check("auto_reset：第二步交接后 messages = 系统提示 + 交接稿 + DO（3 条）", msgs.length === 3, `count=${msgs.length}`);
+    check("auto_reset：交接稿写的是第 2/3 步 b",
+      texts[1]?.includes("`rfauto`（第 2/3 步）") && texts[1]?.includes("`b`"), texts[1]);
+    check("auto_reset：第二步 DO 已投递（做 B 的工作）", doB.some((m) => textOf(m).includes("做 B 的工作")));
+  }
+
+  // b → c：再恰一次替换（累计 2）
+  await H.turn(async () => {
+    const out = await H.call("ralphflow_submit", { summary: "b 完成" });
+    H.appendToolExchange("auto-sub-b", "ralphflow_submit", out);
+    return out;
+  });
+  await H.waitInbox(1); H.drainInbox();
+  await H.waitVerifier(); H.releaseVerifier(true);
+  await H.waitInbox(1); await sleep(20);
+  const doC = H.drainInbox();
+  check("auto_reset：推进到第三步再**恰一次**替换（累计 2 次，不多不少）",
+    replacementEventsOf(H.session).length === 2, `count=${replacementEventsOf(H.session).length}`);
+  {
+    const msgs = H.session.deriveMessages();
+    const texts = msgs.map((m) => textOf(m));
+    check("auto_reset：第三步交接后 messages 仍是 3 条，且写的是第 3/3 步 c",
+      msgs.length === 3 && texts[1]?.includes("第 3/3 步") && texts[1]?.includes("`c`"),
+      JSON.stringify(texts.map((t) => t.slice(0, 30))));
+    check("auto_reset：第三步 DO 已投递（做 C 的工作）", doC.some((m) => textOf(m).includes("做 C 的工作")));
+    check("auto_reset：每步的旧对话都被移出模型上下文",
+      !texts.some((t) => t.includes("重构登录模块")), JSON.stringify(texts.map((t) => t.slice(0, 24))));
+  }
+  cleanupTmp(H.ws);
+}
+
+// ═══ 13) 手动 /ralphflow-reset：只换干净上下文（DO 重投、失败计数保留、暂停拒绝）═══
+console.log("\n13) 手动 /ralphflow-reset（重做当前步）");
+{
+  const H = setup({ rfmanual: WF_MANUAL }, "rfmanual");
+  seedPrior(H.session);
+  await runToSecondStep(H);
+  check("手动重置前：第二步没有标 reset，零替换（证明后面的替换来自手动路径）",
+    replacementEventsOf(H.session).length === 0, `count=${replacementEventsOf(H.session).length}`);
+
+  const resetCmd = H.registered.commands.find((c) => c.name === "ralphflow-reset");
+  const invokeReset = () => resetCmd.handler({ rawInput: "", agent: { session: { id: H.sid } }, signal: new AbortController().signal });
+
+  // 先制造一次真实失败：第二步交卷 → 验证不过 → 返工回本步（fail_count=1，未到 max=2 不暂停）
+  await H.turn(async () => {
+    const out = await H.call("ralphflow_submit", { summary: "第二步完成" });
+    H.appendToolExchange("manual-sub-1", "ralphflow_submit", out);
+    return out;
+  });
+  await H.waitInbox(1); H.drainInbox();
+  await H.waitVerifier(); H.releaseVerifier(false, "第二步没做对");
+  await H.waitInbox(1); await sleep(20); H.drainInbox();
+  const stBefore = H.instanceState();
+  check("失败返工后：fail_counts.second = 1（本用例的前提）",
+    stBefore?.fail_counts?.second === 1, JSON.stringify(stBefore?.fail_counts));
+
+  // 手动重置：强制换上下文（该步并没有标 reset），fail_count 原样
+  const resetOut = await invokeReset();
+  check("手动 /ralphflow-reset 命令受理（{kind:'success'} 且零程序化卡片文本）",
+    resetOut.kind === "success" && resetOut.text === undefined, JSON.stringify(resetOut));
+  await H.waitInbox(1); await sleep(20);
+  const delivered = H.drainInbox();
+  check("手动重置在**空闲窗口**完成了替换（恰 1 次 replace）",
+    replacementEventsOf(H.session).length === 1, `count=${replacementEventsOf(H.session).length}`);
+  check("手动重置把当前步 DO 重投了（做第二步的工作）",
+    delivered.some((m) => textOf(m).includes("做第二步的工作")),
+    JSON.stringify(delivered.map((m) => textOf(m).slice(0, 40))));
+  {
+    const msgs = H.session.deriveMessages();
+    const texts = msgs.map((m) => textOf(m));
+    check("手动重置后 messages = 系统提示 + 交接稿 + DO（3 条）", msgs.length === 3, `count=${msgs.length}`);
+    check("手动重置交接稿写的是第 2/2 步 second，旧对话 100% 移出上下文",
+      texts[1]?.includes("`rfmanual`（第 2/2 步）") && texts[1]?.includes("`second`")
+      && !texts.some((t) => t.includes("重构登录模块")),
+      JSON.stringify(texts.map((t) => t.slice(0, 30))));
+  }
+  const reps = replacementEventsOf(H.session);
+  const noticeEvent = allEvents(H.session).find((e) => e.seq === reps[0]?.surfaceOp?.endSeq);
+  check("手动重置的可见告知按来源措辞（点明 /ralphflow-reset，不是「步骤开始前」）",
+    String(noticeEvent?.data?.source?.summary ?? "").includes("/ralphflow-reset"),
+    JSON.stringify(noticeEvent?.data?.source));
+  const stAfter = H.instanceState();
+  check("手动重置**不赦免失败**：fail_counts.second 原样为 1",
+    stAfter?.fail_counts?.second === 1, JSON.stringify(stAfter?.fail_counts));
+  check("手动重置不推进状态机：current_step 仍是 second、do_submitted 仍为 false",
+    stAfter?.current_step === "second" && stAfter?.do_submitted === false,
+    JSON.stringify({ step: stAfter?.current_step, submitted: stAfter?.do_submitted }));
+
+  // 再失败一次到 max_fail_count=2 → 暂停；此时 reset 必须拒绝并指向 /ralphflow-continue
+  await H.turn(async () => {
+    const out = await H.call("ralphflow_submit", { summary: "第二步再交卷" });
+    H.appendToolExchange("manual-sub-2", "ralphflow_submit", out);
+    return out;
+  });
+  await H.waitInbox(1); H.drainInbox();
+  await H.waitVerifier(); H.releaseVerifier(false, "还是没做对");
+  await H.waitInbox(1); await sleep(20); H.drainInbox();
+  const stPaused = H.instanceState();
+  check("max_fail_count=2：第二次失败即暂停（pause_reason=max_failures，走到暂停态）",
+    stPaused?.paused === true && stPaused?.pause_reason === "max_failures",
+    JSON.stringify({ paused: stPaused?.paused, reason: stPaused?.pause_reason }));
+
+  H.inbox.length = 0;
+  const rej = await invokeReset();
+  check("暂停中执行 /ralphflow-reset：命令受理但引擎**拒绝**，且不产生任何替换",
+    rej.kind === "success" && replacementEventsOf(H.session).length === 1,
+    `reps=${replacementEventsOf(H.session).length}`);
+  check("拒绝原因交给模型自然语言转达，并指向 /ralphflow-continue",
+    H.inbox.some((m) => textOf(m).includes("拒绝") && textOf(m).includes("/ralphflow-continue")),
+    JSON.stringify(H.inbox.map((m) => textOf(m).slice(0, 80))));
+  const stRej = H.instanceState();
+  check("暂停被拒后：失败计数（2）与暂停态原样（reset 只换上下文、不赦免失败）",
+    stRej?.fail_counts?.second === 2 && stRej?.paused === true,
+    JSON.stringify({ fail: stRej?.fail_counts, paused: stRej?.paused }));
+  cleanupTmp(H.ws);
+}
+
+// ═══ 14) auto_reset 的加载期校验 / 纯函数语义 / 子工作流下沉 ═════════════════════
+console.log("\n14) auto_reset：校验、语义、子工作流下沉");
+{
+  const ws = mkTmp("reset-parse");
+  tmpDirs.push(ws);
+  const wfDir = path.join(ws, ".dsh", "ralph-flow", "workflows");
+  fs.mkdirSync(wfDir, { recursive: true });
+  fs.writeFileSync(path.join(wfDir, "ok.yaml"),
+    "description: ok\nauto_reset: true\nsteps:\n  - id: s\n    do: x\n    check: y\n    on_fail: s\n");
+  fs.writeFileSync(path.join(wfDir, "bad.yaml"),
+    "description: bad\nauto_reset: \"yes\"\nsteps:\n  - id: s\n    do: x\n");
+  fs.writeFileSync(path.join(wfDir, "sub.yaml"),
+    "description: sub\nauto_reset: true\nsteps:\n  - id: s1\n    do: s1\n    check: c1\n    on_fail: s1\n");
+  fs.writeFileSync(path.join(wfDir, "parent.yaml"),
+    "description: parent\nsteps:\n  - id: p1\n    do: p1\n    check: c1\n    on_pass: call\n    on_fail: p1\n  - id: call\n    workflow: sub\n    on_pass: done\n");
+  const eng = createEngine(ws, { deliver: () => true, verify: async () => ({ status: "passed", reason: "stub" }) });
+
+  const ok = eng.loadWorkflow("ok");
+  check("auto_reset: true 透传进定义，且无 problems",
+    ok.def?.auto_reset === true && ok.problems.length === 0, JSON.stringify(ok.problems));
+  const bad = eng.loadWorkflow("bad");
+  check("auto_reset 非布尔 = 加载期硬错误（不静默当成 false）",
+    !bad.def && bad.problems.some((p) => p.includes("auto_reset") && p.includes("布尔")),
+    JSON.stringify(bad.problems));
+
+  check("纯函数：步骤级 reset 优先记作 step（作者确实标了这一步）",
+    resetCauseOf({ auto_reset: true }, { reset: true }) === "step");
+  check("纯函数：工作流级 auto_reset 记作 auto",
+    resetCauseOf({ auto_reset: true }, {}) === "auto");
+  check("纯函数：都不标 = undefined / false",
+    resetCauseOf({}, {}) === undefined && stepWantsReset({}, {}) === false);
+  check("纯函数：auto_reset 覆盖所有步骤（任何方式进入都触发）",
+    stepWantsReset({ auto_reset: true }, {}) === true);
+  check("纯函数：子工作流 auto_reset 下沉出的合成 reset 仍记作 auto（不是作者标的 step）",
+    resetCauseOf({}, { reset: true, reset_from_auto: true }) === "auto");
+  check("纯函数：下沉标记纯措辞用途，不改变行为（仍要重置）",
+    stepWantsReset({}, { reset: true, reset_from_auto: true }) === true);
+
+  const parent = eng.loadWorkflow("parent");
+  const expanded = parent.def?.steps.find((s) => s.id === "call/s1");
+  check("子工作流的 auto_reset 在加载期静态展开时下沉为子步骤 reset: true（不静默失效）",
+    expanded?.reset === true && parent.problems.length === 0,
+    JSON.stringify({ reset: expanded?.reset, problems: parent.problems }));
+  check("下沉同时保留来源标记 reset_from_auto（否则措辞会说错话）",
+    expanded?.reset_from_auto === true && resetCauseOf(parent.def, expanded) === "auto",
+    JSON.stringify({ marker: expanded?.reset_from_auto, cause: parent.def ? resetCauseOf(parent.def, expanded) : null }));
+
+  check("doctor：纯线性流配 auto_reset 会提示 token 成本（作者应知情）",
+    (ok.warnings ?? []).some((w) => w.includes("auto_reset") && w.includes("token")),
+    JSON.stringify(ok.warnings));
+  cleanupTmp(ws);
+}
+
+// ═══ 15) auto_reset 的失败重试（同步骤重进）也触发重置 ═════════════════════════
+console.log("\n15) auto_reset：失败重试（同步骤重进）也触发重置");
+{
+  const H = setup({ rfauto2: WF_AUTO }, "rfauto2");
+  seedPrior(H.session);
+  await runToSecondStep(H);
+  check("auto_reset：进入第二步发生 1 次替换", replacementEventsOf(H.session).length === 1,
+    `count=${replacementEventsOf(H.session).length}`);
+  // 第二步交卷 → 验证不过 → on_fail 回本步（**同步骤重进**）→ 必须再次替换
+  await H.turn(async () => {
+    const out = await H.call("ralphflow_submit", { summary: "b 完成" });
+    H.appendToolExchange("auto2-sub-b", "ralphflow_submit", out);
+    return out;
+  });
+  await H.waitInbox(1); H.drainInbox();
+  await H.waitVerifier(); H.releaseVerifier(false, "B 没做对");
+  await H.waitInbox(1); await sleep(20);
+  const delivered = H.drainInbox();
+  check("auto_reset：同步骤失败重试也触发重置（累计 2 次替换）",
+    replacementEventsOf(H.session).length === 2, `count=${replacementEventsOf(H.session).length}`);
+  const msgs = H.session.deriveMessages();
+  const texts = msgs.map((m) => textOf(m));
+  check("auto_reset：重试交接后 messages 仍是 3 条，且 DO 带上失败原因（现场不丢）",
+    msgs.length === 3 && texts[2]?.includes("B 没做对"),
+    JSON.stringify(texts.map((t) => t.slice(0, 40))));
+  check("auto_reset：重试 DO 照常投递", delivered.some((m) => textOf(m).includes("做 B 的工作")),
+    JSON.stringify(delivered.map((m) => textOf(m).slice(0, 40))));
+  cleanupTmp(H.ws);
+}
+
+// ═══ 16) 嵌套 auto_reset：首步是「调用带 auto_reset 的子工作流」→ 措辞仍走 auto 支 ═══
+console.log("\n16) 嵌套 auto_reset：启动回执按来源措辞（绝不说「本步标了 reset: true」）");
+{
+  // 16a) 父级没写 auto_reset，只有子工作流写了：展开后首步是 call/s1，来源是子层 auto_reset。
+  const H = setup({ subauto: WF_SUB_AUTO, psub: WF_PARENT_CALLS_AUTO }, "psub");
+  seedPrior(H.session);
+  const startOut = await H.turn(async () => H.call("ralphflow_start", { workflow: "psub", task: "嵌套 auto 任务" }));
+  const text = typeof startOut === "string" ? startOut : "";
+  check("首步来源是子工作流 auto_reset 时，启动回执按 auto 支措辞（含「本工作流标了 auto_reset」）",
+    text.includes("本工作流标了 `auto_reset: true`"), JSON.stringify(text.slice(0, 240)));
+  check("绝不出现「本步标了 `reset: true`」（作者只写过 auto_reset）",
+    !text.includes("本步标了 `reset: true`"), JSON.stringify(text.slice(0, 240)));
+  cleanupTmp(H.ws);
+
+  // 16b) 父级也写 auto_reset：同样不能因合成 reset 而冒充作者标记。
+  const H2 = setup({ subauto: WF_SUB_AUTO, psubauto: WF_PARENT_AUTO_CALLS_AUTO }, "psubauto");
+  seedPrior(H2.session);
+  const startOut2 = await H2.turn(async () => H2.call("ralphflow_start", { workflow: "psubauto", task: "父子 auto 任务" }));
+  const text2 = typeof startOut2 === "string" ? startOut2 : "";
+  check("父子都 auto_reset、首步是调用点：仍按 auto 支措辞（含「本工作流标了 auto_reset」）",
+    text2.includes("本工作流标了 `auto_reset: true`"), JSON.stringify(text2.slice(0, 240)));
+  check("父子都 auto_reset 时也绝不出现「本步标了 `reset: true`」",
+    !text2.includes("本步标了 `reset: true`"), JSON.stringify(text2.slice(0, 240)));
+  cleanupTmp(H2.ws);
+
+  // 16c) 运行期：父级普通首步 → 调用带 auto_reset 的子工作流，推进时的替换必须走 auto 来源
+  //      （不能因为合成键就把 reset_surface 事件的 trigger 记成 step，也不能把可见告知说错）。
+  const H3 = setup({ subauto: WF_SUB_AUTO, pnested: WF_PARENT_NORMAL_THEN_CALLS_AUTO }, "pnested");
+  seedPrior(H3.session);
+  await H3.turn(async () => {
+    const out = await H3.call("ralphflow_start", { workflow: "pnested", task: "嵌套运行期任务" });
+    H3.appendToolExchange("nested-start", "ralphflow_start", out);
+    return out;
+  });
+  await H3.turn(async () => {
+    const out = await H3.call("ralphflow_submit", { summary: "父第一步完成" });
+    H3.appendToolExchange("nested-sub-1", "ralphflow_submit", out);
+    return out;
+  });
+  await H3.waitInbox(1); H3.drainInbox();
+  await H3.waitVerifier(); H3.releaseVerifier(true, "p1 通过");
+  await H3.waitInbox(1); await sleep(20);
+  H3.drainInbox();
+  check("嵌套 auto_reset 的步骤在运行期确实替换（恰 1 次）",
+    replacementEventsOf(H3.session).length === 1, `count=${replacementEventsOf(H3.session).length}`);
+  const logs3 = execLogTextOf(H3.ws);
+  check("嵌套 auto_reset 的 reset_surface 事件 trigger = auto（不冒充作者标的 step）",
+    /"event":"reset_surface"[^\n]*"trigger":"auto"/.test(logs3), logs3.slice(-500));
+  // auto 门的可见告知由载体**直接 append**（随后被同一次替换遮蔽），不进引擎收件箱：
+  // 按 test 13 的同一口径，从 replace 事件的 endSeq（= noticeSeq）取那条节点。
+  const rep3 = replacementEventsOf(H3.session)[0];
+  const noticeEvent3 = allEvents(H3.session).find((e) => e.seq === rep3?.surfaceOp?.endSeq);
+  const noticeSummary3 = String(noticeEvent3?.data?.source?.summary ?? "");
+  check("嵌套 auto_reset 的可见告知走 auto 支（「步骤 call/s1 开始前已重置」，不点手动命令）",
+    noticeSummary3.includes("call/s1") && noticeSummary3.includes("已重置上下文") && !noticeSummary3.includes("/ralphflow-reset"),
+    JSON.stringify(noticeSummary3));
+  cleanupTmp(H3.ws);
+}
+
+// ═══ 17) 手动 /ralphflow-reset 在回合中按下、回合以交卷收尾 → 绝不静默作废 ═══════
+console.log("\n17) 手动 /ralphflow-reset：空闲窗口复查发现已交卷 → 必须可见告知（不静默）");
+{
+  const H = setup({ rfdrop: WF_MANUAL }, "rfdrop");
+  seedPrior(H.session);
+  await runToSecondStep(H); // 到第二步 DO（该步未标 reset，未交卷）
+  const resetCmd = H.registered.commands.find((c) => c.name === "ralphflow-reset");
+  const invokeReset = () => resetCmd.handler({ rawInput: "", agent: { session: { id: H.sid } }, signal: new AbortController().signal });
+
+  const repsBefore = replacementEventsOf(H.session).length;
+  const stBefore = H.instanceState();
+  check("前提：第二步未标 reset、DO 阶段、零替换",
+    repsBefore === 0 && stBefore?.current_step === "second" && stBefore?.do_submitted === false,
+    JSON.stringify({ reps: repsBefore, step: stBefore?.current_step, submitted: stBefore?.do_submitted }));
+
+  // 关键时序（验证者 2/4 复现的反例）：命令在**回合进行中**按下（phase='turn'），
+  // 随后同一回合以 ralphflow_submit 收尾。替换要等空闲窗口才做得成，届时 do_submitted
+  // 已是 true → 只能放弃；但命令处理器当场已回 success，用户必须收到可见告知。
+  let resetOut = null;
+  await H.turn(async () => {
+    resetOut = await invokeReset();
+    const out = await H.call("ralphflow_submit", { summary: "第二步完成（在 reset 排队期间）" });
+    H.appendToolExchange("drop-sub", "ralphflow_submit", out);
+    return out;
+  });
+  check("命令当场受理（零程序化卡片）——所以可见告知是唯一结果通道",
+    resetOut?.kind === "success" && resetOut?.text === undefined, JSON.stringify(resetOut));
+  await H.waitInbox(1); await sleep(30);
+  const delivered = H.drainInbox();
+  check("回合以交卷收尾：手动重置**不发生替换**（0 次，绝不在验证在飞时打断）",
+    replacementEventsOf(H.session).length === repsBefore,
+    `count=${replacementEventsOf(H.session).length}`);
+  check("被丢弃的手动重置发**可见告知**（点明 /ralphflow-reset 且说明没有生效）",
+    delivered.some((m) => textOf(m).includes("/ralphflow-reset") && textOf(m).includes("没有生效")),
+    JSON.stringify(delivered.map((m) => textOf(m).slice(0, 80))));
+  check("告知带 summary（时间线上不展开也能读到「未生效」）",
+    delivered.some((m) => String(m?.source?.summary ?? "").includes("/ralphflow-reset") && String(m?.source?.summary ?? "").includes("未生效")),
+    JSON.stringify(delivered.map((m) => m?.source?.summary)));
+  check("告知说清原因（已交卷 / 验证中）",
+    delivered.some((m) => textOf(m).includes("已经交卷") || textOf(m).includes("已交卷")),
+    JSON.stringify(delivered.map((m) => textOf(m).slice(0, 120))));
+  check("执行日志记录 manual_reset_dropped（可事后复盘，不只在内存里）",
+    execLogTextOf(H.ws).includes("manual_reset_dropped"), execLogTextOf(H.ws).slice(-400));
+  const stAfter = H.instanceState();
+  check("被丢弃的手动重置不赦免失败、不动状态机（fail_counts 原样、do_submitted 仍 true）",
+    stAfter?.fail_counts?.second === stBefore?.fail_counts?.second
+    && stAfter?.current_step === "second" && stAfter?.do_submitted === true,
+    JSON.stringify({ before: stBefore?.fail_counts, after: stAfter?.fail_counts, step: stAfter?.current_step, submitted: stAfter?.do_submitted }));
   cleanupTmp(H.ws);
 }
 

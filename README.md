@@ -31,7 +31,7 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 | `/ralphflow-doctor` | `ralphflow_doctor` | 诊断工作流定义与实例状态 |
 | `/ralphflow-<工作流名>` | — | 动态注册的工作流快捷命令（如 `/ralphflow-loop`、`/ralphflow-spec`；命名与 claude code 版一致） |
 
-`/ralphflow-reset` / `/ralphflow-rewind` **命令**已声明未实现（重做/回退当前步，涉及上下文管理，暂缓）；其余命令与 opencode 版功能看齐。**别与步骤级方言 `reset: true` 混淆**：那是**重置门**，已实现——进入该步前把会话可见面整段替换成一条「交接稿」，模型收到的 messages = 系统提示 + 交接稿 + 本步 DO（内置 `spec` 的 `propose`/`implement` 就标了它；载体见 `docs/v2/reset-feasibility.md` 与 `src/reset.ts`）。命令语义 = **触发词**：`/ralphflow-*` **一律**由模型自然语言回复（含用法错误与未实现命令），**零程序化卡片返回**，行为与 claude code/opencode 完全一致。
+`/ralphflow-rewind` **命令**已声明未实现（回退到上游步骤，涉及上下文管理，暂缓）；其余命令与 opencode 版功能看齐。**别把三种 reset 混淆**：① 步骤级方言 `reset: true`、② 工作流级 `auto_reset: true`（等价于给所有步骤标 reset，含失败重试）、③ 手动 `/ralphflow-reset`（重做当前步）——三者**语义完全一致**：进入该步前把会话可见面整段替换成一条「交接稿」，模型收到的 messages = 系统提示 + 交接稿 + 本步 DO（内置 `spec` 的 `propose`/`implement` 标了 `reset: true`；载体见 `docs/v2/reset-feasibility.md` 与 `src/reset.ts`）。重置**只换干净上下文、不赦免失败**：失败计数原样保留，暂停中一律拒绝并指向 `/ralphflow-continue`（否则反复 reset 就能绕过 `max_fail_count`）。措辞**按来源分两支**：子工作流的 `auto_reset` 在加载期静态展开下沉时会保留来源标记，绝不说成「本步标了 `reset: true`」（作者没标）；手动重置若在空闲窗口复查时发现实例已交卷/推进/取消，会**发一条可见告知**说明这次重置没有生效并给出下一步（绝不静默作废——命令处理器当场已回 success，这条告知是唯一结果通道）。命令语义 = **触发词**：`/ralphflow-*` **一律**由模型自然语言回复（含用法错误与未实现命令），**零程序化卡片返回**，行为与 claude code/opencode 完全一致；`/ralphflow-reset` 是唯一例外——机械动作由命令处理器直接驱动引擎完成（**不给模型可调用的工具**），结果仍交回模型自然语言回复。
 
 内置工作流：`loop`（单步对抗验证循环，核对配方 = **4 票 `check_voting`**，前三条逐字照抄 opencode 版、第 4 条是本仓库的「修改不影响原有功能，不破坏需求以外的边界」）、`spec`（探索→提案→逐任务实现→归档，propose 步带审查门；`propose`/`implement` 带**重置门** `reset: true`）。自定义工作流按同一方言放到 `<workspace>/.dsh/ralph-flow/workflows/`。
 
@@ -113,13 +113,13 @@ steps:
 - **验证者**：全新独立会话（按能力自动选择全新上下文的后端，与名称无关），只见任务 + 检查依据 +（可读的）产出目录——**看不到执行者的交卷摘要**；只读工具白名单，结构化判定 + 文本兜底，fail-closed。
 - **验证者配置（YAML `adversarial_check`）**：**只接受 `model` 一个字段**（可选，`"provider/model"` 或 `{providerID, modelID}`），步骤级 `check_model` 可覆盖它；都不写就沿用发起会话当前模型。验证者的身份与职责是插件内部定义，工作流不再能配置它。写了其它字段（或 `adversarial_check` 不是对象）会在加载期告警并忽略，`/ralphflow-doctor` 同样报出。模型优先级链：`check_voting` 条目 `model` > 步骤 `check_model` > 全局 `adversarial_check.model` > 发起会话当前模型。
 - **多验证者投票**：N 票各自独立会话、独立提示词（共享上下文 + 该票专属检查依据 + 「你是 N 个之一」约束）、独立取消句柄与心跳；**全部终态才聚合**，聚合优先级 `failed > infra > 全过`（工作问题绝不被基础设施故障遮蔽）。
-- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；多验证者投票验收见 `scripts/voting-test.mjs`（加载校验/提示词变体/聚合优先级/infra 重试与续跑/跨轮重投/每票进度/取消传播/单 check 回归）；引擎验证测试见 `scripts/engine-test.mjs`（含布局/产出目录/加载期硬校验/doctor lint/报告统计/**单根发现面**/CREATE_GUIDE 一致性），子工作流验收见 `scripts/subworkflow-test.mjs`（静态展开/出口接线/审查门映射/模型下沉/上限与成环等加载期硬错误 + 负对照），实例生命周期验收见 `scripts/lifecycle-test.mjs`，执行日志（JSONL）验收见 `scripts/execution-log-test.mjs`（JSONL 合法性 / 归档与报告指路 / 提示词与判定原文可复盘 / 轮转 / 写失败不致命 / 零状态字段；`RF_LIB=<基线库>` 即负对照），**reset 门验收见 `scripts/reset-surface-test.mjs`**（真实 Session + 真实插件装配的端到端：交接后 messages 只剩系统提示 + 交接稿 + DO / 负对照「不写 reset 时上下文没被清」/ 五条硬约束负例：工具调用内部拒绝、面不平衡放弃、node0 不被覆盖、sourceEventSeqs 覆盖每个被遮蔽节点、不冒用压缩检查点）。
+- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；多验证者投票验收见 `scripts/voting-test.mjs`（加载校验/提示词变体/聚合优先级/infra 重试与续跑/跨轮重投/每票进度/取消传播/单 check 回归）；引擎验证测试见 `scripts/engine-test.mjs`（含布局/产出目录/加载期硬校验/doctor lint/报告统计/**单根发现面**/CREATE_GUIDE 一致性），子工作流验收见 `scripts/subworkflow-test.mjs`（静态展开/出口接线/审查门映射/模型下沉/上限与成环等加载期硬错误 + 负对照），实例生命周期验收见 `scripts/lifecycle-test.mjs`，执行日志（JSONL）验收见 `scripts/execution-log-test.mjs`（JSONL 合法性 / 归档与报告指路 / 提示词与判定原文可复盘 / 轮转 / 写失败不致命 / 零状态字段；`RF_LIB=<基线库>` 即负对照），**reset 门验收见 `scripts/reset-surface-test.mjs`**（真实 Session + 真实插件装配的端到端：交接后 messages 只剩系统提示 + 交接稿 + DO / 负对照「不写 reset 时上下文没被清」/ 五条硬约束负例：工具调用内部拒绝、面不平衡放弃、node0 不被覆盖、sourceEventSeqs 覆盖每个被遮蔽节点、不冒用压缩检查点；**工作流级 `auto_reset` 每步推进恰一次替换、失败重试也触发、措辞按来源分（不说成「本步标了 reset: true」）、非布尔 = 加载期硬错误、子工作流下沉保留来源标记（嵌套 auto_reset 的启动回执仍走 auto 支）**；**手动 `/ralphflow-reset`：空闲窗口替换、当前步 DO 重投、失败计数原样保留、暂停中拒绝并指向 `/ralphflow-continue`、回合中以交卷收尾被丢弃时发可见告知 + 写执行日志 `manual_reset_dropped`（绝不静默）、不注册 `ralphflow_reset` 工具**）。
 - **生命周期不变量**（违反即回退）：实例是临时的、报告与产出是永久的；先除名（`unlink(state.json)`）后删物理文件（否则部分删除失败会留下幽灵实例）；销毁前先写完报告、先读出产出目录名；产出只用非递归 `rmdir`（非空即保留）；销毁后不再写 `state.json`（`writeState` 会 `mkdirSync` 复活的实例目录）。
 
 ## v0 范围（诚实声明）
 
-有：YAML 引擎、loop + spec、审查门、续跑/接管、失败重试、按工作区单根、崩溃 fail-safe、报告归档（含每步耗时与重试）、产出目录、实例生命周期（终止即归档并销毁实例目录 + 历史运行列表 + doctor 实例目录体检）、执行日志（JSONL，机器可读，随报告归档 + 轮转）、create/doctor 实现、**多验证者投票（`check_voting`）**、**子工作流（`workflow:`，加载期静态展开）**、**reset 门（步骤级 `reset: true`：步骤边界的空闲窗口里整段替换会话可见面，交接稿 = 系统提示之后唯一内容）**。
-无：`/ralphflow-reset`·`/ralphflow-rewind` **命令**、rewind、客户端 UI、系统通知、验证者沙箱。每项的准入触发条件见设计文档 §11。
+有：YAML 引擎、loop + spec、审查门、续跑/接管、失败重试、按工作区单根、崩溃 fail-safe、报告归档（含每步耗时与重试）、产出目录、实例生命周期（终止即归档并销毁实例目录 + 历史运行列表 + doctor 实例目录体检）、执行日志（JSONL，机器可读，随报告归档 + 轮转）、create/doctor 实现、**多验证者投票（`check_voting`）**、**子工作流（`workflow:`，加载期静态展开）**、**重置门（步骤级 `reset: true` + 工作流级 `auto_reset: true` + 手动 `/ralphflow-reset`：步骤边界的空闲窗口里整段替换会话可见面，交接稿 = 系统提示之后唯一内容；只换上下文、不赦免失败）**。
+无：`/ralphflow-rewind` **命令**、rewind、客户端 UI、系统通知、验证者沙箱。每项的准入触发条件见设计文档 §11。
 
 ## 许可
 

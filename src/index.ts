@@ -74,20 +74,29 @@ export function apply(ctx: Context): void {
    * `{kind:"plugin", plugin:"model-selection", form:"notice", summary: boundContextSummary(...)}`。
    *
    * 所以：**凡是要让用户看见的播报，都必须带 summary**；不带 summary 的只适合纯内部管道。
+   *
+   * `opts.dedupe === false`：**引擎自己驱动的投递**（DO / 推进 / 重置告知等）一律不去重。
+   * 去重的初衷只是「用户连按同一条命令 / 命令重试时别堆叠指令」；而引擎的每一次投递都对应
+   * 一次真实状态迁移，**去重会把真实迁移吞掉** —— 实测：手动 `/ralphflow-reset` 重投的 DO
+   * 与几秒前那次同一步的 DO 逐字相同，被去重后模型拿不到任何指令（上下文已被替换成交接稿，
+   * 工作流就停在那里）。所以去重只保留给命令指令路径。
    */
-  const deliver = (sessionId: string, text: string, summary?: string): boolean => {
+  const deliver = (sessionId: string, text: string, summary?: string, opts?: { dedupe?: boolean }): boolean => {
     try {
       const agent = agentOf(sessionId) as { steer?: (m: unknown) => unknown; followup?: (m: unknown) => unknown } | undefined;
       if (!agent) return false;
-      // 去重：同会话 + 同文本，5 秒内只投一次（避免用户连按命令造成指令堆叠）
-      const key = `${sessionId}:${text.length}:${text.slice(0, 120)}`;
-      const now = Date.now();
-      const last = recentDeliveries.get(key);
-      if (last !== undefined && now - last < DEDUPE_WINDOW_MS) return true;
-      recentDeliveries.set(key, now);
-      if (recentDeliveries.size > 200) {
-        for (const [k, ts] of recentDeliveries) {
-          if (now - ts > DEDUPE_WINDOW_MS) recentDeliveries.delete(k);
+      // 去重：同会话 + 同文本，5 秒内只投一次（避免用户连按命令造成指令堆叠）。
+      // 引擎驱动的投递传 `{dedupe:false}` 跳过（见函数注释：否则会吞掉真实迁移）。
+      if (opts?.dedupe !== false) {
+        const key = `${sessionId}:${text.length}:${text.slice(0, 120)}`;
+        const now = Date.now();
+        const last = recentDeliveries.get(key);
+        if (last !== undefined && now - last < DEDUPE_WINDOW_MS) return true;
+        recentDeliveries.set(key, now);
+        if (recentDeliveries.size > 200) {
+          for (const [k, ts] of recentDeliveries) {
+            if (now - ts > DEDUPE_WINDOW_MS) recentDeliveries.delete(k);
+          }
         }
       }
       const brief = typeof summary === "string" ? summary.trim() : "";
@@ -120,7 +129,8 @@ export function apply(ctx: Context): void {
   const ports = {
     deliver,
     verify: (req: VerifyRequest) => runVerifier({ ctx }, req),
-    // reset 门（步骤级 `reset: true`）的载体：在步骤边界的空闲窗口里整段替换会话可见面。
+    // 重置门（步骤级 `reset: true` / 工作流级 `auto_reset: true` / 手动 `/ralphflow-reset`）的载体：
+    // 在步骤边界的空闲窗口里整段替换会话可见面。
     // 句柄就是这里已在用的 `ctx.agents`（Agent 的 `runMaintenance` + `session`）与 `ctx.sessions`。
     resetSurface: createResetSurface(ctx, log),
     log,
