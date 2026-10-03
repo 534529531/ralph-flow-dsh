@@ -1,9 +1,13 @@
 # Ralph Flow 内置工作流（与 claude/opencode 版共享方言，可自由编辑）
 #
 # 本文件与 opencode 版的 spec.yaml 同源（4 步：探索 → 提案 → 逐任务实现 → 归档）。
-# 唯一差异：opencode 给 propose / implement 标了 `reset: true`（重置门），而本版本
-# **未支持重置门**（有意推迟），故此处注释掉——内置工作流不能使用自己不支持、会告警的键。
-# reset 门落地后启用这两行即可与 opencode 完全一致。
+# 与 opencode 一致：propose / implement 标了 `reset: true`（重置门）——进入这两步前，
+# 属主会话可见面被整段替换成一条「交接稿」，模型收到的 messages = 系统提示 + 交接稿 + 本步 DO。
+# 载体与硬约束见 docs/v2/reset-feasibility.md 与 src/reset.ts。
+#
+# 注意：重置门只在**步骤边界的空闲窗口**生效，所以工作流**首步**（explore）无法重置——
+# 首步的 DO 是 ralphflow_start 工具的返回值，在工具调用内部替换会静默损坏会话。
+# 首步标 `reset: true` 时启动回执会如实说明（这里首步不标）。
 
 description: 基于 OpenSpec 哲学重构的轻量迭代开发工作流——先探索、再提案、逐任务实现、最后归档。不做瀑布式长篇文档。
 
@@ -39,7 +43,7 @@ steps:
     # ── 2. 提案定稿 + 任务拆解（人工审查门） ─────────────────────────────
     - id: propose
       desc: 提案与任务拆解
-      # reset: true   # ← opencode 在此换入干净上下文；本版本未支持重置门，reset 门落地后启用
+      reset: true   # ← 进入本步前换入干净上下文（交接稿 = 系统提示之后唯一的内容）；载体见 src/reset.ts
       do: |
         把 proposal.md 定稿，并拆成可逐项执行、逐项验证的 tasks.md。
 
@@ -61,7 +65,7 @@ steps:
     # ── 3. 逐任务实现（opencode 在此有重置门：干净的上下文开始编码）─────
     - id: implement
       desc: 逐任务实现
-      # reset: true   # ← opencode 在此换入干净上下文；本版本未支持重置门，reset 门落地后启用
+      reset: true   # ← 干净的上下文开始编码（交接稿 = 系统提示之后唯一的内容）；载体见 src/reset.ts
       do: |
         按 tasks.md 逐任务实现，每完成一项就勾掉一项。
 

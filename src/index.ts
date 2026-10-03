@@ -7,6 +7,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { createUserMessage, boundContextSummary } from "@deepseek-ai/dsh-llm";
 import { createEngine, listWorkflowsIn, type Engine, type VerifyRequest } from "./engine.js";
+import { createResetSurface } from "./reset.js";
 import { runVerifier } from "./verify.js";
 import { registerTools, registerCommands } from "./tools.js";
 
@@ -116,7 +117,14 @@ export function apply(ctx: Context): void {
    * 不到 / 历史列表永远空 / doctor 看不见残留」的同一个根因。
    */
   const engines = new Map<string, Engine>();
-  const ports = { deliver, verify: (req: VerifyRequest) => runVerifier({ ctx }, req), log };
+  const ports = {
+    deliver,
+    verify: (req: VerifyRequest) => runVerifier({ ctx }, req),
+    // reset 门（步骤级 `reset: true`）的载体：在步骤边界的空闲窗口里整段替换会话可见面。
+    // 句柄就是这里已在用的 `ctx.agents`（Agent 的 `runMaintenance` + `session`）与 `ctx.sessions`。
+    resetSurface: createResetSurface(ctx, log),
+    log,
+  };
   /** 由 registerCommands 返回，用于给某个工作区补登记 /ralphflow-<名字> 快捷命令 */
   let registerShortcuts: ((workflows: Array<{ name: string; desc: string }>) => void) | undefined;
 

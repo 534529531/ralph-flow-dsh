@@ -150,10 +150,12 @@
 | `/ralphflow-create` | `ralphflow_create` | 实现（引导式设计指引 → `ralphflow_doctor` 校验到全部 ✅ 且无告警） |
 | `/ralphflow-doctor` | `ralphflow_doctor` | 实现（工作流/实例诊断，坏文件说人话） |
 | `/ralphflow-<工作流名>` | — | 动态注册的工作流快捷命令，如 `/ralphflow-loop`、`/ralphflow-spec`（命名与 claude code 版一致） |
-| `/ralphflow-reset` `/ralphflow-rewind` | 只声明不实现（涉及上下文管理，作者定案暂缓） |
+| `/ralphflow-reset` `/ralphflow-rewind` | 命令只声明不实现（重做/回退当前步，涉及上下文管理，作者定案暂缓）。**注意**：步骤级方言 `reset: true`（重置门）**已实现**，见下方 §8 与 `docs/v2/reset-feasibility.md` |
 | —（无命令，DO 阶段由模型自动调用） | `ralphflow_submit` | DO 交卷（dsh 原生工具调用；取代 `<promise>done</promise>` 文本标记）。见 §5 三时刻① |
 
-**v0 没有**（**v0.2 已激活多验证者投票**，其余未变）：reset、rewind、客户端 UI、HTTP 通道、通知、沙箱。
+**reset 门（步骤级 `reset: true`，已实现）**：进入该步前，在**步骤边界的空闲窗口**（`agent.runMaintenance`，phase ≠ idle 即放弃）把属主会话可见面的 `nodes[1]` 到末尾**整段替换**成一条 ralphflow 自己写的「交接稿」，使模型收到的 messages = **系统提示 + 交接稿 + 本步 DO**。载体 = `src/reset.ts`（自有 plugin source `{kind:'plugin', plugin:'ralphflow'}`，**不冒用压缩检查点**、不发任何 `compaction/*` 事件）；策略与三处投递 = 引擎的 `deliverStepDo`（advance / 返工）+ `EnginePorts.resetSurface`。交接稿只写**能现算**的四项（工作流名 / 第几步 / 产出目录 / 交互契约，**零新增状态字段**）；另发一条 append 来源的**可见告知**（Chat 可见），它被同一次替换一并遮蔽，因此不进模型上下文（决定②：不让「用户看到的 ≠ 模型看到的」变成静默）。两条结构性边界：**工作流首步无法重置**（首步 DO 是 `ralphflow_start` 的工具返回值，替换会落在工具调用内部 → 孤儿 `tool/result` → 静默损坏会话），启动回执如实说明；**面不平衡时放弃本次替换**，DO 照常投递并把原因写进播报行。`/ralphflow-reset` **命令**仍未实现——两者不是一回事。
+
+**v0 没有**（**v0.2 已激活多验证者投票；reset 门（步骤级方言）已实现**）：rewind、客户端 UI、HTTP 通道、通知、沙箱。
 
 **v0 有**：YAML 引擎、内置 `loop` + `spec`、审查门、续跑、落盘、失败重试、多实例、报告归档、崩溃 fail-safe。
 
@@ -174,8 +176,8 @@
 - **工作区运行时目录用 dot-dir**（`<workspace>/.dsh/ralph-flow/`）：与 opencode `.opencode/ralph-flow/`、claude `.claude/ralph-flow/` 形状一致，并与全局 `~/.dsh/ralph-flow/` 对称（同一作用域命名空间 `ralph-flow`）。`.gitignore` 只忽略 `.dsh/ralph-flow/`（精确），不忽略整个 `.dsh/`——将来 dsh 可能往工作区 `.dsh/` 放需要入库的项目配置。
 - 所有者：用户手写（进 git）；交互式创建器 `ralphflow_create` **已实现**（`src/create.ts` 的 CREATE_GUIDE 引导设计 + `ralphflow_doctor` 校验到全部 ✅），手写与引导两条路都通。
 - **内置工作流不落盘**（对齐 opencode/claude 的 `ensureProjectWorkflows`）：`loadWorkflow` 回落插件目录，内置因此**始终是随插件发布的最新版**。播种副本会遮蔽插件目录、并在插件升级后变成陈旧副本——**实测踩过**：工作区里那份 7 步 `spec` 副本把新版 4 步内置整个挡住了，改内置却"没生效"。定制入口是"放同名文件遮蔽内置"（有意行为）。
-- **内置 `spec` = 4 步**（`explore → propose → implement → archive`），与 opencode 现行版同源；7 步是 opencode 在 2.6.0 废弃的旧版（我们此前从 claude 版抄来）。**唯一差异**：opencode 给 `propose`/`implement` 标了 `reset: true`（重置门），而本版本未支持重置门，故以**注释**保留、reset 落地后启用。依据与完整分析见 `spec-4step-brief.md`。
-- **内置 `loop` = 4 票 `check_voting`**：前三条**逐字照抄** opencode 版 `loop.yaml`（用户任务的每一条要求都已落实 / 实现的行为符合预期，真实可用 / 没有遗漏的需求，边界情况已覆盖），第 4 条是本仓库自己的口径「**修改不影响原有功能，不破坏需求以外的边界**」。第 4 条**刻意只写判断、不写取证动作**（不写「跑仓库自带测试 / 与基线比对」这类）：内置工作流要对任意项目通用，不能假定项目有测试套件、lint 工具链或 git 基线；取证方式由验证者按项目现状自选（它有 `read`/`grep`/`glob`/`bash`），这与前三条的形态也一致。**自包含取证配方**（打开哪些文件、跑哪些命令）是给**项目自己写的**工作流的建议，见 `ralphflow_create` 的设计最佳实践，不要上移到内置件里。与 opencode 版的**差异只写在注释里**（不抄进来）：它的 `reset: true`（本版本未支持重置门）与 `adversarial_check.timeout_ms`（本端已从公开契约删除）——两项都是加载期告警忽略的键，抄进来只会得到告警。形状由 `scripts/engine-test.mjs` §1 断言钉住（票数 / 三条逐字文案 / 第 4 票纯判断且不含项目专有假定 / 不含 `reset`·`timeout_ms` 键 / 零告警），不只断言告警。
+- **内置 `spec` = 4 步**（`explore → propose → implement → archive`），与 opencode 现行版同源；7 步是 opencode 在 2.6.0 废弃的旧版（我们此前从 claude 版抄来）。**与 opencode 完全一致**：`propose`/`implement` 标 `reset: true`（重置门，本版本已实现，见 §8）。首步 `explore` **不标**——首步 DO 是启动工具的返回值，结构上无法重置。依据与完整分析见 `spec-4step-brief.md` 与 `reset-feasibility.md`。
+- **内置 `loop` = 4 票 `check_voting`**：前三条**逐字照抄** opencode 版 `loop.yaml`（用户任务的每一条要求都已落实 / 实现的行为符合预期，真实可用 / 没有遗漏的需求，边界情况已覆盖），第 4 条是本仓库自己的口径「**修改不影响原有功能，不破坏需求以外的边界**」。第 4 条**刻意只写判断、不写取证动作**（不写「跑仓库自带测试 / 与基线比对」这类）：内置工作流要对任意项目通用，不能假定项目有测试套件、lint 工具链或 git 基线；取证方式由验证者按项目现状自选（它有 `read`/`grep`/`glob`/`bash`），这与前三条的形态也一致。**自包含取证配方**（打开哪些文件、跑哪些命令）是给**项目自己写的**工作流的建议，见 `ralphflow_create` 的设计最佳实践，不要上移到内置件里。与 opencode 版的**差异只写在注释里**（不抄进来）：它的 `reset: true`（本端**已支持**该方言，但 loop 只有一步、永远是首步 → 标了也只会得到启动回执里一行「首步无法重置」的如实说明）与 `adversarial_check.timeout_ms`（本端已从公开契约删除）——后者抄进来只会得到告警。形状由 `scripts/engine-test.mjs` §1 断言钉住（票数 / 三条逐字文案 / 第 4 票纯判断且不含项目专有假定 / 不含生效的 `reset`·`timeout_ms` 键 / 零告警），不只断言告警；reset 门的端到端验收见 `scripts/reset-surface-test.mjs`。
 - 坏文件 fail-fast 说人话（§8 方言容错）。
 
 ## 10. 宪法（违反即回退）
@@ -189,7 +191,7 @@
 7. **主会话永远不委派验证者**。委派只从引擎发出。
 8. **不移植 opencode/claude 引擎**。只移植"裁判权在程序"语义与用户旅程，机制用 dsh 原生件组合。
 9. **客户端代码禁止先于内核**（v0 没有客户端；UI 见 §11 门槛）。
-10. **不允许引入自动修复类命令的实现**（`unbrick`；`reset` / `rewind` v0 只声明不实现，见 §8 命令表）。`ralphflow_doctor` 是**诊断**命令——只报问题与修法，绝不代替用户修，因此不属本禁令；需要自动修复 = 设计错了。
+10. **不允许引入自动修复类命令的实现**（`unbrick`；`/ralphflow-reset` / `/ralphflow-rewind` **命令**只声明不实现，见 §8 命令表）。`ralphflow_doctor` 是**诊断**命令——只报问题与修法，绝不代替用户修，因此不属本禁令；需要自动修复 = 设计错了。**边界**：步骤级方言 `reset: true`（重置门）是工作流作者写的键、由引擎在步骤边界机械执行，不是「命令」、也不给模型任何可调用的修复入口，故不在本禁令内。
 11. **每个功能入场合规**：带"最小版失败"的复现记录（§11 准入列）。
 12. **不支持的方言键 = 警告忽略，不兼容、不加工作量**（Q13 定案）。
 
@@ -203,7 +205,8 @@
 | v0.2 | 多验证者投票（`check_voting` 激活）**已实现** | 原准入是「单验证者 ≥3 次误放/误烧的证据」；本次由作者**直接指示**实现，**未按原样收集该证据**（如实记录，不补造）。行为对齐 opencode `check-voting.ts` + `voting-progress.ts`（权威参考），载体按 dsh 无相位模型落地：进度不另立文件（`state.json` 单根事实源） |
 | v0.3 | `create` 交互式、`doctor` 薄版（fail-fast 的人话出口）**已实现** | 手写 YAML 开始成为摩擦 |
 | v0.4 | UI（页头/抽屉，复用 v1 配方） | loop+spec 在 ≥20 个真实任务上跑过；命令卡渲染作为本次实测问题的补药 |
-| v0.5+ | 验证者沙箱化、reset/rewind、通知 | 各自的最小版失败证据 |
+| v0.5+ | 验证者沙箱化、`/ralphflow-reset`·`/ralphflow-rewind` **命令**、通知 | 各自的最小版失败证据 |
+| v0.7 | **reset 门（步骤级 `reset: true`）已实现** —— 进入该步前在步骤边界的空闲窗口整段替换会话可见面（交接稿 = 系统提示之后唯一内容），模型收到的 messages = 系统提示 + 交接稿 + 本步 DO。载体 `src/reset.ts`（`agent.runMaintenance` 互斥 + `toolPairingBalancedAfter` 自检 + 自有 plugin source），策略/投递在引擎（`deliverStepDo` + `EnginePorts.resetSurface`）。**零新增状态字段**（交接稿只写能现算的四项）；**首步无法重置**（首步 DO 是工具返回值）→ 启动回执如实说明；**面不平衡时放弃替换**且 DO 照常投递。验收 `scripts/reset-surface-test.mjs`（真实 Session + 真实插件装配的端到端 + 负对照 + 五条硬约束负例）。预研与五条硬约束见 `reset-feasibility.md` | 作者**直接指示**（同 v0.2/v0.6：未按原准入收集最小版失败证据，如实记录）；预研阶段已完成五路源码取证 |
 | v0.6 | **子工作流（`workflow:` 代替 `do:`）已实现** —— **加载期静态展开**：调用点就地内联成子步骤（id 加 `调用点id/` 前缀），子工作流出口接到调用点的 `on_pass`。**零新增 InstanceState 字段**（不用 opencode 的运行时状态栈：`current_step` 仍是单字符串、失败预算仍按步记账）。与 opencode 的四处刻意差异：① 它静默忽略或拖到运行期才炸的（成环 / 子文件加载不出来 / id 含 `/` 撞展开）一律**加载期硬错误**；② 展开后步骤总数上限 **2000**（展开中计数、超了立刻中止）与**嵌套深度上限 32 层**（含最外层：展开器是递归的，1900 个「每层零步骤」的串联文件步数只有 1、步数上限看不见，深度闸在展开任何一层之前拒绝，绝不冒泡 `RangeError`）；③ 子步骤耗尽 `max_fail_count` → **暂停等人**（不做「自动走父级 `on_fail`」）；④ 调用点只认 `id`/`desc`/`workflow`/`on_pass`，其余键**逐键告警 + 指路**，`manual_step` 标调用点 = **整段子工作流跑完后停门**（opencode 禁止这种写法）。子文件里的 `adversarial_check.model` 下沉到它各步的 `check_model`（逐层继承）；不传参（`inputs` 告警忽略）。验收 `scripts/subworkflow-test.mjs`（含负对照） | 作者**直接指示**（同 v0.2：未按原准入收集最小版失败证据，如实记录）。与 `subworkflow-nesting-research.md` 的推荐（独立子实例 + `awaiting_child` 指针）方向不同——该调研的两条主要顾虑（展开会把一次逻辑失败拆成多个物理步骤、运行时状态栈与宪法冲突）正是本实现正面绕开的：展开后失败预算仍按**步**记账，且不引入任何栈 |
 
 ## 12. 验收（v0 完成判据）

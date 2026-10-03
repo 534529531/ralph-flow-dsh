@@ -3,7 +3,11 @@
  *
  * 命令语义 = 触发词：/ralphflow-* 注入指令给模型，由模型调用同名工具并自然回复。
  * 已实现：start / list / status / continue / cancel / create / doctor + 工作流快捷命令（/ralphflow-<工作流名>）；
- * reset / rewind 只声明（涉及上下文管理，暂缓）。
+ * `/ralphflow-reset` / `/ralphflow-rewind` **命令**仍只声明（重做/回退当前步，暂缓）。
+ *
+ * 注意别把两者搞混：**步骤级方言 `reset: true`（重置门）已经实现**（进入该步前整段替换会话
+ * 可见面，载体见 `src/reset.ts`）——它是工作流作者写在步骤上的键，不是模型可调用的命令，
+ * 所以这里**不注册** `ralphflow_reset` 工具（工具面保持固定）。
  */
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
@@ -343,7 +347,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       description: "（本版本未实现）重做当前步。",
       shim: () => ({
         kind: "directive",
-        text: `用户执行了 /ralphflow-reset（重做当前步，涉及上下文管理，本版本暂缓实现）。**不要调用任何工具**，用自然语言说明：该命令本版本未实现、暂缓原因（涉及上下文管理），以及当前可用命令 ${AVAILABLE_COMMANDS}；如用户确实想重做，可建议重新交卷触发自动返工，或取消后重启。`,
+        text: `用户执行了 /ralphflow-reset（重做当前步，涉及上下文管理，本版本暂缓实现）。**不要调用任何工具**，用自然语言说明：该命令本版本未实现、暂缓原因（涉及上下文管理），以及当前可用命令 ${AVAILABLE_COMMANDS}；如用户确实想重做，可建议重新交卷触发自动返工，或取消后重启。注意与**重置门**区分：工作流步骤上的 \`reset: true\` 是另一回事（进入该步前重置上下文），它已实现，不是这个命令。`,
       }),
     },
     {

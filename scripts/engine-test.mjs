@@ -77,15 +77,15 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     // 内置件要通用：check 正文里不得出现「测试套件 / 基线」这类项目专有假定
     && !/测试|基线|lint|构建/.test(loopStep.check_voting[3].check), loopStep.check_voting[3].check);
   {
-    // 与 opencode 的差异只写在注释里：reset / timeout_ms 都不抄进来（都是加载期告警忽略的键）
+    // 与 opencode 一致：reset 抄进来（**生效键**）；timeout_ms 不抄（加载期告警忽略的键）
     const raw = fs.readFileSync(new URL("../workflows/loop.yaml", import.meta.url), "utf-8");
     const active = raw.replace(/^\s*#.*$/gm, "");
-    check("内置 loop 不抄 opencode 的 reset / timeout_ms（只在原处注释说明差异）",
-      !/^\s*reset:/m.test(active) && !/timeout_ms\s*:/m.test(active)
-      && raw.includes("reset: true") && raw.includes("timeout_ms"),
-      raw);
+    check("内置 loop 抄 opencode 的 reset: true（生效键，与 opencode 一致）",
+      loopStep.reset === true && /^\s*reset:\s*true\b/m.test(active), JSON.stringify({ reset: loopStep.reset }));
+    check("内置 loop 不抄 timeout_ms（只在注释里说明差异）",
+      !/timeout_ms\s*:/m.test(active) && raw.includes("timeout_ms"), raw);
     const loaded = engine.loadWorkflow("loop");
-    check("内置 loop 仍然零告警零问题（差异注释不产生任何键）",
+    check("内置 loop 仍然零告警零问题（reset 是生效键，不是注释）",
       loaded.warnings.length === 0 && loaded.problems.length === 0, JSON.stringify(loaded.warnings));
   }
   const { r, id } = start("loop", "写一个 hello.html", s);
@@ -991,6 +991,99 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
       report.includes("check_skipped") && report.includes("（无判定记录）") && !report.includes("取证判定") && !report.includes("检查通过"),
       report.slice(0, 800));
   }
+}
+
+// ── 18) reset 门方言：加载期校验 + 首步如实说明 ────────────────────────────────
+// 载体与端到端行为在 scripts/reset-surface-test.mjs（真实 Session + 真实插件装配）；
+// 这里只钉住**方言面**：键合法、类型校验、内置件启用、首步不假装做过。
+{
+  const wfFile = (name, lines) => {
+    fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
+    return engine.loadWorkflow(name);
+  };
+  const step = (extra) => ["steps:", "  - id: a", "    do: X", extra, "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"];
+
+  const ok = wfFile("reset-ok", step("    reset: true"));
+  check("reset: true 是合法步骤键（加载期零告警零问题）",
+    !!ok.def && ok.warnings.length === 0 && ok.problems.length === 0, JSON.stringify({ w: ok.warnings, p: ok.problems }));
+  check("reset: true 真的进了定义（不是告警忽略）", ok.def?.steps[0]?.reset === true, JSON.stringify(ok.def?.steps[0]));
+
+  const off = wfFile("reset-off", step("    reset: false"));
+  check("reset: false 也可加载（显式关闭，零告警）",
+    !!off.def && off.warnings.length === 0 && off.def.steps[0].reset === false, JSON.stringify(off.problems));
+
+  const badStr = wfFile("reset-bad-str", step('    reset: "true"'));
+  check("reset 写成字符串 = 加载期硬错误（不静默当成 false）",
+    !badStr.def && badStr.problems.some((p) => p.includes("reset") && p.includes("布尔")), JSON.stringify(badStr.problems));
+
+  const badNum = wfFile("reset-bad-num", step("    reset: 1"));
+  check("reset 写成数字 = 加载期硬错误", !badNum.def && badNum.problems.some((p) => p.includes("reset")), JSON.stringify(badNum.problems));
+
+  const badList = wfFile("reset-bad-list", step("    reset: [true]"));
+  check("reset 写成列表 = 加载期硬错误", !badList.def && badList.problems.some((p) => p.includes("reset")), JSON.stringify(badList.problems));
+
+  // 内置 spec：那两行 reset 已启用（生效的键），且新键不产生任何告警
+  const specRaw = fs.readFileSync(new URL("../workflows/spec.yaml", import.meta.url), "utf-8");
+  const specActive = specRaw.replace(/^\s*#.*$/gm, "");
+  const specLoaded = engine.loadWorkflow("spec");
+  check("内置 spec 的 propose / implement 已启用 reset（生效的键，不是注释）",
+    (specActive.match(/^\s*reset:\s*true\b/gm) ?? []).length === 2
+    && specLoaded.def?.steps.find((s) => s.id === "propose")?.reset === true
+    && specLoaded.def?.steps.find((s) => s.id === "implement")?.reset === true, specActive.slice(0, 200));
+  check("内置 spec 零告警零问题（新键不产生告警）",
+    specLoaded.warnings.length === 0 && specLoaded.problems.length === 0, JSON.stringify(specLoaded.warnings));
+  check("内置 spec 首步 explore 不标 reset（首步结构上无法重置）",
+    specLoaded.def?.steps.find((s) => s.id === "explore")?.reset === undefined);
+
+  // 首步 reset：启动回执如实说明，绝不假装做过（替换在工具调用内部会静默损坏会话）
+  const sFirst = S();
+  const first = engine.start("reset-ok", "首步 reset 用例", sFirst);
+  check("首步标 reset → 启动回执如实说明「首步的初次进入无法重置」及原因，并点明重试会重置",
+    first.ok && first.text.includes("工作流首步的初次进入无法做上下文重置")
+    && first.text.includes("孤儿 tool/result") && first.text.includes("重试时会正常重置"), first.text.slice(0, 400));
+
+  // 首步**重试**必须重置 —— 初次进入与重试是两回事：重试走返工投递（验证回调里的空闲窗口）。
+  // 这条边界是作者指出的：若首步重试也不重置，loop（只有一步、永远是首步）就永远用不了 reset，
+  // 而 opencode 的 loop 标 reset 的**目的**恰恰是重试卫生（它注释原文「失败重试频繁」）。
+  {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-reset-first-"));
+    const resetCalls = [];
+    const e = createEngine(ws, {
+      deliver: () => true,
+      verify: async (req) => ({ check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), status: "failed", reason: "没过" }),
+      resetSurface: async (sid, req) => { resetCalls.push({ sid, handoff: req.handoff }); return { ok: true, shadowed: 3 }; },
+      log: () => {},
+    });
+    e.ensureLayout();
+    fs.writeFileSync(path.join(e.workflowsDir, "first-reset.yaml"),
+      ["description: 首步重试用例", "steps:", "  - id: a", "    do: X", "    reset: true",
+        "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 3"].join("\n"));
+    e.start("first-reset", "首步重试", "s-first-reset");
+    check("首步初次进入：**不**调用 resetSurface（工具调用内部，结构上无法重置）",
+      resetCalls.length === 0, JSON.stringify(resetCalls.length));
+    e.onSubmit("s-first-reset", "交卷");
+    await sleep(200);
+    check("首步验证失败 → 返工：**调用了 resetSurface**（首步重试能重置）",
+      resetCalls.length === 1, JSON.stringify(resetCalls));
+    check("返工交接稿指向首步 a", typeof resetCalls[0]?.handoff === "string" && resetCalls[0].handoff.includes("`a`"),
+      String(resetCalls[0]?.handoff).slice(0, 200));
+    try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
+  }
+
+  // ── 回归基线：启动回执的**空行结构**必须与实现前逐字一致 ──────────────────
+  // （第一轮验证者 4/4 实测发现过这里少一个空行：条件插入把无条件存在的 `""` 吞掉了。
+  //   当时 15 个套件全绿也没拦住——因为没有任何断言钉住那个空行。现在钉住它。）
+  const receiptOf = (t) => String(t).split("\n\n---\n\n")[0];
+  const sPlain = S();
+  const plain = engine.start("reset-off", "空行回归用例（不写 reset）", sPlain);
+  check("不写 reset 时启动回执以「。\\n\\n请现在开始执行上面的任务。」收尾（空行 = 回归基线，逐字）",
+    /[^\n]\n\n请现在开始执行上面的任务。$/.test(receiptOf(plain.text)),
+    JSON.stringify(receiptOf(plain.text).slice(-140)));
+  const sNoted = S();
+  const noted = engine.start("reset-ok", "空行回归用例（首步带 reset）", sNoted);
+  check("首步带 reset 时，说明插在空行**之前**，收尾仍是「。\\n\\n请现在开始…」（不吞空行）",
+    /[^\n]\n\n请现在开始执行上面的任务。$/.test(receiptOf(noted.text)),
+    JSON.stringify(receiptOf(noted.text).slice(-220)));
 }
 
 // ── 清理：引擎已按工作区单根，实例资产都在隔离工作区里，没有全局索引要清理 ──────

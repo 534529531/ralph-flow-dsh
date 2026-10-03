@@ -198,6 +198,19 @@ export interface StepDef {
    * **仅单 `check` 场景生效**；与 `check_voting` 同写、或没有 `check` → 加载期硬错误。
    */
   check_model?: ModelRef;
+  /**
+   * **重置门**（`reset: true`，对齐 opencode 方言）：进入本步前，把属主会话可见面的
+   * `nodes[1]` 到末尾整段替换成一条 ralphflow 自己写的**交接稿**，使模型收到的
+   * messages = 系统提示 + 交接稿 + 本步 DO。
+   *
+   * 载体与硬约束见 `src/reset.ts` 与 `docs/v2/reset-feasibility.md`。要点：
+   *   · 替换只能发生在**步骤边界的空闲窗口**（`agent.runMaintenance`，phase ≠ idle 即放弃）；
+   *   · **工作流首步无法重置**：首步 DO 是 `ralphflow_start` 工具的返回值，替换会落在工具
+   *     调用内部 → 孤儿 tool/result → 静默损坏会话。首步标了 `reset: true` 时启动回执会
+   *     **如实说明**，重置从第二步起生效（本字段仍是合法键，不是告警忽略）。
+   *   · 这只是「换入干净上下文」的载体，**不是** `/ralphflow-reset` 命令（那个仍只声明不实现）。
+   */
+  reset?: boolean;
 }
 
 /** 投票条目（`check_voting[i]`）：一条检查依据 +（可选）该票专用模型 */
@@ -400,8 +413,8 @@ function sinkVerificationModel(steps: StepDef[], model: ModelRef | undefined): v
  * （不生效、不静默、不硬错误 —— 作者的本意多半是把配置写到错误的层级，指路比拒收有用）。
  *
  * 照 opencode 的方言，子工作流步骤上还允许 `input`/`output`/`inputs`/`on_fail`/
- * `max_fail_count`/`reset`；本实现**刻意**一条都不兑现（见 design/变更说明的四条差异），
- * 所以每一条都要说清「不生效 + 该写到哪儿」。
+ * `max_fail_count`/`reset`；本实现**刻意**一条都不在调用点上兑现（见 design/变更说明的四条差异），
+ * 所以每一条都要说清「不生效 + 该写到哪儿」（`reset` 本身**已支持**，只是必须写到子步骤上）。
  */
 function callPointKeyWarning(callId: string, key: string, subName: string): string {
   const head = (what: string) => `调用点 \`${callId}\` 的 \`${key}\` 不生效：${what}`;
@@ -422,7 +435,7 @@ function callPointKeyWarning(callId: string, key: string, subName: string): stri
     case "inputs":
       return head(`本实现的子工作流不接收参数：任务描述原样传给子工作流的每个步骤（DO 提示词的「## 任务」就是它），要传信息请写进任务描述或子步骤的 \`do\`。`);
     case "reset":
-      return head(`本版本未支持重置门（与 opencode 的差异之一）。`);
+      return head(`调用点没有 DO 阶段，\`reset\` 是**步骤级**属性：请写到子工作流内需要重置的步骤上（加载期静态展开后只有子步骤存在，调用点上的键不会落进定义）。`);
     default:
       return head(`调用点只认 \`id\` / \`desc\` / \`workflow\` / \`on_pass\`（外加工作流级 \`manual_step\` 列表里的调用点 id = 整段子工作流跑完后停门），其余键一律忽略。`);
   }
@@ -669,6 +682,40 @@ export interface ToolResult {
   text: string;
 }
 
+/** reset 门的投递物：交接稿（模型可见）+ 给用户看的可见告知（随后被遮蔽，只留给 Chat 视图）。 */
+export interface ResetRequest {
+  /** 交接稿正文：替换后**系统提示之外唯一**的模型可见内容。 */
+  handoff: string;
+  /** 可见告知：append 来源（Chat 显示），随后被同一次替换遮蔽（模型看不到）。 */
+  notice: { summary: string; text: string };
+  /**
+   * 动手前的**最后一道复查**（在 maintenance job 内、紧邻 append 之前同步调用）：
+   * 实例在「等空闲窗口」这段时间里可能已被取消/收摊，那就**不做替换**。
+   *
+   * 必须是「重新读盘」的实现，不能闭包一个内存快照 —— 取消/完成走的是另一条 `readState`
+   * （每次 JSON.parse 新对象）并会销毁实例目录，快照永远看不到（实测踩过：护栏成了空操作）。
+   */
+  canProceed?: () => boolean;
+}
+
+/**
+ * reset 门的执行结果。**失败绝不抛**：引擎据此如实播报并**照常投递 DO**——
+ * 「没换成」不能演变成「本步无法执行」。
+ */
+export interface ResetOutcome {
+  ok: boolean;
+  /** 失败原因（ok=false 时给出；引擎翻成人话写进播报，绝不静默） */
+  reason?: "no_session" | "no_maintenance" | "surface_too_short" | "unbalanced" | "balance_error" | "aborted" | "not_idle" | "instance_gone" | "maintenance_failed";
+  /** 诊断补充（宿主异常原文） */
+  detail?: string;
+  /** 被遮蔽的节点数（ok=true 时给出） */
+  shadowed?: number;
+  /** 交接稿节点 seq（ok=true 时给出） */
+  handoffSeq?: number;
+  /** 可见告知节点 seq（ok=true 时给出） */
+  noticeSeq?: number;
+}
+
 /** 引擎对外的两个端口：向属主会话投递指令 / 委派独立验证者（T1 的唯一入口） */
 export interface EnginePorts {
   /**
@@ -678,6 +725,14 @@ export interface EnginePorts {
    * 凡是用户应当知道的播报都必须传 summary。
    */
   deliver: (sessionId: string, text: string, summary?: string) => boolean;
+  /**
+   * reset 门（步骤标了 `reset: true`）的载体：把属主会话可见面 `nodes[1]` 到末尾整段替换成
+   * `req.handoff`。**必须**在步骤边界的空闲窗口内完成（宿主侧用 `agent.runMaintenance` 钉死），
+   * 失败就如实返回 `ok:false`（引擎照常投递 DO）。
+   *
+   * 缺省（未装配）时带 `reset: true` 的步骤**不重置**，但启动/推进回执会如实标注——绝不假装做过。
+   */
+  resetSurface?: (sessionId: string, req: ResetRequest) => Promise<ResetOutcome>;
   /** 委派独立验证者，返回判定（绝不接受主会话提供的判定） */
   verify: (req: VerifyRequest) => Promise<Verdict>;
   log?: (level: "info" | "warn" | "error", event: string, data?: unknown) => void;
@@ -1146,7 +1201,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   // ─── 工作流加载与校验（坏文件 fail-fast 说人话）────────────────────────────
 
-  const KNOWN_STEP_KEYS = new Set(["id", "desc", "do", "check", "check_voting", "check_model", "input", "output", "on_pass", "on_fail", "max_fail_count"]);
+  const KNOWN_STEP_KEYS = new Set(["id", "desc", "do", "check", "check_voting", "check_model", "input", "output", "on_pass", "on_fail", "max_fail_count", "reset"]);
   const KNOWN_WF_KEYS = new Set(["description", "manual_step", "adversarial_check", "steps"]);
 
   function knownWorkflowDirs(): string[] {
@@ -1381,6 +1436,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         && (typeof s.max_fail_count !== "number" || !Number.isInteger(s.max_fail_count) || s.max_fail_count < 1)) {
         problems.push(`步骤 \`${s.id}\` 的 \`max_fail_count\` 必须是 ≥1 的整数（当前 ${JSON.stringify(s.max_fail_count)}）。`);
       }
+      // reset（重置门，对齐 opencode 方言）：给了就必须是布尔。`reset: "true"` 这类字符串几乎
+      // 一定是笔误——静默当成「不重置」会让作者以为上下文被清了、实际没清（本仓库对「想开却配错」
+      // 一律不静默：类型错误 = 硬错误，与 `check` 非字符串同一口径）。
+      if (s.reset !== undefined && s.reset !== null && typeof s.reset !== "boolean") {
+        problems.push(`步骤 \`${s.id}\` 的 \`reset\` 必须是布尔值（当前是 ${describeValueKind(s.reset)}）：\`reset: true\` 表示进入本步前重置上下文。写成字符串（如 "true"）不会被当成真值，请改成布尔。`);
+      }
       // check_model（步骤级验证模型覆盖，对齐 opencode/claude 2.8.0）：仅单 check 场景有意义。
       // 两条硬错误照抄 opencode：与 check_voting 同写、或没有可用的 check —— 都几乎一定是配置笔误，
       // 静默忽略会让用户以为「这步换了便宜模型验」，实际没换。
@@ -1412,6 +1473,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           on_fail: typeof s.on_fail === "string" ? s.on_fail : undefined,
           max_fail_count: typeof s.max_fail_count === "number" ? s.max_fail_count : undefined,
           check_model: parseModelRef(checkModelRaw),
+          // 重置门：只有布尔才带进定义（非布尔已在上面硬错误，走不到这里）
+          reset: typeof s.reset === "boolean" ? s.reset : undefined,
           // 只有通过上面校验的投票步才会走到这里（有 problems 时整份定义已被拒收）；
           // 非法条目里的坏值不带进定义，避免运行期拿到半成品配置。
           check_voting: Array.isArray(s.check_voting) && !hasCheckKey
@@ -2315,7 +2378,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         log("info", "rework_rewind", { instId, from: step.id, to: target.id });
       }
       writeState(state, instId);
-      deliver(state, doPrompt(instId, wf, state, target, reason), `🔄 步骤 ${target.id} 验证未通过，自动返工（${step.id} 第 ${failedTimes} 次）`);
+      deliverStepDo(state, instId, wf, target, `🔄 步骤 ${target.id} 验证未通过，自动返工（${step.id} 第 ${failedTimes} 次）`, reason);
       return;
     }
     // 全 passed（且判定属于当前步）
@@ -2367,7 +2430,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     logEvent(instId, "info", "step_start", { step: next.id });
     writeState(state, instId);
     // 播报必须诚实：下一步没有检查依据时不得宣称「会自动进入独立验证」（有检查依据的分支逐字不变）
-    deliver(state, doPrompt(instId, wf, state, next), stepHasVerification(next)
+    // reset 门（`reset: true`）在**这里**生效：先整段替换可见面，再投递本步 DO。
+    deliverStepDo(state, instId, wf, next, stepHasVerification(next)
       ? (voterCountOf(next) > 0
         ? `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（完成后会自动进入 ${voterCountOf(next)} 个验证者的并行验证）`
         : `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（完成后会自动进入独立验证）`)
@@ -2408,6 +2472,138 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     if (!state.owner_session) return;
     const ok = ports.deliver(state.owner_session, text, summary);
     if (!ok) log("warn", "deliver_failed", { instId: state.owner_session });
+  }
+
+  // ─── reset 门（步骤级 `reset: true`）────────────────────────────────────────
+
+  /** 失败原因 → 用户能读懂的一行（播报用；绝不把宿主异常原文塞给用户） */
+  function resetFailureText(outcome: ResetOutcome): string {
+    switch (outcome.reason) {
+      case "not_idle": return "不在步骤边界的空闲窗口（替换必须发生在工具调用之外）";
+      case "instance_gone": return "实例已被取消/结束（等空闲窗口期间收摊了）";
+      case "unbalanced": return "会话可见面在工具配对处不平衡（有未回答的工具调用）";
+      case "balance_error": return "会话可见面已损坏（工具配对自检失败）";
+      case "surface_too_short": return "可见面没有可替换的对话";
+      case "no_session": return "拿不到属主会话";
+      case "no_maintenance": return "宿主没有空闲互斥入口（agent.runMaintenance）";
+      case "aborted": return "被中止";
+      default: return "宿主拒绝了这次替换";
+    }
+  }
+
+  /**
+   * 组装 reset 门的投递物：**交接稿**（模型可见，写小——会被 dsh 自动压缩总结掉）+
+   * **可见告知**（append 来源，Chat 显示；随后被同一次替换遮蔽，模型看不到）。
+   *
+   * 交接稿只写**能现算**的四项（决定①：不含「已完成勾选」，因此不新增任何状态字段）：
+   * 工作流名 / 第几步 / 产出目录 / 交互契约。任务描述不必写 —— 紧随其后的 DO 提示词
+   * 自带「## 任务」。
+   */
+  function resetRequestFor(instId: string, wf: WorkflowDef, step: StepDef): ResetRequest {
+    const idx = wf.steps.findIndex((s) => s.id === step.id) + 1;
+    const rel = artifactsRelDirOf(instId);
+    const hasCheck = stepHasVerification(step);
+    const voters = voterCountOf(step);
+    const contract = hasCheck
+      ? (voters > 0
+        ? `本步完成后调用 \`ralphflow_submit\` 交卷；交卷后 ${voters} 个独立验证者并行取证判定，全过才放行。`
+        : "本步完成后调用 `ralphflow_submit` 交卷；交卷后由独立验证者取证判定。")
+      : (isGate(wf, step)
+        ? "本步完成后调用 `ralphflow_submit` 交卷；本步不配置对抗性检查（跳过对抗性验证），交卷后停在审查门等用户放行。"
+        : "本步完成后调用 `ralphflow_submit` 交卷；本步不配置对抗性检查（跳过对抗性验证）。");
+    const handoff = [
+      "[ralphflow 交接稿] 上下文已在步骤边界重置：此前对话已移出模型上下文。",
+      "",
+      `- 工作流：\`${wf.name}\`（第 ${idx}/${wf.steps.length} 步）`,
+      `- 当前步骤：\`${step.id}\`${step.desc ? ` — ${step.desc}` : ""}`,
+      `- 产出目录：\`${rel}/\``,
+      `- 交互契约：${contract}`,
+      "",
+      "请只依据本稿与紧随其后的本步 DO 提示行事（原始记录仍留在会话日志里，可复盘）。",
+    ].join("\n");
+    return {
+      handoff,
+      notice: {
+        summary: `♻️ 步骤 ${step.id} 开始前已重置上下文（换入交接稿）`,
+        // 这条告知是给用户看的：替换消息本身在 Chat 里不显示，不告知就成了
+        // 「用户看到的 ≠ 模型看到的」且是静默的（决定②）。
+        text: `[ralphflow] 本步（\`${step.id}\`）开始前做了上下文重置：此前对话已移出模型上下文，整段替换为一条交接稿（工作流 / 步骤 / 产出目录 / 交互契约）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。`,
+      },
+    };
+  }
+
+  /**
+   * 「本步 DO 还没送达」的实例（**纯内存**，不落盘、不是 InstanceState 字段）。
+   *
+   * `reset: true` 的步骤：推进若发生在**工具调用内部**（审查门放行 / 无 check 步骤交卷），
+   * 替换要等驱动器收工（`whenIdle`）才做得成，所以 DO 会**晚一拍**才进收件箱。
+   * 这期间宿主的 `agent/turn-stopping` 会照常发问，而它看到的是「收件箱空 + 本步未交卷」——
+   * 若不拦，插件会对一个**模型还不知道存在**的步骤连催两轮，然后把实例暂停
+   * （实测：`pause_reason=no_submit`，DO 反而落在已暂停的实例上）。
+   */
+  const pendingDoDelivery = new Set<string>();
+
+  /**
+   * 投递某一步的 DO。**带 `reset: true` 的步骤先做整段替换、再投递 DO**（顺序不可颠倒：
+   * DO 若先落地就会被自己这次替换一并遮蔽掉）。
+   *
+   * 替换是异步的（宿主的 `runMaintenance` 返回 Promise），所以这里用 promise 链保证顺序；
+   * **失败绝不吞掉 DO** —— 照常投递，并把失败原因如实写进用户可见的播报行。
+   */
+  function deliverStepDo(state: InstanceState, instId: string, wf: WorkflowDef, step: StepDef, summary: string, rework?: string): void {
+    const text = doPrompt(instId, wf, state, step, rework);
+    const sid = state.owner_session;
+    if (step.reset !== true || !sid) {
+      deliver(state, text, summary);
+      return;
+    }
+    if (typeof ports.resetSurface !== "function") {
+      // 端口没装配：不假装做过（带 reset 的步骤也照常执行，只是没有重置）
+      log("warn", "reset_surface_unavailable", { instId, step: step.id });
+      deliver(state, text, `${summary}（⚠️ 本步标了 \`reset: true\`，但本进程未装配重置端口：上下文未重置）`);
+      return;
+    }
+    const req = resetRequestFor(instId, wf, step);
+    // 替换是异步的（跨一个 maintenance 窗口）。若这段时间里实例已结束/被取消，
+    // 就**不再投递 DO**（别把一条指令塞进一个已经收摊的实例）。
+    //
+    // ⚠️ 必须**重新读盘**：取消/完成走的是另一条 `readState`（每次 JSON.parse 新对象）
+    // 并会销毁实例目录，advance 时读出的那个内存对象永远看不到状态变化。
+    // （第一轮验证者 3/4 实测：闭包快照版本的护栏是空操作 —— 取消后替换照样提交、
+    //   还把已取消工作流的 DO 投进了属主会话。）
+    const stillLive = (): boolean => {
+      try {
+        const cur = readState(instId);
+        return !!cur && cur.active === true && cur.current_step === step.id && cur.do_submitted === false;
+      } catch { return false; }
+    };
+    req.canProceed = stillLive; // 载体在 append 之前同步复查一次（关掉「等窗口期间被取消」的竞态）
+    // 从这一刻起「本步 DO 还没送达」——期间 turn-stopping 的「忘了交卷」提醒必须闭嘴
+    pendingDoDelivery.add(instId);
+    const releasePending = () => { pendingDoDelivery.delete(instId); };
+    void Promise.resolve()
+      .then(() => ports.resetSurface!(sid, req))
+      .then((outcome) => {
+        releasePending();
+        if (!stillLive()) {
+          log("info", "reset_do_dropped", { instId, step: step.id, reason: outcome.reason ?? "instance_not_live" });
+          return;
+        }
+        if (outcome.ok) {
+          log("info", "reset_surface_applied", { instId, step: step.id, shadowed: outcome.shadowed });
+          logEvent(instId, "info", "reset_surface", { step: step.id, shadowed: outcome.shadowed, handoffSeq: outcome.handoffSeq, noticeSeq: outcome.noticeSeq });
+          deliver(state, text, summary);
+          return;
+        }
+        log("warn", "reset_surface_skipped", { instId, step: step.id, reason: outcome.reason, detail: outcome.detail });
+        logEvent(instId, "warn", "reset_surface_skipped", { step: step.id, reason: outcome.reason ?? "unknown", detail: outcome.detail });
+        deliver(state, text, `${summary}（⚠️ 本步的上下文重置未生效：${resetFailureText(outcome)}）`);
+      })
+      .catch((e) => {
+        releasePending();
+        log("warn", "reset_surface_failed", { instId, step: step.id, error: e instanceof Error ? e.message : String(e) });
+        if (stillLive()) deliver(state, text, `${summary}（⚠️ 本步的上下文重置未生效：宿主异常）`);
+      });
   }
 
   /**
@@ -2595,6 +2791,27 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     try { fs.mkdirSync(path.join(artifactsDir, artifactsDirName), { recursive: true }); } catch {}
     log("info", "instance_start", { instId, workflow: wf.name, workspace: projectDir });
     const warnText = warnings.length > 0 ? `\n\n⚠️ 工作流定义告警：\n${warnings.map((w) => `- ${w}`).join("\n")}` : "";
+    // reset 门（`reset: true`）在首步的**初次进入**无法生效，且必须如实说清为什么：
+    // 首步 DO 是 `ralphflow_start` 工具的返回值，替换会落在工具调用内部 → 携带该 tool-call 的
+    // assistant/message 被遮蔽、其 tool/result 之后 append 到新面尾部 → 孤儿 tool/result →
+    // 静默损坏会话（docs/v2/reset-feasibility.md §1.2，违反不报错）。所以初次进入**不做**替换；
+    // 这里既不静默跳过，也不硬来。
+    //
+    // ⚠️ 但**重试会正常重置**：返工是引擎在验证回调里投递的（空闲窗口），走 deliverStepDo 的
+    // 同一条接线。这个区分很重要 —— 内置 loop 只有一步、永远是首步，它标 reset 的**目的**正是
+    // 重试卫生（opencode 同款注释：「单步轻量循环：失败重试频繁」）。说成「首步永远不行」会让
+    // loop 白白用不了 reset，也会误导作者。
+    const firstStepResetNote = first.reset === true
+      ? "⚠️ 本步标了 `reset: true`，但**工作流首步的初次进入无法做上下文重置**：首步的 DO 是启动工具的返回值，在工具调用内部替换会留下孤儿 tool/result（静默损坏会话）。**重试时会正常重置**（返工走空闲窗口）。"
+      : "";
+    if (first.reset === true) {
+      // 级别用 info：这是**设计如此的结构事实**，不是问题，用户已在启动回执里看到说明。
+      // 用 warn 会让**每次 loop 运行**（最常用的内置工作流）都记一条假告警 ——
+      // execution-log-test 的「除日志写失败外无新增告警」会红。记下来仍有用：事后排查
+      // 「我的 reset 为什么没生效」时它是唯一线索。
+      log("info", "reset_skipped_first_step", { instId, step: first.id });
+      logEvent(instId, "info", "reset_skipped_first_step", { step: first.id, reason: "do_is_tool_return" });
+    }
     const text = [
       `🚀 已启动工作流 **${wf.name}**（实例 \`${instId}\`，共 ${wf.steps.length} 步）。${warnText}`,
       "",
@@ -2607,6 +2824,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         : isGate(wf, first)
           ? "接下来：模型执行本步 → 交卷 → 本步**不配置对抗性检查**，会**跳过对抗性验证**（纯人工审查），停在审查门等你 `/ralphflow-continue` 放行。"
           : "接下来：模型执行本步 → 交卷 → 本步**不配置对抗性检查**，会**跳过对抗性验证**，直接进入下一步。",
+      // reset 说明插在**无条件存在**的那个空行之前：不写 reset 时数组元素与基线逐字相同
+      // （那个 `""` 是回归基线的一部分，绝不能因为条件插入而被吞掉——实测踩过）。
+      ...(firstStepResetNote ? [firstStepResetNote] : []),
       "",
       "请现在开始执行上面的任务。",
     ].join("\n");
@@ -2759,6 +2979,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const info = activeInstanceOfSession(sessionId);
     if (!info) return { remind: false };
     const { id: instId, state } = info;
+    // 本步的 DO 还没送达（`reset: true` 的步骤要等空闲窗口做完替换才投递）：此刻催交卷是**错的**
+    // —— 模型还不知道这一步存在。不拦的话，两轮提醒后会把实例暂停（pause_reason=no_submit），
+    // 而 DO 随后落在一个已暂停的实例上（第二轮验证者 2/4 实测）。
+    if (pendingDoDelivery.has(instId)) return { remind: false };
     if (state.paused || state.do_submitted || state.delegations.length > 0) return { remind: false };
     const { def: wf } = loadWorkflow(state.workflow_name);
     const step = wf ? stepOf(wf, state.current_step) : undefined;
@@ -2909,11 +3133,19 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         logEvent(instId, "info", "gate_released", { step: step.id, verified: !byDefinition });
       }
       advance(instId, state, wf, step);
+      // 审查门放行是**在工具调用内部**推进的：若下一步标了 `reset: true`，替换必须等本回合
+      // 结束（空闲窗口）才做得成，所以它的 DO 会**稍后**才到。这里如实说明，免得模型以为
+      // 「已推进 = 现在开始干下一步」而在没有 DO 的情况下盲干（那部分工作也会被随后的重置遮蔽）。
+      const afterGate = nextStepId(wf, step);
+      const afterStep = afterGate === "done" ? undefined : stepOf(wf, afterGate);
+      const deferredNote = afterStep?.reset === true
+        ? `\n\n⚠️ 下一步 \`${afterStep.id}\` 标了 \`reset: true\`（重置门）：它的 DO 提示会在**本回合结束后**送达（上下文重置只能在步骤边界的空闲窗口里做）。**本回合请勿开始该步的工作**，简短确认即可。`
+        : "";
       return {
         ok: true,
-        text: byDefinition
+        text: (byDefinition
           ? `⏭ 步骤 \`${step.id}\` 未配置 \`check\`/\`check_voting\`（定义已声明免验证），已跳过对抗性验证并推进。`
-          : `✅ 步骤 \`${step.id}\` 判定通过，已推进。`,
+          : `✅ 步骤 \`${step.id}\` 判定通过，已推进。`) + deferredNote,
       };
     }
 
