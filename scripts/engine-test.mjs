@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createEngine, resolveCheckModel, makeArtifactsDirName, stepHasCheck, listWorkflowsIn, stepStats, voterCountOf, expectedVerdicts } from "../lib/engine.js";
+import { createEngine, resolveCheckModel, makeArtifactsDirName, stepHasCheck, listWorkflowsIn, stepStats, voterCountOf, expectedVerdicts, REQUIRED_STEP_FIELDS } from "../lib/engine.js";
 import { buildCheckPrompt } from "../lib/verify.js";
 import { CREATE_GUIDE } from "../lib/create.js";
 
@@ -145,7 +145,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   fs.writeFileSync(path.join(engine.workflowsDir, "maxfail.yaml"), [
     "description: 上限暂停专用",
     "steps:",
-    "  - id: a",
+    "  - id: a", "    input: 上游产出", "    output: 本步产出",
     "    desc: 单步",
     "    do: 干活",
     "    check: 检查",
@@ -239,7 +239,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   // CREATE_GUIDE 教模型写的位置就是这里：写进去必须能被加载、能被列出
   fs.writeFileSync(
     path.join(ws, ".dsh", "ralph-flow", "workflows", "mywf.yaml"),
-    ["description: 探针工作流", "steps:", "  - id: only", "    do: 做事。", "    check: 核对。"].join("\n"),
+    ["description: 探针工作流", "steps:", "  - id: only", "    desc: 步骤 only", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: only", "    max_fail_count: 3", "    do: 做事。", "    check: 核对。"].join("\n"),
   );
   const lw = e.loadWorkflow("mywf");
   check("自定义工作流（写在本工作区）能被加载", !!lw.def, JSON.stringify(lw.problems));
@@ -347,25 +347,25 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
     return engine.loadWorkflow(name);
   };
-  const r1 = wfFile("bad-check-type", ["steps:", "  - id: a", "    do: X", "    check: true", "    on_pass: done", "    max_fail_count: 1"]);
+  const r1 = wfFile("bad-check-type", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check: true", "    on_pass: done", "    max_fail_count: 1"]);
   check("check 非字符串 → 硬错误", !r1.def && r1.problems.some((p) => p.includes("check")), JSON.stringify(r1.problems));
 
-  const r2 = wfFile("bad-no-do", ["steps:", "  - id: a", "    check: c", "    on_pass: done", "    max_fail_count: 1"]);
+  const r2 = wfFile("bad-no-do", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    check: c", "    on_pass: done", "    max_fail_count: 1"]);
   check("do 缺失 → 硬错误", !r2.def && r2.problems.some((p) => p.includes("do")), JSON.stringify(r2.problems));
 
-  const r3 = wfFile("bad-manual", ["manual_step:", "  - nope", "steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 1"]);
+  const r3 = wfFile("bad-manual", ["manual_step:", "  - nope", "steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 1"]);
   check("manual_step 引用不存在步骤 → 硬错误", !r3.def && r3.problems.some((p) => p.includes("manual_step")), JSON.stringify(r3.problems));
 
-  const r4 = wfFile("bad-maxfail0", ["steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 0"]);
+  const r4 = wfFile("bad-maxfail0", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 0"]);
   check("max_fail_count: 0 → 硬错误", !r4.def && r4.problems.some((p) => p.includes("max_fail_count")), JSON.stringify(r4.problems));
 
-  const r5 = wfFile("bad-maxfail-neg", ["steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: -2"]);
+  const r5 = wfFile("bad-maxfail-neg", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: -2"]);
   check("max_fail_count 负数 → 硬错误", !r5.def && r5.problems.some((p) => p.includes("max_fail_count")), JSON.stringify(r5.problems));
 
   const ok = wfFile("ok-manual-csv", [
     "manual_step: a,b", "steps:",
-    "  - id: a", "    do: X", "    check: c", "    on_pass: b", "    on_fail: a", "    max_fail_count: 1",
-    "  - id: b", "    do: Y", "    check: d", "    on_pass: done", "    on_fail: b", "    max_fail_count: 1",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check: c", "    on_pass: b", "    on_fail: a", "    max_fail_count: 1",
+    "  - id: b", "    desc: 步骤 b", "    input: 上游产出", "    output: 本步产出", "    do: Y", "    check: d", "    on_pass: done", "    on_fail: b", "    max_fail_count: 1",
   ]);
   check("manual_step 逗号字符串写法被接受", !!ok.def && ok.def.manual_step.join(",") === "a,b", JSON.stringify(ok.def?.manual_step));
 }
@@ -380,7 +380,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     return engine.loadWorkflow(name);
   };
   const stepLines = (manualLine) => [
-    "steps:", "  - id: a", "    do: X", "    check: c",
+    "steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check: c",
     ...(manualLine === undefined ? [] : [manualLine]),
     "    on_pass: done", "    on_fail: a", "    max_fail_count: 1",
   ];
@@ -411,9 +411,9 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   // 列表写法照常生效：通过后停在审查门，continue 才放行（行为与改造前逐字一致）
   const good = wfFile("ok-step-manual-list", [
     "description: 工作流级列表是审查门的唯一写法", "manual_step: [g]", "steps:",
-    "  - id: g", "    desc: 门步", "    do: 做 G", "    check: 检查 G",
+    "  - id: g", "    input: 上游产出", "    output: 本步产出", "    desc: 门步", "    do: 做 G", "    check: 检查 G",
     "    on_pass: h", "    on_fail: g", "    max_fail_count: 3",
-    "  - id: h", "    desc: 收尾步", "    do: 做 H", "    check: 检查 H",
+    "  - id: h", "    input: 上游产出", "    output: 本步产出", "    desc: 收尾步", "    do: 做 H", "    check: 检查 H",
     "    on_pass: done", "    on_fail: h", "    max_fail_count: 3",
   ]);
   check("工作流级列表照常加载（零问题、零告警）",
@@ -458,24 +458,24 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     check(`resolveCheckModel 解析不出 → undefined（${JSON.stringify(bad)}）`, resolveCheckModel(bad) === undefined);
   }
   // 合法形态静默通过
-  const okStr = wfFile("cm-ok-str", ["steps:", "  - id: a", "    do: X", "    check: c", "    check_model: deepseek/deepseek-chat", "    on_pass: done", "    max_fail_count: 1"]);
+  const okStr = wfFile("cm-ok-str", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check: c", "    check_model: deepseek/deepseek-chat", "    on_pass: done", "    max_fail_count: 1"]);
   check("check_model 字符串形态可加载且无告警", !!okStr.def && okStr.problems.length === 0 && okStr.warnings.length === 0, JSON.stringify(okStr));
-  const okObj = wfFile("cm-ok-obj", ["steps:", "  - id: a", "    do: X", "    check: c", "    check_model:", "      providerID: anthropic", "      modelID: claude-haiku-4-5", "    on_pass: done", "    max_fail_count: 1"]);
+  const okObj = wfFile("cm-ok-obj", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check: c", "    check_model:", "      providerID: anthropic", "      modelID: claude-haiku-4-5", "    on_pass: done", "    max_fail_count: 1"]);
   check("check_model 对象形态可加载且无告警", !!okObj.def && okObj.problems.length === 0 && okObj.warnings.length === 0, JSON.stringify(okObj));
   // 硬错误（照抄 opencode：同写 check_voting、无 check）
-  const noCheck = wfFile("cm-no-check", ["steps:", "  - id: a", "    do: X", "    check_model: a/b", "    on_pass: done", "    max_fail_count: 1"]);
+  const noCheck = wfFile("cm-no-check", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check_model: a/b", "    on_pass: done", "    max_fail_count: 1"]);
   check("check_model 无 check → 硬错误", !noCheck.def && noCheck.problems.some((p) => p.includes("check_model")), JSON.stringify(noCheck.problems));
-  const withVoting = wfFile("cm-with-voting", ["steps:", "  - id: a", "    do: X", "    check: c", "    check_model: a/b", "    check_voting:", "      - check: c1", "    on_pass: done", "    max_fail_count: 1"]);
+  const withVoting = wfFile("cm-with-voting", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check: c", "    check_model: a/b", "    check_voting:", "      - check: c1", "    on_pass: done", "    max_fail_count: 1"]);
   check("check_model 与 check_voting 同写 → 硬错误", !withVoting.def && withVoting.problems.some((p) => p.includes("check_model")), JSON.stringify(withVoting.problems));
   // 告警（形态合法但解析不出 → 回退，不静默）
-  const bare = wfFile("cm-bare", ["steps:", "  - id: a", "    do: X", "    check: c", "    check_model: sonnet", "    on_pass: done", "    max_fail_count: 1"]);
+  const bare = wfFile("cm-bare", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check: c", "    check_model: sonnet", "    on_pass: done", "    max_fail_count: 1"]);
   check("check_model 裸名 → 告警回退（不静默）", !!bare.def && bare.warnings.some((w) => w.includes("check_model")), JSON.stringify(bare.warnings));
-  const halfObj = wfFile("cm-half", ["steps:", "  - id: a", "    do: X", "    check: c", "    check_model:", "      modelID: x", "    on_pass: done", "    max_fail_count: 1"]);
+  const halfObj = wfFile("cm-half", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check: c", "    check_model:", "      modelID: x", "    on_pass: done", "    max_fail_count: 1"]);
   check("check_model 对象缺字段 → 告警回退", !!halfObj.def && halfObj.warnings.some((w) => w.includes("check_model")), JSON.stringify(halfObj.warnings));
   // 全局 adversarial_check.model 对象形态（以前被静默丢弃）
-  const gObj = wfFile("g-obj", ["adversarial_check:", "  model:", "    providerID: openai", "    modelID: gpt-5", "steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 1"]);
+  const gObj = wfFile("g-obj", ["adversarial_check:", "  model:", "    providerID: openai", "    modelID: gpt-5", "steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 1"]);
   check("全局 model 对象形态被接受（不再静默丢弃）", !!gObj.def && gObj.warnings.length === 0 && resolveCheckModel(gObj.def.adversarial_check?.model)?.providerID === "openai", JSON.stringify(gObj));
-  const gBare = wfFile("g-bare", ["adversarial_check:", "  model: sonnet", "steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 1"]);
+  const gBare = wfFile("g-bare", ["adversarial_check:", "  model: sonnet", "steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 1"]);
   check("全局 model 裸名 → 告警回退", !!gBare.def && gBare.warnings.some((w) => w.includes("adversarial_check.model")), JSON.stringify(gBare.warnings));
 }
 
@@ -485,9 +485,9 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   const wfYaml = (name, lines) => fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
   wfYaml("prio", [
     "adversarial_check:", "  model: openai/gpt-5", "steps:",
-    "  - id: a", "    do: X", "    check: c", "    check_model: anthropic/claude-haiku-4-5",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check: c", "    check_model: anthropic/claude-haiku-4-5",
     "    on_pass: b", "    on_fail: a", "    max_fail_count: 1",
-    "  - id: b", "    do: Y", "    check: d", "    on_pass: done", "    on_fail: b", "    max_fail_count: 1",
+    "  - id: b", "    desc: 步骤 b", "    input: 上游产出", "    output: 本步产出", "    do: Y", "    check: d", "    on_pass: done", "    on_fail: b", "    max_fail_count: 1",
   ]);
   const seen = [];
   const eng2 = createEngine(engine.projectDir, {
@@ -514,7 +514,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
     return engine.loadWorkflow(name);
   };
-  const steps = ["steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 1"];
+  const steps = ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check: c", "    on_pass: done", "    max_fail_count: 1"];
   // 三个已删除字段：各自告警指出该字段，且不进定义（不生效）
   for (const field of ["agent", "system_prompt", "timeout_ms"]) {
     const value = field === "timeout_ms" ? "5000" : "whatever";
@@ -553,24 +553,24 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   };
   const r1 = wfFile("lint-unreach", [
     "steps:",
-    "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1",
-    "  - id: orphan", "    do: Y", "    check: d", "    on_pass: done", "    on_fail: orphan", "    max_fail_count: 1",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1",
+    "  - id: orphan", "    desc: 步骤 orphan", "    input: 上游产出", "    output: 本步产出", "    do: Y", "    check: d", "    on_pass: done", "    on_fail: orphan", "    max_fail_count: 1",
   ]);
   check("不可达步骤 → 告警", !!r1.def && r1.warnings.some((w) => w.includes("不可达")), JSON.stringify(r1.warnings));
 
-  const r2 = wfFile("lint-nodone", ["steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: a", "    on_fail: a", "    max_fail_count: 1"]);
+  const r2 = wfFile("lint-nodone", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check: c", "    on_pass: a", "    on_fail: a", "    max_fail_count: 1"]);
   check("无任何可达 on_pass done → 告警（永不完成）", !!r2.def && r2.warnings.some((w) => w.includes("done")), JSON.stringify(r2.warnings));
 
-  const r3 = wfFile("lint-token", ["steps:", "  - id: a", "    do: '写到 {{output_dir}}/x.md'", "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
+  const r3 = wfFile("lint-token", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: '写到 {{output_dir}}/x.md'", "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
   check("未解析模板变量 → 告警", !!r3.def && r3.warnings.some((w) => w.includes("{{output_dir}}")), JSON.stringify(r3.warnings));
 
-  const r4 = wfFile("lint-nocheck", ["steps:", "  - id: a", "    do: X", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
+  const r4 = wfFile("lint-nocheck", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
   check("非 manual 且无 check → 告警「不会被独立验证」",
     !!r4.def && r4.warnings.some((w) => w.includes("对抗性检查") && w.includes("不会被独立验证")), JSON.stringify(r4.warnings));
   check("无 check 告警不再提「兜底配方」（已退役）", !!r4.def && !r4.warnings.some((w) => w.includes("兜底")), JSON.stringify(r4.warnings));
 
   // 新增：manual 且无 check → **不告警**（纯人工审查是刻意默认，不是问题，照 opencode lint）
-  const r5 = wfFile("lint-nocheck-manual", ["manual_step: [a]", "steps:", "  - id: a", "    do: X", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
+  const r5 = wfFile("lint-nocheck-manual", ["manual_step: [a]", "steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
   check("manual 且无 check → 不告警", !!r5.def && r5.warnings.length === 0, JSON.stringify(r5.warnings));
 
   // doctor（工具）与 loadWorkflow 共用同一份 warnings：告警必须在 doctor 的数据源里可见，
@@ -730,7 +730,9 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   check("指引写明子工作流的加载期硬错误清单与 2000 步上限", CREATE_GUIDE.includes("子工作流的加载期硬错误") && CREATE_GUIDE.includes("2000"));
   check("指引不再声称本版本没有子工作流 / 不再说它是无法启动的形状",
     !CREATE_GUIDE.includes("本版本没有子工作流") && !CREATE_GUIDE.includes("硬错误、工作流无法启动"));
-  check("指引把 on_pass/on_fail/max_fail_count 标为可选", !CREATE_GUIDE.includes("必填：下个步骤") && CREATE_GUIDE.includes("可选，缺省"));
+  check("指引把六个步骤字段标为**必填**（desc/input/output/on_pass/on_fail/max_fail_count）",
+    CREATE_GUIDE.includes("六个步骤字段必填") && CREATE_GUIDE.includes("空串算缺")
+    && CREATE_GUIDE.includes("子工作流调用点同样必填这六个"));
 
   const guideFile = (name, lines) => {
     fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
@@ -739,16 +741,20 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   // 行为侧 1：子工作流调用点 —— 子文件加载不出来 = 加载期硬错误；子文件在 → 静态展开可加载
   //（此处原为「子工作流形状（无 do）硬错误、无法启动」；语义按任务书升级，断言随之改写：
   //  负对照从「形状不支持」换成「引用不存在／成环／上限」这些真正该硬错误的情形）
-  const sub = guideFile("guide-sub", ["steps:", "  - id: delegate", "    workflow: child", "    on_pass: done", "    on_fail: delegate", "    max_fail_count: 3"]);
+  const sub = guideFile("guide-sub", ["steps:", "  - id: delegate", "    desc: 步骤 delegate", "    input: 上游产出", "    output: 本步产出", "    workflow: child", "    on_pass: done", "    on_fail: delegate", "    max_fail_count: 3"]);
   check("调用点引用不存在的子文件 → 加载期硬错误（报错含调用链，不再拖到运行期）",
     !sub.def && sub.problems.some((p) => p.includes("child") && p.includes("无法加载")), JSON.stringify(sub.problems));
-  guideFile("guide-child", ["steps:", "  - id: inner", "    do: X", "    check: Y", "    on_pass: done"]);
-  const subOk = guideFile("guide-sub2", ["steps:", "  - id: delegate", "    workflow: guide-child"]);
+  guideFile("guide-child", ["steps:", "  - id: inner", "    desc: 步骤 inner", "    input: 上游产出", "    output: 本步产出", "    on_fail: inner", "    max_fail_count: 3", "    do: X", "    check: Y", "    on_pass: done"]);
+  const subOk = guideFile("guide-sub2", ["steps:", "  - id: delegate", "    desc: 步骤 delegate", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: delegate", "    max_fail_count: 3", "    workflow: guide-child"]);
   check("子文件在 → 静态展开可加载、id 前缀化（指引所述「加载期静态展开」成立）",
     !!subOk.def && subOk.def.steps.length === 1 && subOk.def.steps[0].id === "delegate/inner", JSON.stringify(subOk.problems));
-  // 行为侧 2：只写 id/do/check 即可加载 → 三者确为可选
-  const min = guideFile("guide-min", ["steps:", "  - id: a", "    do: X", "    check: c"]);
-  check("只写 id/do/check 可加载（on_pass/on_fail/max_fail_count 确为可选）", !!min.def, JSON.stringify(min.problems));
+  // 行为侧 2：六个必填字段缺一不可（含空串）—— 与指引「**六个步骤字段必填**」逐条对应
+  const min = guideFile("guide-min", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: a", "    max_fail_count: 3", "    do: X", "    check: c"]);
+  check("六个字段齐全（+id/do）即可加载", !!min.def, JSON.stringify(min.problems));
+  const bare = guideFile("guide-bare", ["steps:", "  - id: a", "    do: X", "    check: c"]);
+  check("只写 id/do/check 被拒（缺六个必填字段，不再静默丢步）",
+    !bare.def && ["desc", "input", "output", "on_pass", "on_fail", "max_fail_count"].every((f) => bare.problems.some((p) => p.includes(`\`${f}\``))),
+    JSON.stringify(bare.problems));
   // 行为侧 3：doctor 输出没有「可启动」，只有 ✅/❌ 与结论行
   const diag = engine.diagnose().text;
   check("doctor 输出不含「可启动」（指引措辞与输出一致）", !diag.includes("可启动") && diag.includes("全部 ✅"));
@@ -765,9 +771,9 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   // 行为侧 5：A1 —— 指引声称支持 check_model 与两形态 model，行为必须一致
   check("指引提到 check_model", CREATE_GUIDE.includes("check_model"));
   check("指引写明验证模型优先级链", CREATE_GUIDE.includes("check_model` > 全局"), CREATE_GUIDE.slice(0, 200));
-  const cmGuide = guideFile("guide-cm", ["steps:", "  - id: a", "    do: X", "    check: c", "    check_model: deepseek/deepseek-chat", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
+  const cmGuide = guideFile("guide-cm", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check: c", "    check_model: deepseek/deepseek-chat", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
   check("指引所述 check_model 写法确实可加载", !!cmGuide.def && cmGuide.problems.length === 0, JSON.stringify(cmGuide));
-  const cmBadGuide = guideFile("guide-cm-bad", ["steps:", "  - id: a", "    do: X", "    check_model: a/b", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
+  const cmBadGuide = guideFile("guide-cm-bad", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check_model: a/b", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
   check("指引所述「无 check 即硬错误」确实成立", !cmBadGuide.def && cmBadGuide.problems.some((p) => p.includes("check_model")), JSON.stringify(cmBadGuide.problems));
 
   // 行为侧 6：验证者配置收敛 —— 指引只介绍 model，不再出现已删除字段
@@ -778,7 +784,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   check("指引写明验证者身份是 Ralphflow 内部定义", CREATE_GUIDE.includes("内部定义"));
   check("指引写明未覆盖时回退发起会话当前模型", CREATE_GUIDE.includes("发起会话当前模型"));
   // 行为侧 7：指引示例里的 adversarial_check 确实只写 model 也能加载启动
-  const acGuide = guideFile("guide-ac", ["adversarial_check:", "  model: deepseek/deepseek-chat", "steps:", "  - id: a", "    do: X", "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
+  const acGuide = guideFile("guide-ac", ["adversarial_check:", "  model: deepseek/deepseek-chat", "steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
   check("指引所述 adversarial_check 写法可加载且无告警", !!acGuide.def && acGuide.problems.length === 0 && acGuide.warnings.length === 0, JSON.stringify(acGuide));
 }
 
@@ -801,9 +807,9 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   // ── 17a) 无 check + 非 manual → 跳过验证，直接 on_pass 推进 ──
   const plain = wfFile("skip-plain", [
     "description: 无 check 直接推进", "steps:",
-    "  - id: a", "    desc: 免验证步", "    do: 做 A", "    output: a.md",
+    "  - id: a", "    input: 上游产出", "    desc: 免验证步", "    do: 做 A", "    output: a.md",
     "    on_pass: b", "    on_fail: a", "    max_fail_count: 3",
-    "  - id: b", "    desc: 有验证步", "    do: 做 B", "    check: 检查 B",
+    "  - id: b", "    input: 上游产出", "    output: 本步产出", "    desc: 有验证步", "    do: 做 B", "    check: 检查 B",
     "    on_pass: done", "    on_fail: b", "    max_fail_count: 3",
   ]);
   check("17a 无 check 工作流可加载（不拒收；lint 提醒该步不被独立验证）",
@@ -858,9 +864,9 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   // ── 17b) 无 check + manual → 纯人工审查门（停在门，continue 放行）──
   const gate = wfFile("skip-gate", [
     "description: 无 check 的纯人工审查门", "manual_step: [g]", "steps:",
-    "  - id: g", "    desc: 纯人工审查步", "    do: 做 G",
+    "  - id: g", "    input: 上游产出", "    output: 本步产出", "    desc: 纯人工审查步", "    do: 做 G",
     "    on_pass: h", "    on_fail: g", "    max_fail_count: 3",
-    "  - id: h", "    desc: 收尾步", "    do: 做 H", "    check: 检查 H",
+    "  - id: h", "    input: 上游产出", "    output: 本步产出", "    desc: 收尾步", "    do: 做 H", "    check: 检查 H",
     "    on_pass: done", "    on_fail: h", "    max_fail_count: 3",
   ]);
   check("17b manual + 无 check → 加载不告警（纯人工审查是刻意默认）",
@@ -968,7 +974,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   // 不得出现「取证判定」（独立验证的承诺）或「检查通过」（伪造的事实）。
   wfFile("skip-only", [
     "description: 单步无 check（全程免验证）", "steps:",
-    "  - id: only", "    desc: 唯一一步", "    do: 做唯一的事",
+    "  - id: only", "    input: 上游产出", "    output: 本步产出", "    desc: 唯一一步", "    do: 做唯一的事",
     "    on_pass: done", "    on_fail: only", "    max_fail_count: 3",
   ]);
   {
@@ -1001,7 +1007,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
     return engine.loadWorkflow(name);
   };
-  const step = (extra) => ["steps:", "  - id: a", "    do: X", extra, "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"];
+  const step = (extra) => ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", extra, "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"];
 
   const ok = wfFile("reset-ok", step("    reset: true"));
   check("reset: true 是合法步骤键（加载期零告警零问题）",
@@ -1056,7 +1062,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     });
     e.ensureLayout();
     fs.writeFileSync(path.join(e.workflowsDir, "first-reset.yaml"),
-      ["description: 首步重试用例", "steps:", "  - id: a", "    do: X", "    reset: true",
+      ["description: 首步重试用例", "steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    reset: true",
         "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 3"].join("\n"));
     e.start("first-reset", "首步重试", "s-first-reset");
     check("首步初次进入：**不**调用 resetSurface（工具调用内部，结构上无法重置）",
@@ -1084,6 +1090,181 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   check("首步带 reset 时，说明插在空行**之前**，收尾仍是「。\\n\\n请现在开始…」（不吞空行）",
     /[^\n]\n\n请现在开始执行上面的任务。$/.test(receiptOf(noted.text)),
     JSON.stringify(receiptOf(noted.text).slice(-220)));
+}
+
+// ── 18) 六个必填步骤字段：缺任一（含空串）= 加载期硬错误 ────────────────────────
+// 来源是 opencode / claude 的加载期校验**代码**（缺一个就 skipStep = 静默丢步或整份拒收）。
+// 本仓库对「会让资产不再表示它所说的话」的配置一律硬错误，所以这里逐字段钉住。
+{
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-req-"));
+  const e = createEngine(ws, {
+    deliver: () => true,
+    verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }),
+    log: () => {},
+  });
+  e.ensureLayout();
+  const wf = (name, lines) => {
+    fs.writeFileSync(path.join(e.workflowsDir, `${name}.yaml`), lines.join("\n"));
+    return e.loadWorkflow(name);
+  };
+  const FIELDS = {
+    desc: "    desc: 一句话",
+    input: "    input: 上游产出",
+    output: "    output: 本步产出",
+    on_pass: "    on_pass: done",
+    on_fail: "    on_fail: a",
+    max_fail_count: "    max_fail_count: 3",
+  };
+  const stepLines = (overrides = {}, omit = []) => [
+    "steps:", "  - id: a",
+    ...Object.entries(FIELDS).filter(([k]) => !omit.includes(k)).map(([k, v]) => (k in overrides ? overrides[k] : v)),
+    "    do: X", "    check: c",
+  ];
+  // 导出清单就是那六项（判据的单一事实源）
+  check("18) REQUIRED_STEP_FIELDS 恰是那六个字段（desc/input/output/on_pass/on_fail/max_fail_count）",
+    JSON.stringify([...REQUIRED_STEP_FIELDS]) === JSON.stringify(["desc", "input", "output", "on_pass", "on_fail", "max_fail_count"])
+    && Object.keys(FIELDS).length === REQUIRED_STEP_FIELDS.length,
+    JSON.stringify(REQUIRED_STEP_FIELDS));
+  // 齐全 → 可加载（正对照）
+  check("18) 六个必填字段齐全 → 可加载", !!wf("req-ok", stepLines()).def, JSON.stringify(wf("req-ok", stepLines()).problems));
+  // 逐个缺失 → 整份拒收，且报错点名该字段
+  for (const [field, line] of Object.entries(FIELDS)) {
+    const r = wf(`req-miss-${field}`, stepLines({}, [field]));
+    check(`18) 缺 \`${field}\` → 加载期硬错误（点名该字段）`,
+      !r.def && r.problems.some((p) => p.includes(`\`${field}\``)), JSON.stringify(r.problems));
+    // 空串算缺（照 opencode 的 `!step.desc`）
+    const empty = field === "max_fail_count" ? '    max_fail_count: ""' : `    ${field}: ""`;
+    const r2 = wf(`req-empty-${field}`, stepLines({ [field]: empty }));
+    check(`18) \`${field}\` 为空串 → 同样硬错误（空串算缺）`,
+      !r2.def && r2.problems.some((p) => p.includes(`\`${field}\``)), JSON.stringify(r2.problems));
+  }
+  // max_fail_count 的非法值（0/负数/小数）同样是硬错误
+  for (const bad of ["0", "-1", "1.5"]) {
+    const r = wf(`req-mfc-${bad.replace(/[^0-9a-z]/gi, "_")}`, stepLines({ max_fail_count: `    max_fail_count: ${bad}` }));
+    check(`18) \`max_fail_count: ${bad}\` → 硬错误`, !r.def && r.problems.some((p) => p.includes("max_fail_count")), JSON.stringify(r.problems));
+  }
+  // 子工作流调用点同样必填这六个（照抄 opencode/claude：校验排在 `workflow` 分支之前）
+  wf("req-child", stepLines());
+  const callLines = (omit = []) => [
+    "steps:", "  - id: call",
+    // 调用点自己的 on_fail 只能指向**本工作流**里存在的步骤（这里是它自己）——
+    // 子工作流内部的 id 在父级连线里不存在（子步骤是 `call/a` 这种展开后的 id）。
+    ...Object.entries(FIELDS).filter(([k]) => !omit.includes(k)).map(([k, v]) => (k === "on_fail" ? "    on_fail: call" : v)),
+    "    workflow: req-child",
+  ];
+  check("18) 调用点六个字段齐全 → 可加载并展开", (() => {
+    const r = wf("req-call-ok", callLines());
+    return !!r.def && r.def.steps.length === 1 && r.def.steps[0].id === "call/a";
+  })());
+  for (const field of Object.keys(FIELDS)) {
+    const r = wf(`req-call-miss-${field}`, callLines([field]));
+    check(`18) 调用点缺 \`${field}\` → 加载期硬错误（报错主语是「调用点」）`,
+      !r.def && r.problems.some((p) => p.includes("调用点") && p.includes(`\`${field}\``)), JSON.stringify(r.problems));
+  }
+  // 调用点上不再被接受的键照旧告警指路（不是硬错误）
+  const warnCall = wf("req-call-warn", [...callLines(), "    do: 不该生效", "    check: 不该生效", "    inputs:", "      task: x"]);
+  check("18) 调用点上 `do`/`check`/`inputs` 仍逐键告警指路（不硬错误）",
+    !!warnCall.def && ["do", "check", "inputs"].every((k) => warnCall.warnings.some((w) => w.includes(`\`${k}\``) && w.includes("不生效"))),
+    JSON.stringify(warnCall.warnings));
+  // 悬空连线（含调用点的）仍是硬错误
+  const dangling = wf("req-dangling", callLines().map((l) => (l.includes("on_pass: done") ? "    on_pass: nope" : l)));
+  check("18) 调用点的悬空 on_pass 仍是硬错误", !dangling.def && dangling.problems.some((p) => p.includes("nope")), JSON.stringify(dangling.problems));
+  try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
+}
+
+// ── 19) 接管：只在**无属主**时自动接管；有属主 → 列候选要求显式指定 ─────────────
+{
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-adopt-"));
+  const e = createEngine(ws, {
+    deliver: () => true,
+    verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }),
+    log: () => {},
+  });
+  e.ensureLayout();
+  const wf = ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 3"].join("\n");
+  fs.writeFileSync(path.join(e.workflowsDir, "adopt.yaml"), wf);
+  // ① 有属主：别的会话调用（无参）→ **不接管**，列候选并要求显式指定
+  const { id: owned } = (() => { e.start("adopt", "有属主用例", "session-owner1-aaaa-bbbb-cccc"); return { id: e.listInstances().at(-1).id }; })();
+  const notAdopted = e.continueInstance("session-stranger1-aaaa-bbbb");
+  check("19) 有属主 + 无参 → 不接管（owner_session 不变）",
+    e.readState(owned).owner_session === "session-owner1-aaaa-bbbb-cccc", e.readState(owned).owner_session);
+  check("19) 有属主 + 无参 → 列候选、显示属主会话、要求显式指定",
+    !notAdopted.ok && notAdopted.text.includes(owned) && notAdopted.text.includes("session-owner1")
+    && notAdopted.text.includes("显式指定") && notAdopted.text.includes("/ralphflow-continue"),
+    notAdopted.text);
+  // ② 显式指定 → 接管（即使有属主；「有属主就要求显式指定」的显式路径）
+  const explicit = e.continueInstance("session-stranger1-aaaa-bbbb", owned);
+  check("19) 显式给实例 ID → 接管成功（归属转到本会话）",
+    e.readState(owned).owner_session === "session-stranger1-aaaa-bbbb",
+    `${explicit.text} / ${e.readState(owned)?.owner_session}`);
+  check("19) 接管记入轨迹（adopted）", e.readState(owned).history.some((h) => h.event === "adopted"));
+  // ③ 无属主：无参 → **自动接管**（恰好一个无属主实例）
+  const orphanWs = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-adopt2-"));
+  const e2 = createEngine(orphanWs, { deliver: () => true, verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }), log: () => {} });
+  e2.ensureLayout();
+  fs.writeFileSync(path.join(e2.workflowsDir, "adopt.yaml"), wf);
+  e2.start("adopt", "无属主用例", "session-gone1-aaaa-bbbb");
+  const orphanId = e2.listInstances().at(-1).id;
+  const st = e2.readState(orphanId);
+  st.owner_session = undefined; // 模拟属主会话已不存在（owner_session 为空 = 无属主）
+  fs.writeFileSync(path.join(e2.instanceDir(orphanId), "state.json"), JSON.stringify(st, null, 2));
+  const adopted = e2.continueInstance("session-new1-aaaa-bbbb");
+  check("19) 无属主 + 无参 → 自动接管（owner_session 转到本会话）",
+    e2.readState(orphanId).owner_session === "session-new1-aaaa-bbbb", `${adopted.text} / ${e2.readState(orphanId)?.owner_session}`);
+  check("19) 自动接管的回执不说「有属主 / 要求显式指定」（确实接管了，不是列候选）",
+    !adopted.text.includes("显式指定") && !adopted.text.includes("有属主"), adopted.text.slice(0, 200));
+  // ④ 多个无属主 → 无法判定，列候选要求显式指定（绝不乱挑一个）
+  const e3ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-adopt3-"));
+  const e3 = createEngine(e3ws, { deliver: () => true, verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }), log: () => {} });
+  e3.ensureLayout();
+  fs.writeFileSync(path.join(e3.workflowsDir, "adopt.yaml"), wf);
+  e3.start("adopt", "无属主 A", "session-gonea-aaaa-bbbb");
+  e3.start("adopt", "无属主 B", "session-goneb-aaaa-bbbb");
+  // 两个实例的 started_at 可能落在同一毫秒（listInstances 的排序在同值时不稳定），
+  // 所以按集合取 id，不用「最新那个」的位置推断。
+  const [a1, a2] = e3.listInstances().map((i) => i.id);
+  for (const id of [a1, a2]) {
+    const s = e3.readState(id);
+    s.owner_session = undefined;
+    fs.writeFileSync(path.join(e3.instanceDir(id), "state.json"), JSON.stringify(s, null, 2));
+  }
+  const ambiguous = e3.continueInstance("session-new3-aaaa-bbbb");
+  check("19) 多个无属主 + 无参 → 不瞎挑，列候选要求显式指定",
+    !ambiguous.ok && ambiguous.text.includes(a1) && ambiguous.text.includes(a2) && ambiguous.text.includes("显式指定"),
+    ambiguous.text);
+  for (const d of [ws, orphanWs, e3ws]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} }
+}
+
+// ── 20) status：无参且本会话无实例 → 全部活跃实例概览 + 属主会话 ────────────────
+{
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-status-"));
+  const e = createEngine(ws, {
+    deliver: () => true,
+    verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }),
+    log: () => {},
+  });
+  e.ensureLayout();
+  const wf = ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 3"].join("\n");
+  fs.writeFileSync(path.join(e.workflowsDir, "st.yaml"), wf);
+  e.start("st", "别人的实例", "session-other1-aaaa-bbbb-cccc");
+  const other = e.listInstances().at(-1).id;
+  // 本会话（没有实例）无参 → 概览，而不是随便挑最后一个实例讲成自己的
+  const mine = e.statusOf("session-mine1-aaaa-bbbb");
+  check("20) 无参 + 本会话无实例 → 全部活跃实例概览（不挑单个实例冒充）",
+    mine.text.includes("## 活跃实例") && mine.text.includes(other), mine.text.slice(0, 300));
+  check("20) 概览显示属主会话（别的会话可辨认）", mine.text.includes("session-other1"), mine.text.slice(0, 300));
+  check("20) 概览指出「本会话没有实例」的出路（status <实例ID> / continue <实例ID>）",
+    mine.text.includes("/ralphflow-status") && mine.text.includes("/ralphflow-continue"), mine.text.slice(0, 400));
+  // 显式指定实例 ID → 详情，且详情里也写明属主会话
+  const detail = e.statusOf("session-mine1-aaaa-bbbb", other);
+  check("20) 指定实例 ID → 详情里显示属主会话",
+    detail.text.includes("属主会话") && detail.text.includes("session-other1"), detail.text.slice(0, 400));
+  // 本会话自己的实例：详情标「本会话」
+  e.start("st", "我的实例", "session-mine1-aaaa-bbbb");
+  const ownDetail = e.statusOf("session-mine1-aaaa-bbbb");
+  check("20) 本会话有实例 → 给它的详情，并标明属主是本会话",
+    ownDetail.text.includes("本会话") && ownDetail.text.includes("属主会话"), ownDetail.text.slice(0, 400));
+  try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
 }
 
 // ── 清理：引擎已按工作区单根，实例资产都在隔离工作区里，没有全局索引要清理 ──────

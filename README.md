@@ -31,7 +31,9 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 | `/ralphflow-doctor` | `ralphflow_doctor` | 诊断工作流定义与实例状态 |
 | `/ralphflow-<工作流名>` | — | 动态注册的工作流快捷命令（如 `/ralphflow-loop`、`/ralphflow-spec`；命名与 claude code 版一致） |
 
-`/ralphflow-rewind` **命令**已声明未实现（回退到上游步骤，涉及上下文管理，暂缓）；其余命令与 opencode 版功能看齐。**别把三种 reset 混淆**：① 步骤级方言 `reset: true`、② 工作流级 `auto_reset: true`（等价于给所有步骤标 reset，含失败重试）、③ 手动 `/ralphflow-reset`（重做当前步）——三者**语义完全一致**：进入该步前把会话可见面整段替换成一条「交接稿」，模型收到的 messages = 系统提示 + 交接稿 + 本步 DO（内置 `spec` 的 `propose`/`implement` 标了 `reset: true`；载体见 `docs/v2/reset-feasibility.md` 与 `src/reset.ts`）。重置**只换干净上下文、不赦免失败**：失败计数原样保留，暂停中一律拒绝并指向 `/ralphflow-continue`（否则反复 reset 就能绕过 `max_fail_count`）。措辞**按来源分两支**：子工作流的 `auto_reset` 在加载期静态展开下沉时会保留来源标记，绝不说成「本步标了 `reset: true`」（作者没标）；手动重置若在空闲窗口复查时发现实例已交卷/推进/取消，会**发一条可见告知**说明这次重置没有生效并给出下一步（绝不静默作废——命令处理器当场已回 success，这条告知是唯一结果通道）。命令语义 = **触发词**：`/ralphflow-*` **一律**由模型自然语言回复（含用法错误与未实现命令），**零程序化卡片返回**，行为与 claude code/opencode 完全一致；`/ralphflow-reset` 是唯一例外——机械动作由命令处理器直接驱动引擎完成（**不给模型可调用的工具**），结果仍交回模型自然语言回复。
+`/ralphflow-rewind` **命令**已声明未实现（回退到上游步骤，涉及上下文管理，暂缓）；其余命令与 opencode 版功能看齐。**别把三种 reset 混淆**：① 步骤级方言 `reset: true`、② 工作流级 `auto_reset: true`（等价于给所有步骤标 reset，含失败重试）、③ 手动 `/ralphflow-reset`（重做当前步）——三者**语义完全一致**：进入该步前把会话可见面整段替换成一条「交接稿」，模型收到的 messages = 系统提示 + 交接稿 + 本步 DO（内置 `spec` 的 `propose`/`implement` 标了 `reset: true`；载体见 `docs/v2/reset-feasibility.md` 与 `src/reset.ts`）。**子工作流调用点上的 `reset: true` 也生效**：语义按本实现的静态展开模型定 —— 进入子工作流 = **首个展开后子步骤**的重置。重置**只换干净上下文、不赦免失败**：失败计数原样保留，暂停中一律拒绝并指向 `/ralphflow-continue`（否则反复 reset 就能绕过 `max_fail_count`）。措辞**按来源分三支**（步骤级 / `auto_reset` / **调用点**）：子工作流的 `auto_reset` 与调用点的 `reset` 在加载期静态展开下沉时都会保留来源标记，绝不说成「本步标了 `reset: true`」（作者没标）；手动重置若在空闲窗口复查时发现实例已交卷/推进/取消，会**发一条可见告知**说明这次重置没有生效并给出下一步（绝不静默作废——命令处理器当场已回 success，这条告知是唯一结果通道）。命令语义 = **触发词**：`/ralphflow-*` **一律**由模型自然语言回复（含用法错误与未实现命令），**零程序化卡片返回**，行为与 claude code/opencode 完全一致；`/ralphflow-reset` 是唯一例外——机械动作由命令处理器直接驱动引擎完成（**不给模型可调用的工具**），结果仍交回模型自然语言回复。
+
+**六个步骤字段必填**：`desc` / `input` / `output` / `on_pass` / `on_fail` / `max_fail_count`（缺失、非字符串、**空串**都是**加载期硬错误**，整份拒收）。理由不是对齐而是**静默**：在 opencode/claude 的加载器里缺一个就 `skipStep`（该步被静默丢弃，或整份定义因「没有任何有效步骤」被拒收）——资产会不再表示它所说的话。**子工作流调用点同样必填这六个**（那两家的加载器把这六项校验排在第 `workflow` 分支之前）。因此不再有「`on_pass` 缺省 = 顺序下一步」「`on_fail` 缺省 = 自身」「`max_fail_count` 缺省 3」。
 
 内置工作流：`loop`（单步对抗验证循环，核对配方 = **4 票 `check_voting`**，前三条逐字照抄 opencode 版、第 4 条是本仓库的「修改不影响原有功能，不破坏需求以外的边界」）、`spec`（探索→提案→逐任务实现→归档，propose 步带审查门；`propose`/`implement` 带**重置门** `reset: true`）。自定义工作流按同一方言放到 `<workspace>/.dsh/ralph-flow/workflows/`。
 
@@ -66,8 +68,13 @@ steps:
 steps:
   - id: analyze
     desc: 需求分析
-    workflow: analyze      # 调用自定义的 workflows/analyze.yaml
-    on_pass: build         # 整段子工作流跑完后去哪（缺省 = 顺序下一步）
+    input: proposal.md      # 必填（调用点没有 DO/CHECK 阶段：只作为委托声明被保留与校验）
+    output: analysis.md     # 必填（同上）
+    workflow: analyze       # 调用自定义的 workflows/analyze.yaml
+    on_pass: build          # 必填：整段子工作流跑完后去哪（步骤 id 或 "done"）
+    on_fail: analyze        # 必填：只做引用校验（子步骤失败不会回到它）
+    max_fail_count: 3       # 必填：同上
+    reset: true             # 可选且**在调用点上生效**：进入子工作流 = 首个展开后子步骤的重置
   - id: build
     desc: 实现
     workflow: build
@@ -75,7 +82,7 @@ steps:
 
 落地方式是**加载期静态展开**（不用 opencode 的运行时状态栈）：调用点被就地替换成子工作流的步骤，子步骤 id 是 `调用点id/子步骤id`（多层继续叠加），子工作流的出口接到调用点的 `on_pass`。所以运行期「嵌套」不可见——`current_step` 仍是单字符串、失败预算仍按步记账、审查门与验证者全按普通步骤走，**零新增实例状态字段**。
 
-调用点**只认** `id` / `desc` / `workflow` / `on_pass`（外加工作流级 `manual_step` 里的调用点 id）；其余键（`on_fail`/`max_fail_count`/`check*`/`input`/`output`/`inputs`/`reset`/`do`）一律**加载期告警 + 指路**（它们属于子工作流内部的具体步骤），绝不静默生效。与 opencode 的四处**刻意差异**：
+调用点**接受并校验** `id` / `desc` / `input` / `output` / `workflow` / `on_pass` / `on_fail` / `max_fail_count` / `reset`（外加工作流级 `manual_step` 里的调用点 id）——其中前六个是**必填**（与普通步骤同一条硬规则：opencode/claude 的加载器把这六项校验排在 `workflow` 分支之前，调用点一个都少不了），`reset` 可选且在调用点上**生效**。其余键（`do`/`check*`/`inputs`/未识别键）一律**加载期告警 + 指路**，绝不静默生效。与 opencode 的四处**刻意差异**：
 
 1. 它静默忽略、或拖到运行期才炸的，这里一律**加载期硬错误**：子工作流文件加载不出来（报错含完整调用链）、**子工作流成环**（含自调用，打印环路径）、调用点 id 或子步骤 id 含 `/` 撞展开、展开后 id 撞名、`workflow` 名含路径分隔符。
 2. 展开后步骤总数上限 **2000**（面向长程工作流；展开过程中计数，超了立刻中止），**嵌套深度上限 32 层**（含最外层；展开器是递归的，过深的链在展开前就被拒 —— 步数上限看不见「每层只有调用点」的长链，那道闸负责不让宿主调用栈被打爆）。
@@ -103,6 +110,8 @@ steps:
 `artifacts/<产出目录名>/` 是 DO 阶段的交付物落点：DO 与 CHECK 提示词都会自动带上一行「产出目录」，所以工作流里写**裸文件名**（如 `summary.md`）即可落到该实例的目录，跨任务不串味、也不进仓库根。
 
 `/ralphflow-list` 分两节：**活跃实例** + **历史运行（已归档）**。后者扫 `reports/*.md` 现读现解析（实例 id、状态、任务、结束时间、报告路径），不需要任何派生索引——已结束的运行永远不会因为实例目录被销毁而"找不回来"。`/ralphflow-status <实例ID>` 对已销毁实例会直接指向它的报告，而不是谎称"没有实例"。
+
+**接管与 status 的两条口径**：① `/ralphflow-continue` **只在无属主**（`owner_session` 为空）时自动接管 —— 恰好一个无属主实例就直接接管；有属主（或不止一个无属主、无法判定）→ 列出候选（含属主会话）并要求 `/ralphflow-continue <实例ID>` **显式指定**（显式点名仍可接管有属主的实例，那正是「要求显式指定」的那条路）。② `/ralphflow-status` 无参且本会话没有活跃实例时，给**全部活跃实例的概览**（每行带属主会话，本会话的标出来），而不是随便挑最后一个实例讲成自己的；实例详情也显示属主会话。
 
 **一个工作区一个引擎**（对齐 opencode 的「每个项目目录一个插件实例」）：引擎的根就是**发起会话的工作区**，所以列表、历史、`doctor`、自定义工作流查找全都落在同一个地方。工作区之间互相独立、互不可见；**没有全局索引**——任何跨工作区的映射都会让「写入看会话工作区、读取看进程 cwd」这类缺陷复活（引擎的 `projectDir` 是 dsh 进程的 cwd，真实 GUI 里与会话工作区必然不同）。`.gitignore` 只忽略 `.dsh/ralph-flow/`（精确），不忽略整个 `.dsh/`。
 

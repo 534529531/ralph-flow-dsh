@@ -161,8 +161,64 @@ function validateVotingEntries(stepId: string, raw: unknown, warnings: string[])
   return problems;
 }
 
+/**
+ * 六个**必填**步骤字段（与 opencode / claude 的加载期校验**代码**逐字同严）。
+ *
+ * 那边缺一个就 `skipStep` —— 该步被**静默丢弃**（作者的资产在别端会丢步，或整份定义因
+ * 「没有任何有效步骤」被拒收）。本仓库对「会让资产不再表示它所说的话」的配置一律**硬错误**
+ * （悬空 `on_pass`、成环、步骤级 `manual_step` 都是同一口径），所以这里不再静默丢步。
+ *
+ * 两个容易踩的点：
+ *   · **空串算缺** —— `desc: ""` 与没写没有区别（opencode 的 `!step.desc` 同样把空串当缺）；
+ *   · **子工作流调用点同样必填这六个** —— 在 opencode/claude 的加载器里这六项排在 `workflow`
+ *     分支**之前**，调用点一个都少不了。
+ */
+export const REQUIRED_STEP_FIELDS = ["desc", "input", "output", "on_pass", "on_fail", "max_fail_count"] as const;
+
+/**
+ * 六个必填字段的加载期校验（返回硬错误清单；空数组 = 全齐）。
+ *
+ * `label` 是报错里的主语（`步骤` / `调用点`）；调用点额外带一句实话：它没有 DO/CHECK 阶段，
+ * `input`/`output`/`max_fail_count` 只作为**委托声明**被保留与校验，`on_fail` 只做引用校验
+ * （子步骤失败不会回到它 —— 子步骤耗尽预算是**暂停等人**）。
+ */
+function validateRequiredStepFields(
+  label: "步骤" | "调用点",
+  stepId: string,
+  s: Record<string, unknown>,
+): string[] {
+  const at = `${label} \`${stepId}\``;
+  const callNote = label === "调用点" ? "（调用点没有 DO/CHECK 阶段：这一项只作为委托声明被保留与校验）" : "";
+  const problems: string[] = [];
+  const need = (field: string, what: string, note = "") => {
+    const v = s[field];
+    if (typeof v === "string" && v.trim() !== "") return;
+    const cur = v === undefined || v === null ? "缺失" : `当前是 ${describeValueKind(v)}`;
+    problems.push(`${at} 缺少 \`${field}\`（必填：${what}；${cur}，空串同样不接受）。${note}`);
+  };
+  need("desc", "一句话步骤说明（会进 DO/CHECK 提示词）");
+  need("input", "输入说明（进 CHECK 提示词）", callNote);
+  need("output", "交付物说明（进 DO 的「交付物」与 CHECK）", callNote);
+  need("on_pass", "通过后去哪：步骤 id 或 `done`");
+  need(
+    "on_fail",
+    "失败重试去哪：步骤 id（不允许 `done`）",
+    label === "调用点" ? "（调用点上的 `on_fail` 只做引用校验：子步骤失败不会回到它 —— 子步骤耗尽预算是暂停等人）" : "",
+  );
+  const mfc = s.max_fail_count;
+  if (typeof mfc !== "number" || !Number.isInteger(mfc) || mfc < 1) {
+    const cur = mfc === undefined || mfc === null ? "缺失" : `当前是 ${describeValueKind(mfc)}`;
+    problems.push(`${at} 缺少 \`max_fail_count\`（必填：≥1 的整数失败预算；${cur}）。${callNote}`);
+  }
+  return problems;
+}
+
 export interface StepDef {
   id: string;
+  /**
+   * 一句话步骤说明（会进 DO/CHECK 提示词）。**加载期必填**（`REQUIRED_STEP_FIELDS`）：
+   * 缺失/非字符串/空串 = 整份定义被拒（见 `validateRequiredStepFields`）。
+   */
   desc?: string;
   do?: string;
   /**
@@ -172,9 +228,14 @@ export interface StepDef {
    * 子工作流的出口接到调用点的 `on_pass`。
    *
    * 这是**加载期字段**：`loadWorkflow` 返回的 `steps` 里绝不会留下它（调用点已被展开掉）。
-   * 调用点只认 `id` / `desc` / `workflow` / `on_pass`（外加工作流级 `manual_step` 列表里的
-   * 调用点 id = 整段子工作流跑完后停门）；其余键（`do`/`check*`/`input`/`output`/`on_fail`/
-   * `max_fail_count`/`inputs`/`reset`…）一律**加载期告警并指路**，绝不静默生效。
+   *
+   * 调用点**接受并校验**的键 = `id` / `desc` / `input` / `output` / `workflow` / `on_pass` /
+   * `on_fail` / `max_fail_count` / `reset`（外加工作流级 `manual_step` 列表里的调用点 id =
+   * 整段子工作流跑完后停门）。其中六个必填字段与普通步骤**同一条硬规则** ——
+   * opencode/claude 的加载器把这六项排在 `workflow` 分支之前，调用点一个都少不了。
+   * `reset: true` 在调用点上**生效**：进入子工作流 = 首个展开后子步骤的重置（下沉时打
+   * {@link StepDef.reset_from_call} 来源标记）。
+   * 其余键（`do`/`check`/`check_voting`/`check_model`/`inputs`/未识别键）一律**加载期告警并指路**。
    */
   workflow?: string;
   check?: string;
@@ -188,10 +249,15 @@ export interface StepDef {
    * 本版本从公开契约中删除/未支持，加载期告警并忽略（见 `loadWorkflow`）。
    */
   check_voting?: CheckVotingEntry[];
+  /** 输入说明（进 CHECK 提示词）。**加载期必填**（缺失/非字符串/空串 = 整份拒收）。 */
   input?: string;
+  /** 交付物说明（进 DO 的「交付物」与 CHECK）。**加载期必填**。 */
   output?: string;
+  /** 通过后去哪（步骤 id 或 `done`）。**加载期必填**（不再有「缺省 = 顺序下一步」）。 */
   on_pass?: string;
+  /** 失败重试去哪（步骤 id，不允许 `done`）。**加载期必填**（不再有「缺省 = 自身」）。 */
   on_fail?: string;
+  /** 失败预算（≥1 的整数）。**加载期必填**（不再有「缺省 3」）。 */
   max_fail_count?: number;
   /**
    * 步骤级验证模型覆盖（对齐 opencode/claude 2.8.0）。
@@ -224,6 +290,16 @@ export interface StepDef {
    * 纯措辞用途：对行为零影响（`stepWantsReset` 仍为真，替换照做）。
    */
   reset_from_auto?: true;
+  /**
+   * **内部来源标记**（作者不可写，同 {@link StepDef.reset_from_auto}）：本步的 `reset: true`
+   * 来自**子工作流调用点上的 `reset: true`**（加载期静态展开时下沉到**首个展开后子步骤**）。
+   *
+   * 值是**调用点的 id** —— 措辞要能说出「哪个调用点标的」（`resetSourceText` 的 `"call"` 支），
+   * 而不是含糊地说「本步标了 `reset: true`」（作者没在这一步上标）。
+   *
+   * 纯措辞用途：对行为零影响（`stepWantsReset` 仍为真，替换照做）。
+   */
+  reset_from_call?: string;
 }
 
 /** 投票条目（`check_voting[i]`）：一条检查依据 +（可选）该票专用模型 */
@@ -294,28 +370,34 @@ export function expectedVerdicts(step: Pick<StepDef, "check" | "check_voting">):
 /**
  * 重置门的**触发来源**（纯函数，只读工作流定义 + 步骤定义）：
  *   · `"step"` —— 作者在**这一步**上显式写了 `reset: true`；
- *   · `"auto"` —— 工作流级 `auto_reset: true`（等价于每一步都标 reset，作者并没有标这一步）。
+ *   · `"auto"` —— 工作流级 `auto_reset: true`（等价于每一步都标 reset，作者并没有标这一步）；
+ *   · `"call"` —— 子工作流**调用点**上写了 `reset: true`（进入子工作流 = 首个展开后子步骤的重置）。
  *
- * 两者对引擎的行为**完全一致**（都是「进入本步前换干净上下文」），分开只为**措辞**：
- * 把 `auto` 说成「本步标了 `reset: true`」是**说错话**（作者没标），启动回执 / 播报 /
- * 推进回执一律按来源分两支（见各处 `resetSourceText` / `describeResetCause`）。
+ * 三者对引擎的行为**完全一致**（都是「进入本步前换干净上下文」），分开只为**措辞**：
+ * 把 `auto`/`call` 说成「本步标了 `reset: true`」是**说错话**（作者没在这一步上标），
+ * 启动回执 / 播报 / 推进回执一律按来源分述（见各处 `resetSourceText` / `describeResetCause`）。
  *
  * 同时标了步骤级 `reset: true` 与工作流级 `auto_reset: true` 时按 `"step"` 计：作者确实
  * 在这一步上标了，那么这句话本身是真的。
  *
  * **子工作流**的 `auto_reset` 在加载期静态展开时下沉为子步骤的 `reset: true`（见
  * `prefixSubWorkflowSteps`），但会同时打上 {@link StepDef.reset_from_auto} 标记 ——
- * 于是这里的来源仍是 `"auto"`，不会被误判成作者标了这一步。
+ * 于是这里的来源仍是 `"auto"`，不会被误判成作者标了这一步。调用点上的 `reset: true`
+ * 同理下沉到**首个展开后子步骤**并打 {@link StepDef.reset_from_call} 标记（记着调用点 id）。
  */
-export type ResetCause = "step" | "auto";
+export type ResetCause = "step" | "auto" | "call";
 
 /** 本步进入前是否要重置上下文，以及**为什么**（`undefined` = 不重置）。 */
 export function resetCauseOf(
   wf: Pick<WorkflowDef, "auto_reset">,
-  step: Pick<StepDef, "reset" | "reset_from_auto">,
+  step: Pick<StepDef, "reset" | "reset_from_auto" | "reset_from_call">,
 ): ResetCause | undefined {
   // 子工作流 auto_reset 下沉出来的 `reset: true` 不是作者在本步标的 → 仍记 `"auto"`。
-  if (step.reset === true) return step.reset_from_auto === true ? "auto" : "step";
+  if (step.reset === true) {
+    if (step.reset_from_auto === true) return "auto";
+    if (typeof step.reset_from_call === "string" && step.reset_from_call !== "") return "call";
+    return "step";
+  }
   if (wf.auto_reset === true) return "auto";
   return undefined;
 }
@@ -421,8 +503,19 @@ function composeDesc(callDesc: string | undefined, subDesc: string | undefined):
  *   1. `on_pass` 指向子工作流内的步骤 → 前缀化；
  *   2. `on_pass: done` → 占位（= 子工作流跑完，交回调用点的 on_pass）；
  *   3. 末步没有 `on_pass`（顺序出口）→ 占位；非末步没有 `on_pass` → 顺序下一步。
+ *
+ * 三层「下沉」在这里完成（展开后「子工作流」这个对象就不存在了，不下沉 = 静默失效）：
+ *   · 调用点 `desc` → 每个子步骤 `desc` 的前缀（{@link composeDesc}）；
+ *   · 子工作流 `auto_reset` → **每个**子步骤 `reset: true` + `reset_from_auto`；
+ *   · 调用点 `reset: true` → **首个展开后子步骤** 的 `reset: true` + `reset_from_call`
+ *     （进入子工作流 = 进入它的第一个步骤；来源标记记着调用点 id，措辞才说得出是谁标的）。
  */
-function prefixSubWorkflowSteps(sub: WorkflowDef, callId: string, callDesc: string | undefined): StepDef[] {
+function prefixSubWorkflowSteps(
+  sub: WorkflowDef,
+  callId: string,
+  callDesc: string | undefined,
+  callReset: boolean,
+): StepDef[] {
   const pre = callId + SUBWORKFLOW_ID_SEP;
   return sub.steps.map((s, i) => {
     const next = i + 1 < sub.steps.length ? sub.steps[i + 1]!.id : undefined;
@@ -448,6 +541,15 @@ function prefixSubWorkflowSteps(sub: WorkflowDef, callId: string, callDesc: stri
     if (sub.auto_reset === true && s.reset !== true) {
       step.reset = true;
       step.reset_from_auto = true;
+      return step;
+    }
+    // 调用点上的 `reset: true`：语义按**本实现的静态展开模型**定 ——
+    // 进入子工作流就是进入它**首个展开后子步骤**，所以重置落在 i === 0 那一步。
+    // 子工作流自己的 `auto_reset` 已经覆盖了全部子步骤（含首步）时不重复打标记：
+    // 那句话本身是真的（作者确实标了整个子工作流），优先按 `"auto"` 说。
+    if (i === 0 && callReset && s.reset !== true) {
+      step.reset = true;
+      step.reset_from_call = callId;
     }
     return step;
   });
@@ -477,35 +579,26 @@ function sinkVerificationModel(steps: StepDef[], model: ModelRef | undefined): v
 }
 
 /**
- * 调用点上「除 `id` / `desc` / `workflow` / `on_pass` 外」的键：一律**加载期告警并指路**
- * （不生效、不静默、不硬错误 —— 作者的本意多半是把配置写到错误的层级，指路比拒收有用）。
+ * 调用点上**不生效**的键：一律**加载期告警并指路**（不静默、不硬错误 —— 作者的本意多半是把
+ * 配置写到错误的层级，指路比拒收有用）。
  *
- * 照 opencode 的方言，子工作流步骤上还允许 `input`/`output`/`inputs`/`on_fail`/
- * `max_fail_count`/`reset`；本实现**刻意**一条都不在调用点上兑现（见 design/变更说明的四条差异），
- * 所以每一条都要说清「不生效 + 该写到哪儿」（`reset` 本身**已支持**，只是必须写到子步骤上）。
+ * 调用点**接受并校验**的键是 `id` / `desc` / `input` / `output` / `workflow` / `on_pass` /
+ * `on_fail` / `max_fail_count` / `reset`（前六个必填、`reset` 可选且**生效**：进入子工作流 =
+ * 首个展开后子步骤的重置）。剩下这些键在调用点上没有归属，逐键说清「不生效 + 该写到哪儿」。
  */
 function callPointKeyWarning(callId: string, key: string, subName: string): string {
   const head = (what: string) => `调用点 \`${callId}\` 的 \`${key}\` 不生效：${what}`;
   switch (key) {
     case "do":
       return head(`调用点不做 DO —— 整步委托给子工作流 \`${subName}\`，子工作流的每个步骤自带 \`do\`。把这段指令写进子工作流内对应步骤的 \`do\`。`);
-    case "input":
-    case "output":
-      return head(`\`${key}\` 只属于子工作流里的普通步骤（调用点没有 DO/CHECK 阶段）。请在子工作流内需要它的步骤上写。`);
-    case "on_fail":
-      return head(`子工作流内的失败由各子步骤自己的 \`on_fail\` 处理；某个子步骤耗尽 \`max_fail_count\` 会**暂停等你定夺**，不会回到调用点的 \`on_fail\`。请把 \`on_fail\` 写到子工作流内的步骤上。`);
-    case "max_fail_count":
-      return head(`失败预算是**步骤级**属性，请写到子工作流内需要它的步骤上（缺省 3）。`);
     case "check":
     case "check_voting":
     case "check_model":
       return head(`调用点没有 DO 阶段、不跑独立验证；验证配置属于具体步骤，请写到子工作流内需要验证的步骤上（子工作流的 \`adversarial_check.model\` 会自动下沉到它各步）。`);
     case "inputs":
       return head(`本实现的子工作流不接收参数：任务描述原样传给子工作流的每个步骤（DO 提示词的「## 任务」就是它），要传信息请写进任务描述或子步骤的 \`do\`。`);
-    case "reset":
-      return head(`调用点没有 DO 阶段，\`reset\` 是**步骤级**属性：请写到子工作流内需要重置的步骤上（加载期静态展开后只有子步骤存在，调用点上的键不会落进定义）。`);
     default:
-      return head(`调用点只认 \`id\` / \`desc\` / \`workflow\` / \`on_pass\`（外加工作流级 \`manual_step\` 列表里的调用点 id = 整段子工作流跑完后停门），其余键一律忽略。`);
+      return head(`调用点只认 \`id\` / \`desc\` / \`input\` / \`output\` / \`workflow\` / \`on_pass\` / \`on_fail\` / \`max_fail_count\` / \`reset\`（外加工作流级 \`manual_step\` 列表里的调用点 id = 整段子工作流跑完后停门），其余键一律忽略。`);
   }
 }
 
@@ -1294,6 +1387,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   // ─── 工作流加载与校验（坏文件 fail-fast 说人话）────────────────────────────
 
   const KNOWN_STEP_KEYS = new Set(["id", "desc", "do", "check", "check_voting", "check_model", "input", "output", "on_pass", "on_fail", "max_fail_count", "reset"]);
+  /**
+   * 调用点**接受**的键（其余走 {@link callPointKeyWarning} 逐键告警 + 指路）。
+   * 前六个是必填（与普通步骤同一条硬规则，照抄 opencode/claude 的加载器顺序）；
+   * `reset` 可选且**在调用点上生效**（进入子工作流 = 首个展开后子步骤的重置）。
+   */
+  const CALL_POINT_KEYS = new Set(["id", "desc", "input", "output", "workflow", "on_pass", "on_fail", "max_fail_count", "reset"]);
   const KNOWN_WF_KEYS = new Set(["description", "manual_step", "adversarial_check", "auto_reset", "steps"]);
 
   function knownWorkflowDirs(): string[] {
@@ -1487,7 +1586,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           + `步骤级写法在 opencode 那边只是「不认识的步骤键」，会被忽略——人工审查门静默消失，因此这里硬错误而不是告警忽略。`,
         );
       }
-      // ── 子工作流调用点：只认 id / desc / workflow / on_pass ─────────────────
+      // ── 六个必填步骤字段（与 opencode/claude 的加载期校验**代码**逐字同严）────────
+      // 缺失/非字符串/空串一律**硬错误**（整份拒收）：在别端这些缺字段的资产会被静默丢步、
+      // 甚至整份拒收 —— 那正是「资产不再表示它所说的话」的静默，本仓库一律 fail-fast。
+      // 位置照抄参照实现：这六项排在 `workflow` 分支**之前**，所以**调用点同样必填**。
+      problems.push(...validateRequiredStepFields(isCall ? "调用点" : "步骤", s.id, s));
+      // ── 子工作流调用点 ───────────────────────────────────────────────────────
       if (isCall) {
         const subName = typeof s.workflow === "string" ? s.workflow.trim() : "";
         if (subName === "") {
@@ -1498,9 +1602,15 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         if (s.id.includes(SUBWORKFLOW_ID_SEP)) {
           problems.push(`调用点 \`${s.id}\` 的 id 含 \`${SUBWORKFLOW_ID_SEP}\`：展开后步骤 id 是 \`调用点id${SUBWORKFLOW_ID_SEP}子步骤id\`，调用点 id 含分隔符会与展开结果撞名。请把 id 改成不含 \`${SUBWORKFLOW_ID_SEP}\` 的名字。`);
         }
+        // 调用点上的 `reset`（与步骤级同一口径：给了就必须是布尔）。
+        // 与步骤级 `reset` 不同，这里**生效**：进入子工作流 = 首个展开后子步骤的重置
+        // （加载期下沉 + 打 `reset_from_call` 来源标记，见 prefixSubWorkflowSteps）。
+        if (s.reset !== undefined && s.reset !== null && typeof s.reset !== "boolean") {
+          problems.push(`调用点 \`${s.id}\` 的 \`reset\` 必须是布尔值（当前是 ${describeValueKind(s.reset)}）：\`reset: true\` 表示**进入这个子工作流时**（即首个展开后子步骤）重置上下文。写成字符串（如 "true"）不会被当成真值，请改成布尔。`);
+        }
         // 其余键一律**告警且指路**：不生效、不静默、也不硬错误（作者多半只是写错了层级）。
         for (const k of Object.keys(s)) {
-          if (k === "manual_step" || k === "id" || k === "desc" || k === "workflow" || k === "on_pass") continue;
+          if (k === "manual_step" || CALL_POINT_KEYS.has(k)) continue;
           warnings.push(callPointKeyWarning(s.id, k, subName || "(未命名)"));
         }
         entries.push({
@@ -1510,6 +1620,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
             desc: typeof s.desc === "string" ? s.desc : undefined,
             workflow: subName || undefined,
             on_pass: typeof s.on_pass === "string" ? s.on_pass : undefined,
+            // on_fail / max_fail_count / input / output 在调用点上不参与运行（调用点会被展开掉），
+            // 但它们是**必填项**：校验过就在这里原样带进定义，好让展开后的引用校验（悬空 on_fail）也能覆盖调用点。
+            on_fail: typeof s.on_fail === "string" ? s.on_fail : undefined,
+            max_fail_count: typeof s.max_fail_count === "number" ? s.max_fail_count : undefined,
+            // 调用点的 reset 由展开器消费（下沉到首个展开后子步骤）
+            reset: typeof s.reset === "boolean" ? s.reset : undefined,
           },
         });
         return;
@@ -1534,11 +1650,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         // （照 opencode：非字符串会被视为未配置检查并跳过验证；本意是跳过请直接删掉该字段）。
         problems.push(`步骤 \`${s.id}\` 的 \`check\` 必须是字符串（当前是 ${typeof s.check}）：非字符串会被视为未配置检查并跳过验证；若你本意是跳过请直接删掉该字段。`);
       }
-      // max_fail_count 给了就必须是 ≥1 的整数（0/负数以前被静默接受 → 首次失败即暂停，用户看不懂）。
-      if (s.max_fail_count !== undefined
-        && (typeof s.max_fail_count !== "number" || !Number.isInteger(s.max_fail_count) || s.max_fail_count < 1)) {
-        problems.push(`步骤 \`${s.id}\` 的 \`max_fail_count\` 必须是 ≥1 的整数（当前 ${JSON.stringify(s.max_fail_count)}）。`);
-      }
+      // max_fail_count 的「必填 + ≥1 整数」已由 validateRequiredStepFields 统一硬校验（上面），
+      // 这里不再重复报一遍（0/负数/小数/缺失都会拿到同一条说得清的硬错误）。
       // reset（重置门，对齐 opencode 方言）：给了就必须是布尔。`reset: "true"` 这类字符串几乎
       // 一定是笔误——静默当成「不重置」会让作者以为上下文被清了、实际没清（本仓库对「想开却配错」
       // 一律不静默：类型错误 = 硬错误，与 `check` 非字符串同一口径）。
@@ -1602,7 +1715,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     //   · 它用「运行时嵌套深度 5」兜住失控递归 —— 这里用**展开步骤总数上限**兜住
     //     （{@link MAX_EXPANDED_STEPS}，展开过程中计数，超了立刻中止）。
     // 另两条：子步骤耗尽 max_fail_count → 暂停等人（applyRoundOutcome 的既有行为，这里不接线到父级
-    // on_fail）；调用点只认 id/desc/workflow/on_pass，manual_step 标调用点 = 整段跑完停门（下面映射）。
+    // on_fail）；调用点接受 `id`/`desc`/`input`/`output`/`workflow`/`on_pass`/`on_fail`/`max_fail_count`/
+    // `reset`（前六个必填、`reset` 生效：下沉到首个展开后子步骤），manual_step 标调用点 = 整段跑完停门。
     const steps: StepDef[] = [];
     /** 原始调用点 id → 展开后的入口步骤 id（指向调用点的 on_pass/on_fail 接到入口） */
     const callEntry = new Map<string, string>();
@@ -1644,7 +1758,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       }
       // 子工作流自己的告警一并带上来（医生也会在子工作流名下报一遍；这里保证父级上下文里不静默）
       for (const w of sub.warnings) warnings.push(`子工作流 \`${subName}\`：${w}`);
-      const expanded = prefixSubWorkflowSteps(sub.def, call.id, call.desc);
+      const expanded = prefixSubWorkflowSteps(sub.def, call.id, call.desc, call.reset === true);
       callEntry.set(call.id, expanded[0]!.id); // sub.def.steps 非空（空 steps 在加载期已硬错误）
       const start = steps.length;
       steps.push(...expanded);
@@ -1697,6 +1811,19 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           continue;
         }
         if (!finalIds.has(target)) problems.push(`步骤 \`${s.id}\` 的 ${key} 指向不存在的步骤 \`${target}\`。`);
+      }
+    }
+    // 调用点的连线**也要校验**：它已被展开掉、不在 `steps` 里，但悬空 on_pass/on_fail 同样是
+    // 配置错误（作者以为连上了、实际没有）。目标若是另一个调用点，按展开后的入口步骤算。
+    for (const p of pending) {
+      for (const [key, target] of [["on_pass", p.call.on_pass], ["on_fail", p.call.on_fail]] as const) {
+        if (target === undefined) continue;
+        if (target === "done") {
+          if (key === "on_fail") problems.push(`调用点 \`${p.call.id}\` 的 on_fail 指向 \`done\`；失败重试目标必须是存在的步骤 id（不允许 done）。`);
+          continue;
+        }
+        const resolved = callEntry.get(target) ?? target;
+        if (!finalIds.has(resolved)) problems.push(`调用点 \`${p.call.id}\` 的 ${key} 指向不存在的步骤 \`${target}\`。`);
       }
     }
     if (problems.length > 0) return { def: null, problems, warnings };
@@ -2590,13 +2717,32 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   type ResetTrigger = ResetCause | "manual";
 
   /**
-   * 「为什么这次要重置」→ 一句**对人说的话**。这是本项目「绝不把 auto_reset 说成作者标了
-   * `reset: true`」的唯一落点：所有播报都必须经过它，不允许各写各的。
+   * 「为什么这次要重置」→ 一句**对人说的话**。这是本项目「绝不把 auto_reset / 调用点 reset
+   * 说成作者标了这一步的 `reset: true`」的唯一落点：所有播报都必须经过它，不允许各写各的。
+   *
+   * `"call"` 支需要**调用点 id**（`step.reset_from_call`）才说得出「哪个调用点标的」——
+   * 传不进 step 时退回不带 id 的说法，绝不编一个 id 出来。
    */
-  function resetSourceText(trigger: ResetTrigger): string {
+  function resetSourceText(trigger: ResetTrigger, step?: Pick<StepDef, "reset_from_call">): string {
     switch (trigger) {
       case "step": return "本步标了 `reset: true`";
       case "auto": return "本工作流标了 `auto_reset: true`（等价于每一步都标 reset）";
+      case "call": {
+        const at = step?.reset_from_call;
+        return at
+          ? `调用点 \`${at}\` 上标了 \`reset: true\`（进入子工作流 = 首个展开后子步骤的重置）`
+          : "子工作流调用点上标了 `reset: true`（进入子工作流 = 首个展开后子步骤的重置）";
+      }
+      case "manual": return "用户执行了 `/ralphflow-reset`";
+    }
+  }
+
+  /** {@link resetSourceText} 的短版（推进回执里的一句提示，不重复长解释） */
+  function resetSourceShort(trigger: ResetTrigger, step?: Pick<StepDef, "reset_from_call">): string {
+    switch (trigger) {
+      case "step": return "标了 `reset: true`";
+      case "auto": return "工作流级 `auto_reset: true`";
+      case "call": return step?.reset_from_call ? `调用点 \`${step.reset_from_call}\` 标了 \`reset: true\`` : "调用点标了 `reset: true`";
       case "manual": return "用户执行了 `/ralphflow-reset`";
     }
   }
@@ -2674,19 +2820,20 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     ].join("\n");
     return {
       handoff,
-      // 可见告知按来源分两支：手动重置要让用户看到「这是你那句话的结果」，而自动门是
-      // 「进入本步前的机械动作」。两者对**模型**的交接稿逐字相同（来源不进模型上下文，
-      // 交接稿只写现算的四项）。
+      // 可见告知按来源分述：手动重置要让用户看到「这是你那句话的结果」，而自动门/调用点门是
+      // 「进入本步前的机械动作」。**来源必须写进告知**（任务书硬要求：回执措辞说清来源）——
+      // 只写「本步开始前做了重置」会让作者以为自己在这一步标了 `reset: true`。
+      // 两者对**模型**的交接稿逐字相同（来源不进模型上下文，交接稿只写现算的四项）。
       notice: trigger === "manual"
         ? {
           summary: `♻️ 已按 /ralphflow-reset 重置上下文，重投步骤 ${step.id} 的 DO`,
           text: `[ralphflow] 用户执行了 \`/ralphflow-reset\`：当前步（\`${step.id}\`）的上下文已整段替换为一条交接稿，本步 DO 随即重投。此前对话已移出模型上下文；**失败计数原样保留**（重置只换干净上下文，不赦免失败）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。`,
         }
         : {
-          summary: `♻️ 步骤 ${step.id} 开始前已重置上下文（换入交接稿）`,
+          summary: `♻️ 步骤 ${step.id} 开始前已重置上下文（${resetSourceShort(trigger, step)}）`,
           // 这条告知是给用户看的：替换消息本身在 Chat 里不显示，不告知就成了
           // 「用户看到的 ≠ 模型看到的」且是静默的（决定②）。
-          text: `[ralphflow] 本步（\`${step.id}\`）开始前做了上下文重置：此前对话已移出模型上下文，整段替换为一条交接稿（工作流 / 步骤 / 产出目录 / 交互契约）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。`,
+          text: `[ralphflow] 本步（\`${step.id}\`）开始前做了上下文重置（来源：${resetSourceText(trigger, step)}）：此前对话已移出模型上下文，整段替换为一条交接稿（工作流 / 步骤 / 产出目录 / 交互契约）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。`,
         },
     };
   }
@@ -2735,7 +2882,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     if (typeof ports.resetSurface !== "function") {
       // 端口没装配：不假装做过（要重置的步骤也照常执行，只是没有重置）
       log("warn", "reset_surface_unavailable", { instId, step: step.id, trigger });
-      deliver(state, text, `${summary}（⚠️ ${resetSourceText(trigger)}，但本进程未装配重置端口：上下文未重置）`);
+      deliver(state, text, `${summary}（⚠️ ${resetSourceText(trigger, step)}，但本进程未装配重置端口：上下文未重置）`);
       return;
     }
     const req = resetRequestFor(instId, wf, step, trigger);
@@ -2786,12 +2933,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         }
         log("warn", "reset_surface_skipped", { instId, step: step.id, trigger, reason: outcome.reason, detail: outcome.detail });
         logEvent(instId, "warn", "reset_surface_skipped", { step: step.id, trigger, reason: outcome.reason ?? "unknown", detail: outcome.detail });
-        deliver(state, text, `${summary}（⚠️ ${resetSourceText(trigger)}，但本次上下文重置未生效：${resetFailureText(outcome)}）`);
+        deliver(state, text, `${summary}（⚠️ ${resetSourceText(trigger, step)}，但本次上下文重置未生效：${resetFailureText(outcome)}）`);
       })
       .catch((e) => {
         releasePending();
         log("warn", "reset_surface_failed", { instId, step: step.id, trigger, error: e instanceof Error ? e.message : String(e) });
-        if (stillLive()) deliver(state, text, `${summary}（⚠️ ${resetSourceText(trigger)}，但本次上下文重置未生效：宿主异常）`);
+        if (stillLive()) deliver(state, text, `${summary}（⚠️ ${resetSourceText(trigger, step)}，但本次上下文重置未生效：宿主异常）`);
       });
   }
 
@@ -2991,15 +3138,18 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     // 重试卫生（opencode 同款注释：「单步轻量循环：失败重试频繁」）。说成「首步永远不行」会让
     // loop 白白用不了 reset，也会误导作者。
     //
-    // 措辞按**来源**分两支（任务书硬要求）：`auto_reset: true` 时作者**没有**在这一步上标
-    // `reset: true`，说「本步标了 `reset: true`」就是说错话。两支共用同一段结构性解释。
+    // 措辞按**来源**分述（任务书硬要求）：`auto_reset: true` / 调用点 `reset: true` 时作者
+    // **没有**在这一步上标 `reset: true`，说「本步标了 `reset: true`」就是说错话。三支共用
+    // 同一段结构性解释。
     const firstResetCause = resetCauseOf(wf, first);
     const firstResetStructure = "**工作流首步的初次进入无法做上下文重置**：首步的 DO 是启动工具的返回值，在工具调用内部替换会留下孤儿 tool/result（静默损坏会话）。**重试时会正常重置**（返工走空闲窗口）。";
     const firstStepResetNote = firstResetCause === "step"
       ? `⚠️ 本步标了 \`reset: true\`，但${firstResetStructure}`
       : firstResetCause === "auto"
         ? `⚠️ 本工作流标了 \`auto_reset: true\`（等价于每一步都标 reset）——但这**不是**你在这步上标了 \`reset: true\`；且${firstResetStructure}`
-        : "";
+        : firstResetCause === "call"
+          ? `⚠️ 首步来自调用点 \`${first.reset_from_call ?? "?"}\` 上标的 \`reset: true\`（进入子工作流 = 首个展开后子步骤的重置）——但这**不是**你在这步上标了 \`reset: true\`；且${firstResetStructure}`
+          : "";
     if (firstResetCause) {
       // 级别用 info：这是**设计如此的结构事实**，不是问题，用户已在启动回执里看到说明。
       // 用 warn 会让**每次 loop 运行**（最常用的内置工作流）都记一条假告警 ——
@@ -3217,29 +3367,50 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     };
   }
 
-  /** 三时刻③：推进的唯一人工入口（fail-closed） */
+  /**
+   * 三时刻③：推进的唯一人工入口（fail-closed）。
+   *
+   * **接管规则（只在无属主时自动接管）**：
+   *   · 本会话已有活跃实例 → 直接用它（不涉及接管）；
+   *   · 显式给了实例 ID → 用户点了名，接管它（**即使它有属主** —— 「有属主就显式指定」里的
+   *     「显式指定」正是这条路；显式意图优先于自动判据）；
+   *   · 没给 ID → 只认**无属主**（`owner_session` 为空）的实例：恰好一个就自动接管；
+   *     有属主（或不止一个无属主、无法判定）→ **列候选并要求 `/ralphflow-continue <实例ID>`**，
+   *     绝不把别人的实例悄悄据为己有。
+   */
   function continueInstance(sessionId: string, instanceRef?: string): ToolResult {
+    const adopt = (target: InstanceInfo, via: "explicit" | "ownerless") => {
+      target.state.owner_session = sessionId;
+      pushHistory(target.state, "adopted", `by ${sessionId}${via === "explicit" ? " (explicit)" : ""}`);
+      logEvent(target.id, "info", "adopted", { by: sessionId, via });
+      writeState(target.state, target.id);
+    };
     let info = activeInstanceOfSession(sessionId);
     if (!info && instanceRef) {
       const target = listInstances().find((i) => i.state.active && (i.id === instanceRef || i.id.startsWith(instanceRef)));
       if (!target) return { ok: false, text: `找不到活跃实例 \`${instanceRef}\`（用 \`/ralphflow-list\` 查看）。` };
-      // 接管：属主会话已不在（或用户显式指定），把归属转到当前会话
-      target.state.owner_session = sessionId;
-      pushHistory(target.state, "adopted", `by ${sessionId}`);
-      logEvent(target.id, "info", "adopted", { by: sessionId });
-      writeState(target.state, target.id);
+      adopt(target, "explicit");
       info = target;
     }
     if (!info) {
-      // 本会话无活跃实例：列出全部活跃实例供接管（opencode 同款体验，不再给裸错误）
+      // 本会话无活跃实例：**只自动接管无属主的那个**；有属主的一律列出来，要求显式指定。
       const others = listInstances().filter((i) => i.state.active);
-      if (others.length === 0) {
-        return { ok: false, text: "当前会话没有活跃实例，也没有其它活跃实例可接管。用 `/ralphflow-start <工作流> <任务>` 启动一个。" };
+      const ownerless = others.filter((i) => !i.state.owner_session);
+      if (ownerless.length === 1) {
+        adopt(ownerless[0]!, "ownerless");
+        info = ownerless[0]!;
+      } else {
+        if (others.length === 0) {
+          return { ok: false, text: "当前会话没有活跃实例，也没有其它活跃实例可接管。用 `/ralphflow-start <工作流> <任务>` 启动一个。" };
+        }
+        const why = ownerless.length > 1
+          ? `有 ${ownerless.length} 个无属主实例，无法判定该接管哪一个`
+          : "它们都有属主（有属主的实例不会被自动接管）";
+        return {
+          ok: false,
+          text: `当前会话没有活跃实例，${why} —— 请显式指定：\n${others.map((i) => `- \`${i.id}\` — ${i.state.workflow_name} · ${i.state.current_step} · ${i.state.owner_session ? `有属主（会话 \`${shortSessionId(i.state.owner_session)}\`）` : "无属主"}`).join("\n")}\n\n用 \`/ralphflow-continue <实例ID>\` 指定要接管/推进的实例。`,
+        };
       }
-      return {
-        ok: false,
-        text: `当前会话没有活跃实例，但存在以下活跃实例：\n${others.map((i) => `- \`${i.id}\` — ${i.state.workflow_name} · ${i.state.current_step} · ${i.state.owner_session ? "有属主" : "无属主"}`).join("\n")}\n\n要接管哪个？用 \`/ralphflow-continue <实例ID>\` 指定。`,
-      };
     }
     const { id: instId, state } = info;
     const { def: wf, problems } = loadWorkflow(state.workflow_name);
@@ -3330,14 +3501,14 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       }
       advance(instId, state, wf, step);
       // 审查门放行是**在工具调用内部**推进的：若下一步要重置上下文（步骤级 `reset: true`
-      // 或工作流级 `auto_reset: true`），替换必须等本回合结束（空闲窗口）才做得成，
-      // 所以它的 DO 会**稍后**才到。这里如实说明，免得模型以为「已推进 = 现在开始干下一步」
-      // 而在没有 DO 的情况下盲干（那部分工作也会被随后的重置遮蔽）。
+      // 或工作流级 `auto_reset: true`，或它来自一个标了 `reset: true` 的调用点），替换必须等
+      // 本回合结束（空闲窗口）才做得成，所以它的 DO 会**稍后**才到。这里如实说明，免得模型
+      // 以为「已推进 = 现在开始干下一步」而在没有 DO 的情况下盲干（那部分工作也会被随后的重置遮蔽）。
       const afterGate = nextStepId(wf, step);
       const afterStep = afterGate === "done" ? undefined : stepOf(wf, afterGate);
       const afterCause = afterStep ? resetCauseOf(wf, afterStep) : undefined;
       const deferredNote = afterCause && afterStep
-        ? `\n\n⚠️ 下一步 \`${afterStep.id}\` 会触发上下文重置（${afterCause === "step" ? "标了 `reset: true`" : "工作流级 `auto_reset: true`"}，重置门）：它的 DO 提示会在**本回合结束后**送达（上下文重置只能在步骤边界的空闲窗口里做）。**本回合请勿开始该步的工作**，简短确认即可。`
+        ? `\n\n⚠️ 下一步 \`${afterStep.id}\` 会触发上下文重置（${resetSourceShort(afterCause, afterStep)}，重置门）：它的 DO 提示会在**本回合结束后**送达（上下文重置只能在步骤边界的空闲窗口里做）。**本回合请勿开始该步的工作**，简短确认即可。`
         : "";
       return {
         ok: true,
@@ -3469,14 +3640,27 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return { ok: true, text: `已取消实例 \`${instId}\`，但**报告归档失败**，实例目录与 state.json 已保留未销毁。请按告警处理（\`/ralphflow-doctor\` 可查看残留）。` };
   }
 
+  /**
+   * `/ralphflow-status`：
+   *   · 给了实例 ID → 那个实例的详情（已结束并销毁的走历史报告）；
+   *   · 无参且本会话有活跃实例 → 它的详情；
+   *   · 无参且本会话**没有**活跃实例 → **全部活跃实例的概览**（命令词已经承诺了这件事：
+   *     `/ralphflow-status` 在不带参数时要能回答「项目里现在有什么在跑、归谁」，
+   *     而不是随便挑最后一个实例讲 —— 那会让人以为别人的实例是自己的）。
+   */
   function statusOf(sessionId: string, instanceRef?: string): ToolResult {
-    const info = instanceRef
-      ? listInstances().find((i) => i.id === instanceRef || i.id.startsWith(instanceRef))
-      : activeInstanceOfSession(sessionId) ?? listInstances().at(-1);
-    if (info) return { ok: true, text: renderInstance(info) };
+    if (!instanceRef) {
+      const mine = activeInstanceOfSession(sessionId);
+      if (mine) return { ok: true, text: renderInstance(mine, sessionId) };
+      const all = listInstances();
+      if (all.length > 0) return { ok: true, text: renderActiveOverview(all, sessionId) };
+      return { ok: true, text: "当前没有活跃实例。用 `/ralphflow-start <工作流> <任务>` 启动；已结束的运行见 `/ralphflow-list` 的「历史运行」节。" };
+    }
+    const info = listInstances().find((i) => i.id === instanceRef || i.id.startsWith(instanceRef));
+    if (info) return { ok: true, text: renderInstance(info, sessionId) };
     // 实例可能是**已结束并销毁**的：必须去历史报告里找，绝不能因为查不到就说「没有实例」
     // ——那会让用户以为跑丢了（边界 4）。
-    if (instanceRef) {
+    {
       const hit = findHistory(instanceRef);
       if (hit) {
         return {
@@ -3495,7 +3679,25 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       }
       return { ok: true, text: `找不到活跃实例 \`${instanceRef}\`，也没有与它匹配的历史报告。用 \`/ralphflow-list\` 查看活跃实例与「历史运行」。` };
     }
-    return { ok: true, text: "当前没有活跃实例。用 `/ralphflow-start <工作流> <任务>` 启动；已结束的运行见 `/ralphflow-list` 的「历史运行」节。" };
+  }
+
+  /**
+   * 无参 `status` 的概览：全部活跃实例一行一个，**每个都带属主会话**（命令词承诺的信息面）。
+   * 本会话的实例标出来（用户一眼知道哪个是自己的）；属主别的会话的标出会话短 id。
+   */
+  function renderActiveOverview(all: InstanceInfo[], sessionId: string): string {
+    const lines = [`## 活跃实例（${all.length} 个）`, ""];
+    for (const i of all) {
+      const s = i.state;
+      const owner = !s.owner_session
+        ? "无属主"
+        : s.owner_session === sessionId
+          ? "**本会话**"
+          : `会话 \`${shortSessionId(s.owner_session)}\``;
+      lines.push(`- \`${i.id}\` — ${s.workflow_name} · 步骤 \`${s.current_step}\`（${phaseLabel(s)}） · 属主：${owner}`);
+    }
+    lines.push("", "看某个实例的详情：`/ralphflow-status <实例ID>`；接管无属主实例：`/ralphflow-continue <实例ID>`。");
+    return lines.join("\n");
   }
 
   /**
@@ -3521,7 +3723,11 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return rows;
   }
 
-  function renderInstance(info: InstanceInfo): string {
+  /**
+   * 实例详情。`sessionId` 用于把「属主会话」说成人话（**命令词承诺了详情里显示属主**：
+   * 别的会话的实例只有显式 `/ralphflow-continue <实例ID>` 才碰得到，看不出属主就会误当成自己的）。
+   */
+  function renderInstance(info: InstanceInfo, sessionId?: string): string {
     const { id, state } = info;
     const facts = [
       state.active ? (state.paused ? `⏸ 暂停（${state.pause_reason}）` : state.delegations.length > 0 ? "🔍 验证中" : state.do_submitted ? "🙋 待放行" : "▶️ 执行中") : "✅ 已结束",
@@ -3529,7 +3735,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       `步骤 \`${state.current_step}\``,
       `失败 ${state.fail_count} 轮`,
     ];
-    const lines = [`**${id}** — ${facts.join(" · ")}`, "", `任务：${state.user_task}`];
+    const ownerText = !state.owner_session
+      ? "无（无属主：`/ralphflow-continue` 会自动接管）"
+      : state.owner_session === sessionId
+        ? `本会话（\`${shortSessionId(state.owner_session)}\`）`
+        : `\`${shortSessionId(state.owner_session)}\`（别的会话；要推进用 \`/ralphflow-continue ${id}\` 显式接管）`;
+    const lines = [`**${id}** — ${facts.join(" · ")}`, "", `任务：${state.user_task}`, `属主会话：${ownerText}`];
     // 「现在该干什么」——异步验证期间用户最需要的就是这句。
     // 传入本步有无对抗性检查（从 StepDef 现算，零新状态字段）：免验证的步骤不得宣称「会再次验证」。
     const wf = loadWorkflow(state.workflow_name).def;

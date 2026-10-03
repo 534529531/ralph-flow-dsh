@@ -162,17 +162,17 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: "ralphflow_continue",
-      description: "推进工作流：放行审查门 / 解除暂停 / 接管无属主的活跃实例。判定未通过时拒绝推进。",
+      description: "推进工作流：放行审查门 / 解除暂停 / 接管实例（**只在无属主时自动接管**；有属主的实例必须显式给 `instance`）。判定未通过时拒绝推进。",
       params: {
-        instance: { type: "string", description: "接管其它会话的实例 ID（可前缀）。" },
+        instance: { type: "string", description: "要接管/推进的实例 ID（可前缀）。带它 = 用户显式指定 —— 有属主的实例只走这条显式路径。" },
       },
       handler: continueHandler,
     },
     {
       name: "ralphflow_status",
-      description: "查看当前会话（或指定实例）的工作流状态、本轮判定、多验证者投票的每票进度与最近轨迹；实例已结束并销毁时指向它的历史报告。",
+      description: "查看工作流状态、本轮判定、多验证者投票的每票进度与最近轨迹；实例已结束并销毁时指向它的历史报告。**无参且本会话没有活跃实例时，给出全部活跃实例的概览（含属主会话）**。",
       params: {
-        instance: { type: "string", description: "实例 ID（可前缀）；缺省看当前会话实例。" },
+        instance: { type: "string", description: "实例 ID（可前缀）；缺省看当前会话实例，本会话没有就给全部活跃实例的概览。" },
       },
       handler: statusHandler,
     },
@@ -303,7 +303,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
           kind: "directive",
           text: `用户执行了 /ralphflow-continue。\`ralphflow_continue\` 只用于三种情况：**批准手动审查**（🙋 步骤停下等你放行：有 \`check\` / \`check_voting\` 的是已通过独立验证，没有 \`check\` / \`check_voting\` 的是已跳过对抗性验证的纯人工审查——两者都直接放行进入下一步，不重复验证）、**恢复暂停**（先看 \`/ralphflow-status\` 的失败原因，修复后调用，重置失败计数并重试；投票步的基础设施故障恢复只重跑未通过的票，已通过的保留）、**接管中断/他人实例**。有 \`check\` / \`check_voting\` 的普通步骤推进是自动的，不要调用它。
 
-请调用 \`ralphflow_continue\` 工具${instance}。若不带实例 id 且本会话没有活跃实例，工具会列出可选实例：把它展示给用户并询问接管哪个，再带 \`instance\` 调用。按工具结果行动：进入 DO 就执行该步任务；验证中就简短说明；完成就说「工作流结束」；暂停就说明原因与下一步。`,
+请调用 \`ralphflow_continue\` 工具${instance}。若不带实例 id 且本会话没有活跃实例，工具**只在恰好一个无属主实例时自动接管**；否则会列出候选（含属主会话）并要求显式指定 —— 把它展示给用户并询问接管哪个，再带 \`instance\` 调用。按工具结果行动：进入 DO 就执行该步任务；验证中就简短说明；完成就说「工作流结束」；暂停就说明原因与下一步。`,
         };
       },
     },

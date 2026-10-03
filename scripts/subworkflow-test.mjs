@@ -92,20 +92,20 @@ const A = mkEngine("expand");
 {
   A.wf("child", [
     "steps:",
-    "  - id: c1", "    desc: 子一步", "    do: 做 C1", "    check: 查 C1",
+    "  - id: c1", "    input: 上游产出", "    output: 本步产出", "    desc: 子一步", "    do: 做 C1", "    check: 查 C1",
     "    on_pass: c2", "    on_fail: c1", "    max_fail_count: 2",
-    "  - id: c2", "    desc: 子二步", "    do: 做 C2", "    check: 查 C2",
+    "  - id: c2", "    input: 上游产出", "    output: 本步产出", "    desc: 子二步", "    do: 做 C2", "    check: 查 C2",
     "    on_pass: done", "    on_fail: c1", "    max_fail_count: 2",
   ]);
   const parent = A.wf("parent", [
     "description: 父级", "adversarial_check:", "  model: anthropic/claude-haiku",
     "manual_step: [delegate]", "steps:",
-    "  - id: pre", "    desc: 前置", "    do: 做 P", "    check: 查 P",
+    "  - id: pre", "    input: 上游产出", "    output: 本步产出", "    desc: 前置", "    do: 做 P", "    check: 查 P",
     "    on_pass: delegate", "    on_fail: pre", "    max_fail_count: 3",
-    "  - id: delegate", "    desc: 委托段", "    workflow: child",
+    "  - id: delegate", "    on_pass: post", "    desc: 委托段", "    workflow: child",
     "    input: 不该生效的输入标记", "    output: 不该生效的产物标记", "    check: 不该生效的检查标记",
     "    on_fail: pre", "    max_fail_count: 9",
-    "  - id: post", "    desc: 收尾", "    do: 做 Q", "    check: 查 Q",
+    "  - id: post", "    input: 上游产出", "    output: 本步产出", "    desc: 收尾", "    do: 做 Q", "    check: 查 Q",
     "    on_pass: done", "    on_fail: post", "    max_fail_count: 3",
   ]);
   check("父级可加载（调用点不再因缺 do 被拒）", !!parent.def && parent.problems.length === 0, JSON.stringify(parent.problems));
@@ -124,14 +124,13 @@ const A = mkEngine("expand");
   check("manual_step 标调用点 → 映射到子工作流出口（整段跑完后停门）",
     (parent.def?.manual_step ?? []).join(",") === "delegate/c2", (parent.def?.manual_step ?? []).join(","));
   const callWarns = parent.warnings.filter((w) => w.includes("调用点 `delegate`"));
-  check("调用点上除 id/desc/workflow/on_pass 外的每个键都告警（input/output/check/on_fail/max_fail_count）",
-    callWarns.length === 5, JSON.stringify(parent.warnings));
-  check("告警逐条指路（说明该写到子工作流内的哪一层）",
-    callWarns.some((w) => w.includes("不生效") && w.includes("子工作流内"))
-    && callWarns.some((w) => w.includes("暂停等你定夺")),
+  check("调用点上**不生效**的键只剩 `check`（其余键都是调用点接受并校验的）",
+    callWarns.length === 1 && callWarns[0].includes("`check`") && callWarns[0].includes("不生效")
+    && callWarns[0].includes("子工作流内"),
+    JSON.stringify(parent.warnings));
+  check("调用点**接受**的键不再告警（desc/input/output/on_pass/on_fail/max_fail_count）",
+    ["desc", "input", "output", "on_pass", "on_fail", "max_fail_count"].every((k) => !callWarns.some((w) => w.includes(`的 \`${k}\` 不生效`))),
     JSON.stringify(callWarns));
-  check("desc 不在告警之列（desc 保留，不当作「不生效的键」）",
-    !parent.warnings.some((w) => w.includes("`desc`")), JSON.stringify(parent.warnings));
   check("调用点上的 max_fail_count / check 确实不生效（没被带进任何展开后的步骤）",
     !stepsOf(parent).some((s) => s.max_fail_count === 9 || (s.check ?? "").includes("不该生效"))
     && stepsOf(parent).every((s) => !(s.check ?? "").includes("不该生效")),
@@ -144,18 +143,18 @@ const A = mkEngine("expand");
 
   // 出口 = done（调用点是末步、且没写 on_pass）
   const tailCall = A.wf("tail-call", ["steps:",
-    "  - id: a", "    desc: 前", "    do: 做 A", "    check: 查 A", "    on_pass: call",
-    "  - id: call", "    workflow: child"]);
+    "  - id: a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    max_fail_count: 3", "    desc: 前", "    do: 做 A", "    check: 查 A", "    on_pass: call",
+    "  - id: call", "    desc: 步骤 call", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: call", "    max_fail_count: 3", "    workflow: child"]);
   check("调用点是末步且无 on_pass → 子工作流出口 = done",
     stepsOf(tailCall).at(-1)?.on_pass === "done", JSON.stringify(stepsOf(tailCall).map((s) => [s.id, s.on_pass])));
 
   // 子工作流中途 `on_pass: done`：提前出口也接到调用点的 on_pass；子工作流的 lint 告警带前缀上浮
   A.wf("early", ["steps:",
-    "  - id: e1", "    do: 做 E1", "    check: 查 E1", "    on_pass: done",
-    "  - id: e2", "    do: 做 E2", "    check: 查 E2", "    on_pass: done"]);
+    "  - id: e1", "    desc: 步骤 e1", "    input: 上游产出", "    output: 本步产出", "    on_fail: e1", "    max_fail_count: 3", "    do: 做 E1", "    check: 查 E1", "    on_pass: done",
+    "  - id: e2", "    desc: 步骤 e2", "    input: 上游产出", "    output: 本步产出", "    on_fail: e2", "    max_fail_count: 3", "    do: 做 E2", "    check: 查 E2", "    on_pass: done"]);
   const early = A.wf("uses-early", ["steps:",
-    "  - id: call", "    desc: 早退子流程", "    workflow: early",
-    "  - id: after", "    do: 做 After", "    check: 查 After", "    on_pass: done"]);
+    "  - id: call", "    input: 上游产出", "    output: 本步产出", "    on_pass: after", "    on_fail: call", "    max_fail_count: 3", "    desc: 早退子流程", "    workflow: early",
+    "  - id: after", "    desc: 步骤 after", "    input: 上游产出", "    output: 本步产出", "    on_fail: after", "    max_fail_count: 3", "    do: 做 After", "    check: 查 After", "    on_pass: done"]);
   check("子工作流中途 `on_pass: done` → 该步就是出口，接到调用点的 on_pass",
     stepsOf(early).find((s) => s.id === "call/e1")?.on_pass === "after");
   check("子工作流自己的 lint 告警带子工作流名前缀上浮（不静默）",
@@ -164,8 +163,8 @@ const A = mkEngine("expand");
 
   // 同一子工作流被两个调用点引用 → 各展开一份，id 不撞
   const twice = A.wf("twice", ["steps:",
-    "  - id: first", "    workflow: child",
-    "  - id: second", "    workflow: child"]);
+    "  - id: first", "    desc: 步骤 first", "    input: 上游产出", "    output: 本步产出", "    on_pass: second", "    on_fail: first", "    max_fail_count: 3", "    workflow: child",
+    "  - id: second", "    desc: 步骤 second", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: second", "    max_fail_count: 3", "    workflow: child"]);
   check("同一子工作流被两个调用点引用 → 各展开一份（id 前缀区分）",
     stepsOf(twice).map((s) => s.id).join(",") === "first/c1,first/c2,second/c1,second/c2"
     && stepsOf(twice).find((s) => s.id === "first/c2")?.on_pass === "second/c1"
@@ -176,20 +175,20 @@ const A = mkEngine("expand");
 // ═══ 2) 多层嵌套 + 验证模型逐字段继承（下沉到 check_model / 票 model）═══════════
 console.log("\n2) 多层嵌套 + `adversarial_check.model` 下沉与继承");
 {
-  A.wf("deep", ["steps:", "  - id: d1", "    desc: 深一步", "    do: 做 D", "    check: 查 D", "    on_pass: done"]);
+  A.wf("deep", ["steps:", "  - id: d1", "    input: 上游产出", "    output: 本步产出", "    on_fail: d1", "    max_fail_count: 3", "    desc: 深一步", "    do: 做 D", "    check: 查 D", "    on_pass: done"]);
   A.wf("mid", [
     "adversarial_check:", "  model: openai/gpt-5", "manual_step: [m2]", "steps:",
-    "  - id: m1", "    desc: 中部一步", "    do: 做 M", "    check: 查 M", "    on_pass: m2",
-    "  - id: m2", "    desc: 中部二步", "    do: 做 M2", "    check: 查 M2", "    on_pass: mdelegate",
-    "  - id: mdelegate", "    desc: 深调用", "    workflow: deep",
+    "  - id: m1", "    input: 上游产出", "    output: 本步产出", "    on_fail: m1", "    max_fail_count: 3", "    desc: 中部一步", "    do: 做 M", "    check: 查 M", "    on_pass: m2",
+    "  - id: m2", "    input: 上游产出", "    output: 本步产出", "    on_fail: m2", "    max_fail_count: 3", "    desc: 中部二步", "    do: 做 M2", "    check: 查 M2", "    on_pass: mdelegate",
+    "  - id: mdelegate", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: mdelegate", "    max_fail_count: 3", "    desc: 深调用", "    workflow: deep",
   ]);
-  A.wf("deeper", ["steps:", "  - id: e1", "    do: 做 E", "    check: 查 E", "    on_pass: done"]);
+  A.wf("deeper", ["steps:", "  - id: e1", "    desc: 步骤 e1", "    input: 上游产出", "    output: 本步产出", "    on_fail: e1", "    max_fail_count: 3", "    do: 做 E", "    check: 查 E", "    on_pass: done"]);
   const top = A.wf("top", [
     "adversarial_check:", "  model: anthropic/claude-haiku", "steps:",
-    "  - id: pre", "    desc: 前置", "    do: 做 P", "    check: 查 P", "    on_pass: midcall",
-    "  - id: midcall", "    desc: 中段", "    workflow: mid",
-    "  - id: direct", "    desc: 直调无模型子流程", "    workflow: deeper",
-    "  - id: tail", "    desc: 尾", "    do: 做 T", "    check: 查 T", "    on_pass: done",
+    "  - id: pre", "    input: 上游产出", "    output: 本步产出", "    on_fail: pre", "    max_fail_count: 3", "    desc: 前置", "    do: 做 P", "    check: 查 P", "    on_pass: midcall",
+    "  - id: midcall", "    input: 上游产出", "    output: 本步产出", "    on_pass: direct", "    on_fail: midcall", "    max_fail_count: 3", "    desc: 中段", "    workflow: mid",
+    "  - id: direct", "    input: 上游产出", "    output: 本步产出", "    on_pass: tail", "    on_fail: direct", "    max_fail_count: 3", "    desc: 直调无模型子流程", "    workflow: deeper",
+    "  - id: tail", "    input: 上游产出", "    output: 本步产出", "    on_fail: tail", "    max_fail_count: 3", "    desc: 尾", "    do: 做 T", "    check: 查 T", "    on_pass: done",
   ]);
   const ids = stepsOf(top).map((s) => s.id);
   check("多层嵌套 id 逐层叠加（调用链在 id 里可读）",
@@ -211,14 +210,14 @@ console.log("\n2) 多层嵌套 + `adversarial_check.model` 下沉与继承");
   // 投票步：下沉进缺 model 的票，票自己的 model 优先
   A.wf("vote-sub", [
     "adversarial_check:", "  model: openai/gpt-5", "steps:",
-    "  - id: v1", "    do: 做 V", "    on_pass: done",
+    "  - id: v1", "    desc: 步骤 v1", "    input: 上游产出", "    output: 本步产出", "    on_fail: v1", "    max_fail_count: 3", "    do: 做 V", "    on_pass: done",
     "    check_voting:",
     "      - check: 视角一",
     "      - check: 视角二",
     "        model: vendor/special",
   ]);
   const voteHost = A.wf("vote-host", ["steps:",
-    "  - id: vcall", "    workflow: vote-sub"]);
+    "  - id: vcall", "    desc: 步骤 vcall", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: vcall", "    max_fail_count: 3", "    workflow: vote-sub"]);
   const voting = stepsOf(voteHost)[0];
   check("投票步：子文件的 model 下沉进缺 model 的票，票自己的 model 优先",
     voting?.check_voting?.length === 2
@@ -235,14 +234,14 @@ console.log("\n3) 运行期：current_step 就是展开后的 id（端到端 / �
   const B = mkEngine("runtime");
   B.wf("child", [
     "adversarial_check:", "  model: openai/gpt-5", "steps:",
-    "  - id: c1", "    desc: 子一步", "    do: 做 C1", "    check: 查 C1", "    on_pass: c2", "    on_fail: c1", "    max_fail_count: 2",
-    "  - id: c2", "    desc: 子二步", "    do: 做 C2", "    check: 查 C2", "    on_pass: done", "    on_fail: c1", "    max_fail_count: 2",
+    "  - id: c1", "    input: 上游产出", "    output: 本步产出", "    desc: 子一步", "    do: 做 C1", "    check: 查 C1", "    on_pass: c2", "    on_fail: c1", "    max_fail_count: 2",
+    "  - id: c2", "    input: 上游产出", "    output: 本步产出", "    desc: 子二步", "    do: 做 C2", "    check: 查 C2", "    on_pass: done", "    on_fail: c1", "    max_fail_count: 2",
   ]);
   B.wf("host-plain", [
     "adversarial_check:", "  model: anthropic/claude-haiku", "steps:",
-    "  - id: pre", "    desc: 前置", "    do: 做 P", "    check: 查 P", "    on_pass: delegate", "    on_fail: pre", "    max_fail_count: 3",
-    "  - id: delegate", "    desc: 委托段", "    workflow: child",
-    "  - id: post", "    desc: 收尾", "    do: 做 Q", "    check: 查 Q", "    on_pass: done", "    on_fail: post", "    max_fail_count: 3",
+    "  - id: pre", "    input: 上游产出", "    output: 本步产出", "    desc: 前置", "    do: 做 P", "    check: 查 P", "    on_pass: delegate", "    on_fail: pre", "    max_fail_count: 3",
+    "  - id: delegate", "    input: 上游产出", "    output: 本步产出", "    on_pass: post", "    on_fail: delegate", "    max_fail_count: 3", "    desc: 委托段", "    workflow: child",
+    "  - id: post", "    input: 上游产出", "    output: 本步产出", "    desc: 收尾", "    do: 做 Q", "    check: 查 Q", "    on_pass: done", "    on_fail: post", "    max_fail_count: 3",
   ]);
   const sid = S();
   const { r, id } = B.start("host-plain", "父子工作流端到端任务", sid);
@@ -281,12 +280,12 @@ console.log("\n3) 运行期：current_step 就是展开后的 id（端到端 / �
   // 调用点上的审查门 = 整段子工作流跑完后停门；放行后进 post
   const C = mkEngine("gate");
   C.wf("gchild", ["steps:",
-    "  - id: g1", "    do: 做 G1", "    check: 查 G1", "    on_pass: g2", "    on_fail: g1", "    max_fail_count: 3",
-    "  - id: g2", "    do: 做 G2", "    check: 查 G2", "    on_pass: done", "    on_fail: g2", "    max_fail_count: 3"]);
+    "  - id: g1", "    desc: 步骤 g1", "    input: 上游产出", "    output: 本步产出", "    do: 做 G1", "    check: 查 G1", "    on_pass: g2", "    on_fail: g1", "    max_fail_count: 3",
+    "  - id: g2", "    desc: 步骤 g2", "    input: 上游产出", "    output: 本步产出", "    do: 做 G2", "    check: 查 G2", "    on_pass: done", "    on_fail: g2", "    max_fail_count: 3"]);
   C.wf("ghost", ["manual_step: [call]", "steps:",
-    "  - id: pre", "    do: 做 P", "    check: 查 P", "    on_pass: call", "    on_fail: pre", "    max_fail_count: 3",
-    "  - id: call", "    workflow: gchild",
-    "  - id: post", "    do: 做 Q", "    check: 查 Q", "    on_pass: done", "    on_fail: post", "    max_fail_count: 3"]);
+    "  - id: pre", "    desc: 步骤 pre", "    input: 上游产出", "    output: 本步产出", "    do: 做 P", "    check: 查 P", "    on_pass: call", "    on_fail: pre", "    max_fail_count: 3",
+    "  - id: call", "    desc: 步骤 call", "    input: 上游产出", "    output: 本步产出", "    on_pass: post", "    on_fail: call", "    max_fail_count: 3", "    workflow: gchild",
+    "  - id: post", "    desc: 步骤 post", "    input: 上游产出", "    output: 本步产出", "    do: 做 Q", "    check: 查 Q", "    on_pass: done", "    on_fail: post", "    max_fail_count: 3"]);
   const gsid = S();
   const gs = C.start("ghost", "调用点审查门用例", gsid);
   for (const v of [{ status: "passed", reason: "pre 通过" }, { status: "passed", reason: "g1 通过" }, { status: "passed", reason: "g2 通过" }]) {
@@ -313,9 +312,9 @@ console.log("\n3) 运行期：current_step 就是展开后的 id（端到端 / �
   // 子工作流内部的审查门（子文件自己的 manual_step）
   const D = mkEngine("subgate");
   D.wf("gated", ["manual_step: [in1]", "steps:",
-    "  - id: in1", "    do: 做 I1", "    check: 查 I1", "    on_pass: in2", "    on_fail: in1", "    max_fail_count: 3",
-    "  - id: in2", "    do: 做 I2", "    check: 查 I2", "    on_pass: done", "    on_fail: in2", "    max_fail_count: 3"]);
-  D.wf("shost", ["steps:", "  - id: call", "    workflow: gated"]);
+    "  - id: in1", "    desc: 步骤 in1", "    input: 上游产出", "    output: 本步产出", "    do: 做 I1", "    check: 查 I1", "    on_pass: in2", "    on_fail: in1", "    max_fail_count: 3",
+    "  - id: in2", "    desc: 步骤 in2", "    input: 上游产出", "    output: 本步产出", "    do: 做 I2", "    check: 查 I2", "    on_pass: done", "    on_fail: in2", "    max_fail_count: 3"]);
+  D.wf("shost", ["steps:", "  - id: call", "    desc: 步骤 call", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: call", "    max_fail_count: 3", "    workflow: gated"]);
   const dsid = S();
   const ds = D.start("shost", "子流程内部审查门", dsid);
   D.scripted.push({ status: "passed", reason: "in1 通过" });
@@ -335,10 +334,10 @@ console.log("\n3) 运行期：current_step 就是展开后的 id（端到端 / �
   // 子步骤耗尽 max_fail_count → 暂停等人（刻意差异 3：不自动走父级 on_fail）
   const E = mkEngine("budget");
   E.wf("budget-sub", ["steps:",
-    "  - id: f1", "    desc: 会失败的子步", "    do: 做 F", "    check: 查 F", "    on_pass: done", "    on_fail: f1", "    max_fail_count: 2"]);
+    "  - id: f1", "    input: 上游产出", "    output: 本步产出", "    desc: 会失败的子步", "    do: 做 F", "    check: 查 F", "    on_pass: done", "    on_fail: f1", "    max_fail_count: 2"]);
   E.wf("budget-host", ["steps:",
-    "  - id: setup", "    desc: 父级前置", "    do: 做 S", "    check: 查 S", "    on_pass: call", "    on_fail: setup", "    max_fail_count: 3",
-    "  - id: call", "    workflow: budget-sub", "    on_fail: setup", "    max_fail_count: 1"]);
+    "  - id: setup", "    input: 上游产出", "    output: 本步产出", "    desc: 父级前置", "    do: 做 S", "    check: 查 S", "    on_pass: call", "    on_fail: setup", "    max_fail_count: 3",
+    "  - id: call", "    desc: 步骤 call", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    workflow: budget-sub", "    on_fail: setup", "    max_fail_count: 1"]);
   const esid = S();
   const es = E.start("budget-host", "子步预算耗尽用例", esid);
   E.scripted.push({ status: "passed", reason: "setup 通过" });
@@ -358,15 +357,16 @@ console.log("\n3) 运行期：current_step 就是展开后的 id（端到端 / �
   check("刻意差异 3：绝不自动走父级 on_fail（没有回退到 setup 的轨迹）",
     !(est?.history ?? []).some((h) => h.event === "rework_rewind" && h.detail?.includes("setup")),
     JSON.stringify((est?.history ?? []).map((h) => `${h.event}:${h.detail ?? ""}`)));
-  check("调用点上的 on_fail/max_fail_count 确实没参与（加载期已告警）",
-    E.engine.loadWorkflow("budget-host").warnings.filter((w) => w.includes("调用点 `call`")).length === 2);
+  check("调用点的 on_fail/max_fail_count 是必填项、只做引用校验（不再告警「不生效」，也不参与运行）",
+    E.engine.loadWorkflow("budget-host").warnings.filter((w) => w.includes("调用点 `call`")).length === 0
+    && est?.current_step === "call/f1" && est?.paused === true);
 
   // 子步骤的 on_fail 在子工作流内部回退
   const F = mkEngine("subfail");
   F.wf("loop-sub", ["steps:",
-    "  - id: s1", "    do: 做 S1", "    check: 查 S1", "    on_pass: s2", "    on_fail: s1", "    max_fail_count: 3",
-    "  - id: s2", "    do: 做 S2", "    check: 查 S2", "    on_pass: done", "    on_fail: s1", "    max_fail_count: 3"]);
-  F.wf("loop-host", ["steps:", "  - id: call", "    workflow: loop-sub"]);
+    "  - id: s1", "    desc: 步骤 s1", "    input: 上游产出", "    output: 本步产出", "    do: 做 S1", "    check: 查 S1", "    on_pass: s2", "    on_fail: s1", "    max_fail_count: 3",
+    "  - id: s2", "    desc: 步骤 s2", "    input: 上游产出", "    output: 本步产出", "    do: 做 S2", "    check: 查 S2", "    on_pass: done", "    on_fail: s1", "    max_fail_count: 3"]);
+  F.wf("loop-host", ["steps:", "  - id: call", "    desc: 步骤 call", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: call", "    max_fail_count: 3", "    workflow: loop-sub"]);
   const fsid = S();
   const fst0 = F.start("loop-host", "子内回退用例", fsid);
   F.scripted.push({ status: "passed", reason: "s1 通过" });
@@ -396,10 +396,10 @@ console.log("\n4) 验证模型链路：子层下沉的 model 真的发给验证�
 {
   const G = mkEngine("model");
   G.wf("mchild", ["adversarial_check:", "  model: openai/gpt-5", "steps:",
-    "  - id: c1", "    do: 做 C", "    check: 查 C", "    on_pass: done"]);
+    "  - id: c1", "    desc: 步骤 c1", "    input: 上游产出", "    output: 本步产出", "    on_fail: c1", "    max_fail_count: 3", "    do: 做 C", "    check: 查 C", "    on_pass: done"]);
   G.wf("mhost", ["adversarial_check:", "  model: anthropic/claude-haiku", "steps:",
-    "  - id: pre", "    do: 做 P", "    check: 查 P", "    on_pass: call", "    on_fail: pre", "    max_fail_count: 3",
-    "  - id: call", "    workflow: mchild"]);
+    "  - id: pre", "    desc: 步骤 pre", "    input: 上游产出", "    output: 本步产出", "    do: 做 P", "    check: 查 P", "    on_pass: call", "    on_fail: pre", "    max_fail_count: 3",
+    "  - id: call", "    desc: 步骤 call", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: call", "    max_fail_count: 3", "    workflow: mchild"]);
   const sid = S();
   const { id } = G.start("mhost", "模型链路用例", sid);
   G.scripted.push({ status: "passed", reason: "pre 通过" }, { status: "passed", reason: "子步通过" });
@@ -426,34 +426,36 @@ console.log("\n5) 加载期硬错误（成环 / 子文件加载不出来 / id �
     check(`硬错误：${needles.join(" / ")}`, ok, JSON.stringify({ def: !!r.def, problems: r.problems }));
     return r;
   };
-  N.wf("ok-child", ["steps:", "  - id: c1", "    do: 做 C", "    check: 查 C", "    on_pass: done"]);
+  N.wf("ok-child", ["steps:", "  - id: c1", "    desc: 步骤 c1", "    input: 上游产出", "    output: 本步产出", "    on_fail: c1", "    max_fail_count: 3", "    do: 做 C", "    check: 查 C", "    on_pass: done"]);
 
-  hard("h-missing", ["steps:", "  - id: call", "    workflow: no-such-workflow"], ["无法加载", "no-such-workflow", "调用链"]);
-  N.wf("broken-child", ["steps:", "  - id: b1", "    check: 查 B"]);
-  hard("h-broken", ["steps:", "  - id: call", "    workflow: broken-child"], ["无法加载", "broken-child", "do"]);
+  hard("h-missing", ["steps:", "  - id: call", "    desc: 步骤 call", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: call", "    max_fail_count: 3", "    workflow: no-such-workflow"], ["无法加载", "no-such-workflow", "调用链"]);
+  N.wf("broken-child", ["steps:", "  - id: b1", "    desc: 步骤 b1", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: b1", "    max_fail_count: 3", "    check: 查 B"]);
+  hard("h-broken", ["steps:", "  - id: call", "    desc: 步骤 call", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: call", "    max_fail_count: 3", "    workflow: broken-child"], ["无法加载", "broken-child", "do"]);
 
-  N.wf("cyc-b", ["steps:", "  - id: b1", "    workflow: cyc-a"]);
-  hard("cyc-a", ["steps:", "  - id: a1", "    workflow: cyc-b"], ["成环", "cyc-a → cyc-b → cyc-a"]);
-  hard("cyc-self", ["steps:", "  - id: s1", "    workflow: cyc-self"], ["成环", "cyc-self → cyc-self"]);
+  N.wf("cyc-b", ["steps:", "  - id: b1", "    desc: 步骤 b1", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: b1", "    max_fail_count: 3", "    workflow: cyc-a"]);
+  hard("cyc-a", ["steps:", "  - id: a1", "    desc: 步骤 a1", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: a1", "    max_fail_count: 3", "    workflow: cyc-b"], ["成环", "cyc-a → cyc-b → cyc-a"]);
+  hard("cyc-self", ["steps:", "  - id: s1", "    desc: 步骤 s1", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: s1", "    max_fail_count: 3", "    workflow: cyc-self"], ["成环", "cyc-self → cyc-self"]);
 
-  hard("h-slash-call", ["steps:", "  - id: a/b", "    workflow: ok-child"], ["含", SUBWORKFLOW_ID_SEP, "撞名"]);
-  const slashChild = N.wf("slash-child", ["steps:", "  - id: c/d", "    do: 做 C", "    check: 查 C"]);
+  hard("h-slash-call", ["steps:", "  - id: a/b", "    desc: 步骤 a/b", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: a/b", "    max_fail_count: 3", "    workflow: ok-child"], ["含", SUBWORKFLOW_ID_SEP, "撞名"]);
+  const slashChild = N.wf("slash-child", ["steps:", "  - id: c/d", "    desc: 步骤 c/d", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: c/d", "    max_fail_count: 3", "    do: 做 C", "    check: 查 C"]);
   check("子步骤 id 含 `/` 的工作流**单独**加载是允许的（只在被展开时才撞）", !!slashChild.def, JSON.stringify(slashChild.problems));
-  hard("h-slash-sub", ["steps:", "  - id: call", "    workflow: slash-child"], ["含", SUBWORKFLOW_ID_SEP, "撞名"]);
+  hard("h-slash-sub", ["steps:", "  - id: call", "    desc: 步骤 call", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: call", "    max_fail_count: 3", "    workflow: slash-child"], ["含", SUBWORKFLOW_ID_SEP, "撞名"]);
 
-  hard("h-noname", ["steps:", "  - id: call", "    workflow:"], ["没有给出要调用的工作流名"]);
-  hard("h-nonstring", ["steps:", "  - id: call", "    workflow: [a, b]"], ["没有给出要调用的工作流名"]);
-  hard("h-path", ["steps:", "  - id: call", "    workflow: ../evil"], ["路径分隔符"]);
+  hard("h-noname", ["steps:", "  - id: call", "    desc: 步骤 call", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: call", "    max_fail_count: 3", "    workflow:"], ["没有给出要调用的工作流名"]);
+  hard("h-nonstring", ["steps:", "  - id: call", "    desc: 步骤 call", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: call", "    max_fail_count: 3", "    workflow: [a, b]"], ["没有给出要调用的工作流名"]);
+  hard("h-path", ["steps:", "  - id: call", "    desc: 步骤 call", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: call", "    max_fail_count: 3", "    workflow: ../evil"], ["路径分隔符"]);
 
   // 展开后 id 撞名：普通步骤 `a/b` + 调用点 `a` 的子步骤 `b`（调用点 id 本身合法，撞的是展开结果）
-  N.wf("collide-child", ["steps:", "  - id: b", "    do: 做 B", "    check: 查 B", "    on_pass: done"]);
+  N.wf("collide-child", ["steps:", "  - id: b", "    desc: 步骤 b", "    input: 上游产出", "    output: 本步产出", "    on_fail: b", "    max_fail_count: 3", "    do: 做 B", "    check: 查 B", "    on_pass: done"]);
   hard("h-collide", ["steps:",
-    "  - id: a", "    workflow: collide-child",
-    "  - id: a/b", "    do: 做 X", "    check: 查 X"], ["撞名", "a/b"]);
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_pass: a/b", "    on_fail: a", "    max_fail_count: 3", "    workflow: collide-child",
+    "  - id: a/b", "    desc: 步骤 a/b", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: a/b", "    max_fail_count: 3", "    do: 做 X", "    check: 查 X"], ["撞名", "a/b"]);
 
   // 上限：平铺 5000 步 → 必须在第 2001 步立刻中止（报错里的数字就是证据）
   const many = ["steps:"];
-  for (let i = 0; i < MAX_EXPANDED_STEPS + 3000; i++) many.push(`  - id: s${i}`, "    do: X", "    check: Y");
+  for (let i = 0; i < MAX_EXPANDED_STEPS + 3000; i++) {
+    many.push(`  - id: s${i}`, "    desc: 步骤", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check: Y", "    on_pass: done", `    on_fail: s${i}`, "    max_fail_count: 3");
+  }
   const capFlat = N.wf("h-cap-flat", many);
   check(`上限：平铺超过 ${MAX_EXPANDED_STEPS} 步 → 加载期硬错误，且在第 ${MAX_EXPANDED_STEPS + 1} 步立刻中止`,
     !capFlat.def
@@ -463,17 +465,19 @@ console.log("\n5) 加载期硬错误（成环 / 子文件加载不出来 / id �
 
   // 上限：单个子工作流不超限，但被两个调用点引用后超限 → 展开中计数（复制也算）
   const fat = ["steps:"];
-  for (let i = 0; i < 1200; i++) fat.push(`  - id: f${i}`, "    do: X", "    check: Y");
+  for (let i = 0; i < 1200; i++) {
+    fat.push(`  - id: f${i}`, "    desc: 步骤", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check: Y", "    on_pass: done", `    on_fail: f${i}`, "    max_fail_count: 3");
+  }
   const fatChild = N.wf("fat-child", fat);
   check("1200 步的子工作流单独加载不超限", !!fatChild.def, JSON.stringify(fatChild.problems));
-  const capExpand = N.wf("h-cap-expand", ["steps:", "  - id: one", "    workflow: fat-child", "  - id: two", "    workflow: fat-child"]);
+  const capExpand = N.wf("h-cap-expand", ["steps:", "  - id: one", "    desc: 步骤 one", "    input: 上游产出", "    output: 本步产出", "    on_pass: two", "    on_fail: one", "    max_fail_count: 3", "    workflow: fat-child", "  - id: two", "    desc: 步骤 two", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: two", "    max_fail_count: 3", "    workflow: fat-child"]);
   check("上限按**展开后**计数：同一子工作流被两处引用（1200×2）→ 立刻中止",
     !capExpand.def && capExpand.problems.some((p) => p.includes("超过上限")), JSON.stringify(capExpand.problems));
 
   // 调用点被标成审查门，但子工作流永远不回父级 → 门永远不触发 = 硬错误（绝不静默消失）
   N.wf("noexit-child", ["steps:",
-    "  - id: n1", "    do: 做 N", "    check: 查 N", "    on_pass: n1", "    on_fail: n1"]);
-  hard("h-noexit", ["manual_step: [call]", "steps:", "  - id: call", "    workflow: noexit-child"], ["审查门永远不会触发"]);
+    "  - id: n1", "    desc: 步骤 n1", "    input: 上游产出", "    output: 本步产出", "    max_fail_count: 3", "    do: 做 N", "    check: 查 N", "    on_pass: n1", "    on_fail: n1"]);
+  hard("h-noexit", ["manual_step: [call]", "steps:", "  - id: call", "    desc: 步骤 call", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: call", "    max_fail_count: 3", "    workflow: noexit-child"], ["审查门永远不会触发"]);
 
   // doctor / list 把坏定义报出来（不静默）
   const listed = N.engine.listWorkflows().find((w) => w.name === "h-missing");
@@ -486,21 +490,34 @@ console.log("\n5) 加载期硬错误（成环 / 子文件加载不出来 / id �
 console.log("\n6) 调用点逐键告警 + 平铺工作流零差异");
 {
   const W = mkEngine("warn");
-  W.wf("wc", ["steps:", "  - id: c1", "    do: 做 C", "    check: 查 C", "    on_pass: done"]);
+  W.wf("wc", ["steps:", "  - id: c1", "    desc: 步骤 c1", "    input: 上游产出", "    output: 本步产出", "    on_fail: c1", "    max_fail_count: 3", "    do: 做 C", "    check: 查 C", "    on_pass: done"]);
   const warny = W.wf("warny", ["manual_step: [call, tail]", "steps:",
-    "  - id: call", "    desc: 保留的描述", "    workflow: wc",
+    "  - id: call", "    on_pass: tail", "    desc: 保留的描述", "    workflow: wc",
     "    do: 不该生效的 do", "    input: 输入", "    output: 产物", "    on_fail: tail",
     "    max_fail_count: 99", "    check: 不该生效的 check", "    check_model: vendor/x",
     "    inputs:", "      task: 不该生效的参数", "    reset: true", "    weird_key: 1",
-    "  - id: tail", "    do: 做 T", "    check: 查 T", "    on_pass: done"]);
+    "  - id: tail", "    desc: 步骤 tail", "    input: 上游产出", "    output: 本步产出", "    on_fail: tail", "    max_fail_count: 3", "    do: 做 T", "    check: 查 T", "    on_pass: done"]);
   check("调用点带一堆键仍可加载（告警而非硬错误——作者多半只是写错了层级）", !!warny.def, JSON.stringify(warny.problems));
   const warns = warny.warnings.filter((w) => w.includes("调用点 `call`"));
-  for (const key of ["do", "input", "output", "on_fail", "max_fail_count", "check", "check_model", "inputs", "reset", "weird_key"]) {
-    check(`调用点的 \`${key}\` 逐个告警且指路`, warns.some((w) => w.includes(`\`${key}\``) && w.includes("不生效")), JSON.stringify(warns));
+  // 调用点上**不生效**的键：逐个告警 + 指路（`check` 不是必填项，写在这里仍是配置错误）
+  for (const key of ["do", "check", "check_model", "inputs", "weird_key"]) {
+    check(`调用点上不生效的 \`${key}\` 逐个告警且指路`,
+      warns.some((w) => w.includes(`\`${key}\``) && w.includes("不生效")), JSON.stringify(warns));
   }
-  check("调用点的 desc 不告警、且真的保留下来（子步骤没写 desc 时就用调用点的）",
-    stepsOf(warny)[0]?.desc === "保留的描述" && !warns.some((w) => w.startsWith("调用点 `call` 的 `desc`")),
+  // 调用点**接受并校验**的键（六个必填 + reset）：不再告警 —— 必填项若还告警「不生效」就是自相矛盾
+  for (const key of ["desc", "input", "output", "on_fail", "max_fail_count", "reset"]) {
+    check(`调用点接受 \`${key}\`（不再告警）`, !warns.some((w) => w.includes(`的 \`${key}\` 不生效`)), JSON.stringify(warns));
+  }
+  check("调用点的 desc 真的保留下来（与子步骤 desc 组合成 `调用点desc · 子步骤desc`）",
+    stepsOf(warny)[0]?.desc === "保留的描述 · 步骤 c1" && !warns.some((w) => w.startsWith("调用点 `call` 的 `desc`")),
     stepsOf(warny)[0]?.desc);
+  check("调用点的 reset: true 生效：下沉到**首个展开后子步骤**并带来源标记（第二个子步骤不动）",
+    stepsOf(warny)[0]?.reset === true && stepsOf(warny)[0]?.reset_from_call === "call"
+    && stepsOf(warny).slice(1).every((s) => s.reset !== true),
+    JSON.stringify(stepsOf(warny).map((s) => ({ id: s.id, reset: s.reset, from: s.reset_from_call }))));
+  check("调用点的 on_fail / max_fail_count 不参与运行（展开后由子步骤自己的连线与预算说了算）",
+    stepsOf(warny).every((s) => s.max_fail_count !== 99) && stepsOf(warny)[0]?.on_fail === "call/c1",
+    JSON.stringify(stepsOf(warny).map((s) => ({ id: s.id, on_fail: s.on_fail, mfc: s.max_fail_count }))));
   check("调用点的 check 没有变成「有 check 的步骤」（展开后仍是子步骤自己的 check）",
     stepsOf(warny).every((s) => !(s.check ?? "").includes("不该生效")));
   check("`check_voting` 写在调用点上不会凭空造出投票步",
@@ -528,8 +545,8 @@ console.log("\n7) 负对照（还原实现 → 判据必须为假；锚点找不
 {
   /** 主判据：展开面是否成立（真 = 当前实现；假 = 还原构建） */
   const expansionCriteria = (engine, wfOf) => {
-    wfOf("nc-child", ["steps:", "  - id: c1", "    do: 做 C", "    check: 查 C", "    on_pass: done"]);
-    const r = wfOf("nc-parent", ["steps:", "  - id: call", "    workflow: nc-child", "  - id: tail", "    do: 做 T", "    check: 查 T"]);
+    wfOf("nc-child", ["steps:", "  - id: c1", "    desc: 步骤 c1", "    input: 上游产出", "    output: 本步产出", "    on_fail: c1", "    max_fail_count: 3", "    do: 做 C", "    check: 查 C", "    on_pass: done"]);
+    const r = wfOf("nc-parent", ["steps:", "  - id: call", "    desc: 步骤 call", "    input: 上游产出", "    output: 本步产出", "    on_pass: tail", "    on_fail: call", "    max_fail_count: 3", "    workflow: nc-child", "  - id: tail", "    desc: 步骤 tail", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: tail", "    max_fail_count: 3", "    do: 做 T", "    check: 查 T"]);
     return {
       loads: !!r.def,
       expandedId: r.def?.steps?.[0]?.id === "call/c1",
@@ -590,8 +607,8 @@ console.log("\n8) 极深调用链 → 加载期硬错误（不爆栈崩溃）");
   const chainWriter = (engine, n) => {
     for (let i = 0; i < n; i++) {
       const lines = i + 1 < n
-        ? ["steps:", "  - id: n", `    workflow: w${i + 1}`]
-        : ["steps:", "  - id: leaf", "    do: 做", "    check: 查"];
+        ? ["steps:", "  - id: n", "    desc: 步骤 n", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: n", "    max_fail_count: 3", `    workflow: w${i + 1}`]
+        : ["steps:", "  - id: leaf", "    desc: 步骤 leaf", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: leaf", "    max_fail_count: 3", "    do: 做", "    check: 查"];
       fs.writeFileSync(path.join(engine.workflowsDir, `w${i}.yaml`), lines.join("\n"));
     }
   };

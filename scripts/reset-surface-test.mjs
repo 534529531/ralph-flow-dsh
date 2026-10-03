@@ -61,6 +61,8 @@ async function waitFor(pred, ms = 3000) {
 const WF_RESET = `description: reset 门验收
 steps:
   - id: first
+    input: 上游产出
+    output: 本步产出
     desc: 第一步
     do: 做第一步的工作
     check: 第一步是否真的完成
@@ -68,6 +70,8 @@ steps:
     on_fail: first
     max_fail_count: 3
   - id: second
+    input: 上游产出
+    output: 本步产出
     desc: 第二步
     reset: true
     do: 做第二步的工作（这一步之前应已重置上下文）
@@ -80,6 +84,8 @@ const WF_NORESET = WF_RESET.replace("    reset: true\n", "");
 const WF_FIRST_RESET = `description: 首步 reset 验收
 steps:
   - id: only
+    input: 上游产出
+    output: 本步产出
     desc: 首步
     reset: true
     do: 做首步的工作
@@ -92,12 +98,16 @@ steps:
 const WF_NOCHECK_THEN_RESET = `description: 无 check 推进 + reset 验收
 steps:
   - id: a
+    input: 上游产出
+    output: 本步产出
     desc: 第一步（无 check：交卷即推进）
     do: 做第一步的工作
     on_pass: b
     on_fail: a
     max_fail_count: 3
   - id: b
+    input: 上游产出
+    output: 本步产出
     desc: 第二步（带 reset）
     reset: true
     do: 做第二步的工作
@@ -111,6 +121,8 @@ const WF_AUTO = `description: auto_reset 验收
 auto_reset: true
 steps:
   - id: a
+    input: 上游产出
+    output: 本步产出
     desc: 第一步（首步：结构上无法重置）
     do: 做 A 的工作
     check: A 是否真的完成
@@ -118,6 +130,8 @@ steps:
     on_fail: a
     max_fail_count: 3
   - id: b
+    input: 上游产出
+    output: 本步产出
     desc: 第二步
     do: 做 B 的工作
     check: B 是否真的完成
@@ -125,6 +139,8 @@ steps:
     on_fail: b
     max_fail_count: 3
   - id: c
+    input: 上游产出
+    output: 本步产出
     desc: 第三步
     do: 做 C 的工作
     check: C 是否真的完成
@@ -137,6 +153,8 @@ steps:
 const WF_MANUAL = `description: 手动 reset 验收
 steps:
   - id: first
+    input: 上游产出
+    output: 本步产出
     desc: 第一步
     do: 做第一步的工作
     check: 第一步是否真的完成
@@ -144,6 +162,8 @@ steps:
     on_fail: first
     max_fail_count: 3
   - id: second
+    input: 上游产出
+    output: 本步产出
     desc: 第二步（未标 reset：手动重置也要生效）
     do: 做第二步的工作
     check: 第二步是否真的完成
@@ -157,6 +177,8 @@ const WF_SUB_AUTO = `description: 子工作流带 auto_reset
 auto_reset: true
 steps:
   - id: s1
+    input: 上游产出
+    output: 本步产出
     desc: 子第一步
     do: 做子工作流 s1 的工作
     check: s1 是否真的完成
@@ -167,6 +189,11 @@ steps:
 const WF_PARENT_CALLS_AUTO = `description: 父工作流首步即调用带 auto_reset 的子工作流（父级没写 auto_reset）
 steps:
   - id: call
+    desc: 步骤 call
+    input: 上游产出
+    output: 本步产出
+    on_fail: call
+    max_fail_count: 3
     workflow: subauto
     on_pass: done
 `;
@@ -174,6 +201,11 @@ const WF_PARENT_AUTO_CALLS_AUTO = `description: 父子都 auto_reset，首步是
 auto_reset: true
 steps:
   - id: call
+    desc: 步骤 call
+    input: 上游产出
+    output: 本步产出
+    on_fail: call
+    max_fail_count: 3
     workflow: subauto
     on_pass: done
 `;
@@ -182,6 +214,8 @@ steps:
 const WF_PARENT_NORMAL_THEN_CALLS_AUTO = `description: 父首步普通，第二步调用带 auto_reset 的子工作流
 steps:
   - id: p1
+    input: 上游产出
+    output: 本步产出
     desc: 父第一步
     do: 做父 p1 的工作
     check: p1 是否真的完成
@@ -189,6 +223,11 @@ steps:
     on_fail: p1
     max_fail_count: 3
   - id: call
+    desc: 步骤 call
+    input: 上游产出
+    output: 本步产出
+    on_fail: call
+    max_fail_count: 3
     workflow: subauto
     on_pass: done
 `;
@@ -956,13 +995,14 @@ console.log("\n14) auto_reset：校验、语义、子工作流下沉");
   const wfDir = path.join(ws, ".dsh", "ralph-flow", "workflows");
   fs.mkdirSync(wfDir, { recursive: true });
   fs.writeFileSync(path.join(wfDir, "ok.yaml"),
-    "description: ok\nauto_reset: true\nsteps:\n  - id: s\n    do: x\n    check: y\n    on_fail: s\n");
+    "description: ok\nauto_reset: true\nsteps:\n  - id: s\n    desc: 单步\n    input: 上游产出\n    output: 本步产出\n    do: x\n    check: y\n    on_pass: done\n    on_fail: s\n    max_fail_count: 3\n");
   fs.writeFileSync(path.join(wfDir, "bad.yaml"),
-    "description: bad\nauto_reset: \"yes\"\nsteps:\n  - id: s\n    do: x\n");
+    "description: bad\nauto_reset: \"yes\"\nsteps:\n  - id: s\n    desc: 单步\n    input: 上游产出\n    output: 本步产出\n    do: x\n    on_pass: done\n    on_fail: s\n    max_fail_count: 3\n");
   fs.writeFileSync(path.join(wfDir, "sub.yaml"),
-    "description: sub\nauto_reset: true\nsteps:\n  - id: s1\n    do: s1\n    check: c1\n    on_fail: s1\n");
+    "description: sub\nauto_reset: true\nsteps:\n  - id: s1\n    desc: 子一步\n    input: 上游产出\n    output: 本步产出\n    do: s1\n    check: c1\n    on_pass: done\n    on_fail: s1\n    max_fail_count: 3\n");
   fs.writeFileSync(path.join(wfDir, "parent.yaml"),
-    "description: parent\nsteps:\n  - id: p1\n    do: p1\n    check: c1\n    on_pass: call\n    on_fail: p1\n  - id: call\n    workflow: sub\n    on_pass: done\n");
+    "description: parent\nsteps:\n  - id: p1\n    desc: 父一步\n    input: 上游产出\n    output: 本步产出\n    do: p1\n    check: c1\n    on_pass: call\n    on_fail: p1\n    max_fail_count: 3\n"
+    + "  - id: call\n    desc: 调用点\n    input: 上游产出\n    output: 本步产出\n    workflow: sub\n    on_pass: done\n    on_fail: call\n    max_fail_count: 3\n");
   const eng = createEngine(ws, { deliver: () => true, verify: async () => ({ status: "passed", reason: "stub" }) });
 
   const ok = eng.loadWorkflow("ok");
@@ -1138,6 +1178,148 @@ console.log("\n17) 手动 /ralphflow-reset：空闲窗口复查发现已交卷 �
     stAfter?.fail_counts?.second === stBefore?.fail_counts?.second
     && stAfter?.current_step === "second" && stAfter?.do_submitted === true,
     JSON.stringify({ before: stBefore?.fail_counts, after: stAfter?.fail_counts, step: stAfter?.current_step, submitted: stAfter?.do_submitted }));
+  cleanupTmp(H.ws);
+}
+
+// ═══ 18) 调用点上的 reset: true：进入子工作流 = 首个展开后子步骤的重置 ═══════════
+// 语义按本实现的**静态展开模型**定（展开后「子工作流」这个对象不存在了）：
+// 调用点的 reset 下沉到首个展开后子步骤，并打来源标记 `reset_from_call`（记着调用点 id）——
+// 措辞才说得出「是调用点标的」，而不是含糊地说「本步标了 reset: true」（作者没在这一步上标）。
+console.log("\n18) 调用点 reset: true（进入子工作流 = 首个子步骤的重置）");
+{
+  // ── 18a) 加载期：下沉 + 来源标记 + 与 auto_reset 的优先级 ──
+  const ws = mkTmp("reset-call-parse");
+  tmpDirs.push(ws);
+  const wfDir = path.join(ws, ".dsh", "ralph-flow", "workflows");
+  fs.mkdirSync(wfDir, { recursive: true });
+  const subPlain = "description: 普通子工作流\nsteps:\n"
+    + "  - id: t1\n    desc: 子一步\n    input: 上游产出\n    output: 本步产出\n    do: 做 T1\n    check: 查 T1\n    on_pass: t2\n    on_fail: t1\n    max_fail_count: 3\n"
+    + "  - id: t2\n    desc: 子二步\n    input: 上游产出\n    output: 本步产出\n    do: 做 T2\n    check: 查 T2\n    on_pass: done\n    on_fail: t2\n    max_fail_count: 3\n";
+  fs.writeFileSync(path.join(wfDir, "plain-sub.yaml"), subPlain);
+  fs.writeFileSync(path.join(wfDir, "callreset.yaml"),
+    "description: 调用点带 reset\nsteps:\n"
+    + "  - id: call\n    desc: 委托段\n    input: 上游产出\n    output: 本步产出\n    workflow: plain-sub\n    reset: true\n    on_pass: done\n    on_fail: call\n    max_fail_count: 3\n");
+  // 子工作流自己也有 auto_reset：整段子工作流的声明更强，来源应保持 auto（不抢来源）
+  fs.writeFileSync(path.join(wfDir, "callreset-auto.yaml"),
+    "description: 调用点 reset + 子工作流 auto_reset\nsteps:\n"
+    + "  - id: call\n    desc: 委托段\n    input: 上游产出\n    output: 本步产出\n    workflow: autosub\n    reset: true\n    on_pass: done\n    on_fail: call\n    max_fail_count: 3\n");
+  fs.writeFileSync(path.join(wfDir, "autosub.yaml"),
+    "description: 带 auto_reset 的子工作流\nauto_reset: true\nsteps:\n"
+    + "  - id: u1\n    desc: 子一步\n    input: 上游产出\n    output: 本步产出\n    do: 做 U1\n    check: 查 U1\n    on_pass: done\n    on_fail: u1\n    max_fail_count: 3\n");
+  // 非布尔 = 与步骤级 reset 同一口径的硬错误
+  fs.writeFileSync(path.join(wfDir, "callreset-bad.yaml"),
+    "description: 调用点 reset 类型错\nsteps:\n"
+    + "  - id: call\n    desc: 委托段\n    input: 上游产出\n    output: 本步产出\n    workflow: plain-sub\n    reset: \"true\"\n    on_pass: done\n    on_fail: call\n    max_fail_count: 3\n");
+  const eng = createEngine(ws, { deliver: () => true, verify: async () => ({ status: "passed", reason: "stub" }) });
+
+  const cr = eng.loadWorkflow("callreset");
+  const first = cr.def?.steps[0];
+  check("调用点 reset: true 生效：下沉到**首个展开后子步骤**（id 前缀化、reset 为真）",
+    cr.problems.length === 0 && first?.id === "call/t1" && first?.reset === true,
+    JSON.stringify({ problems: cr.problems, id: first?.id, reset: first?.reset }));
+  check("下沉同时打来源标记 reset_from_call（值是调用点 id）——措辞才说得出是谁标的",
+    first?.reset_from_call === "call" && first?.reset_from_auto === undefined, JSON.stringify(first));
+  check("纯函数：调用点带出的重置记作 `call`（不是作者标的 `step`）",
+    resetCauseOf(cr.def, first) === "call", String(resetCauseOf(cr.def, first)));
+  check("调用点 reset 只作用于**首个**子步骤（第二个子步骤不受影响）",
+    cr.def?.steps[1]?.reset !== true && cr.def?.steps[1]?.reset_from_call === undefined,
+    JSON.stringify({ id: cr.def?.steps[1]?.id, reset: cr.def?.steps[1]?.reset }));
+  const crAuto = eng.loadWorkflow("callreset-auto");
+  check("子工作流自身 auto_reset 优先记作 `auto`（调用点的 reset 不抢来源）",
+    crAuto.problems.length === 0 && resetCauseOf(crAuto.def, crAuto.def?.steps[0]) === "auto"
+    && crAuto.def?.steps[0]?.reset_from_auto === true,
+    JSON.stringify({ problems: crAuto.problems, cause: crAuto.def ? resetCauseOf(crAuto.def, crAuto.def.steps[0]) : null }));
+  const crBad = eng.loadWorkflow("callreset-bad");
+  check("调用点的 reset 非布尔 = 加载期硬错误（与步骤级同一口径，不静默当 false）",
+    !crBad.def && crBad.problems.some((p) => p.includes("调用点") && p.includes("reset") && p.includes("布尔")),
+    JSON.stringify(crBad.problems));
+  cleanupTmp(ws);
+}
+
+// ═══ 18b) 运行期：进入子工作流时真的替换，且回执措辞点明「调用点」 ═══════════════
+{
+  const WF_CALLSUB = `description: 子工作流（两步）
+steps:
+  - id: t1
+    desc: 子一步
+    input: 上游产出
+    output: 本步产出
+    do: 做 T1 的工作
+    check: T1 是否真的完成
+    on_pass: t2
+    on_fail: t1
+    max_fail_count: 3
+  - id: t2
+    desc: 子二步
+    input: 上游产出
+    output: 本步产出
+    do: 做 T2 的工作
+    check: T2 是否真的完成
+    on_pass: done
+    on_fail: t2
+    max_fail_count: 3
+`;
+  const WF_CALL_PARENT_RESET = `description: 父级第二步是带 reset 的调用点
+steps:
+  - id: a
+    desc: 父第一步
+    input: 上游产出
+    output: 本步产出
+    do: 做 A 的工作
+    check: A 是否真的完成
+    on_pass: call
+    on_fail: a
+    max_fail_count: 3
+  - id: call
+    desc: 委托段
+    input: 上游产出
+    output: 本步产出
+    workflow: callsub
+    reset: true
+    on_pass: done
+    on_fail: call
+    max_fail_count: 3
+`;
+  const H = setup({ callsub: WF_CALLSUB, callparent: WF_CALL_PARENT_RESET }, "callparent");
+  seedPrior(H.session);
+  await H.turn(async () => {
+    const out = await H.call("ralphflow_start", { workflow: "callparent", task: "调用点重置任务" });
+    H.appendToolExchange("call-reset-start", "ralphflow_start", out);
+    return out;
+  });
+  check("首步（父级普通步 a）不触发替换", replacementEventsOf(H.session).length === 0,
+    `count=${replacementEventsOf(H.session).length}`);
+  await H.turn(async () => {
+    const out = await H.call("ralphflow_submit", { summary: "a 完成" });
+    H.appendToolExchange("call-reset-sub-a", "ralphflow_submit", out);
+    return out;
+  });
+  await H.waitInbox(1); H.drainInbox();
+  await H.waitVerifier(); H.releaseVerifier(true, "a 通过");
+  await H.waitInbox(1); await sleep(20);
+  const delivered = H.drainInbox();
+  check("进入子工作流（call/t1）**恰发生 1 次**整段替换",
+    replacementEventsOf(H.session).length === 1, `count=${replacementEventsOf(H.session).length}`);
+  {
+    const msgs = H.session.deriveMessages();
+    const texts = msgs.map((m) => textOf(m));
+    check("替换后 messages = 系统提示 + 交接稿 + DO（3 条），交接稿指向展开后的步骤 call/t1",
+      msgs.length === 3 && texts[1]?.includes("`call/t1`"), JSON.stringify(texts.map((t) => t.slice(0, 40))));
+    check("投递的是子工作流首步的 DO（做 T1 的工作）",
+      delivered.some((m) => textOf(m).includes("做 T1 的工作")), JSON.stringify(delivered.map((m) => textOf(m).slice(0, 60))));
+  }
+  // 措辞按来源分：可见告知（被同一次替换遮蔽的那条节点）必须点明「调用点」
+  const rep = replacementEventsOf(H.session)[0];
+  const noticeEvent = allEvents(H.session).find((e) => e.seq === rep?.surfaceOp?.endSeq);
+  const noticeText = textOf(noticeEvent?.data);
+  const noticeSummary = String(noticeEvent?.data?.source?.summary ?? "");
+  check("可见告知点明来源是**调用点**（不说成「本步标了 reset: true」）",
+    noticeText.includes("调用点") && noticeText.includes("reset: true") && !noticeText.includes("本步标了"),
+    noticeText.slice(0, 240));
+  check("告知带 summary 且同样点明调用点",
+    noticeSummary.includes("调用点") && noticeSummary.includes("call"), JSON.stringify(noticeSummary));
+  check("执行日志的 reset_surface 事件 trigger = call（可事后复盘来源）",
+    /"event":"reset_surface"[^\n]*"trigger":"call"/.test(execLogTextOf(H.ws)), execLogTextOf(H.ws).slice(-400));
   cleanupTmp(H.ws);
 }
 

@@ -133,8 +133,8 @@ console.log("\nV3 fail_count：换步必须清零（每步 max_fail_count 语义
   e.ensureLayout();
   fs.writeFileSync(path.join(e.workflowsDir, "twostep.yaml"), [
     "description: 两步", "steps:",
-    "  - id: a", "    do: A", "    check: ca", "    on_pass: b", "    on_fail: a", "    max_fail_count: 3",
-    "  - id: b", "    do: B", "    check: cb", "    on_pass: done", "    on_fail: b", "    max_fail_count: 3",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: A", "    check: ca", "    on_pass: b", "    on_fail: a", "    max_fail_count: 3",
+    "  - id: b", "    desc: 步骤 b", "    input: 上游产出", "    output: 本步产出", "    do: B", "    check: cb", "    on_pass: done", "    on_fail: b", "    max_fail_count: 3",
   ].join("\n"));
   const sid = sidOf("v3");
   e.start("twostep", "V3 失败计数", sid);
@@ -176,7 +176,7 @@ console.log("\nV4 continue 恢复：必须重置失败计数（否则修好后�
   e.ensureLayout();
   fs.writeFileSync(path.join(e.workflowsDir, "one.yaml"), [
     "description: 单步上限 2", "steps:",
-    "  - id: s", "    do: S", "    check: cs", "    on_pass: done", "    on_fail: s", "    max_fail_count: 2",
+    "  - id: s", "    desc: 步骤 s", "    input: 上游产出", "    output: 本步产出", "    do: S", "    check: cs", "    on_pass: done", "    on_fail: s", "    max_fail_count: 2",
   ].join("\n"));
   const sid = sidOf("v4");
   e.start("one", "V4 恢复重置", sid);
@@ -212,9 +212,9 @@ console.log("\nV5 on_fail：失败必须回退到 on_fail 指定的步骤");
   e.ensureLayout();
   fs.writeFileSync(path.join(e.workflowsDir, "gap.yaml"), [
     "description: on_fail 回退", "steps:",
-    "  - id: a", "    do: A", "    check: ca", "    on_pass: b", "    on_fail: a", "    max_fail_count: 5",
-    "  - id: b", "    do: B", "    check: cb", "    on_pass: c", "    on_fail: a", "    max_fail_count: 5",
-    "  - id: c", "    do: C", "    check: cc", "    on_pass: done", "    on_fail: c", "    max_fail_count: 5",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: A", "    check: ca", "    on_pass: b", "    on_fail: a", "    max_fail_count: 5",
+    "  - id: b", "    desc: 步骤 b", "    input: 上游产出", "    output: 本步产出", "    do: B", "    check: cb", "    on_pass: c", "    on_fail: a", "    max_fail_count: 5",
+    "  - id: c", "    desc: 步骤 c", "    input: 上游产出", "    output: 本步产出", "    do: C", "    check: cc", "    on_pass: done", "    on_fail: c", "    max_fail_count: 5",
   ].join("\n"));
   const sid = sidOf("v5");
   e.start("gap", "V5 on_fail", sid);
@@ -241,7 +241,7 @@ console.log("\nV6 on_fail: done 非法 → 加载期 fail-fast");
   e.ensureLayout();
   fs.writeFileSync(path.join(e.workflowsDir, "bad.yaml"), [
     "description: on_fail done 非法", "steps:",
-    "  - id: s", "    do: S", "    check: cs", "    on_pass: done", "    on_fail: done", "    max_fail_count: 3",
+    "  - id: s", "    desc: 步骤 s", "    input: 上游产出", "    output: 本步产出", "    do: S", "    check: cs", "    on_pass: done", "    on_fail: done", "    max_fail_count: 3",
   ].join("\n"));
   const r = e.loadWorkflow("bad");
   check("① 定义被判为无效", r.def === null, JSON.stringify(r.def));
@@ -269,9 +269,9 @@ console.log("\nV7 on_fail 跨步回退：按步计数（不串味 + 成环仍有
   e.ensureLayout();
   fs.writeFileSync(path.join(e.workflowsDir, "spec-ish.yaml"), [
     "description: 跨步回退（仿 spec）", "steps:",
-    "  - id: a", "    do: A", "    check: ca", "    on_pass: b", "    on_fail: a", "    max_fail_count: 3",
-    "  - id: b", "    do: B", "    check: cb", "    on_pass: c", "    on_fail: a", "    max_fail_count: 2",
-    "  - id: c", "    do: C", "    check: cc", "    on_pass: done", "    on_fail: c", "    max_fail_count: 3",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: A", "    check: ca", "    on_pass: b", "    on_fail: a", "    max_fail_count: 3",
+    "  - id: b", "    desc: 步骤 b", "    input: 上游产出", "    output: 本步产出", "    do: B", "    check: cb", "    on_pass: c", "    on_fail: a", "    max_fail_count: 2",
+    "  - id: c", "    desc: 步骤 c", "    input: 上游产出", "    output: 本步产出", "    do: C", "    check: cc", "    on_pass: done", "    on_fail: c", "    max_fail_count: 3",
   ].join("\n"));
   const sid = sidOf("v7");
   e.start("spec-ish", "V7 跨步回退", sid);
@@ -354,8 +354,8 @@ console.log("\nV9 推进判据（§12.1 精修）：有 check 无判定绝不推
   const { e, resolvers, notes } = mkPending(ws, log);
   fs.writeFileSync(path.join(e.workflowsDir, "mixed.yaml"), [
     "description: 有 check 步 + 无 check 步", "steps:",
-    "  - id: a", "    do: A", "    check: ca", "    on_pass: b", "    on_fail: a", "    max_fail_count: 3",
-    "  - id: b", "    do: B", "    on_pass: done", "    on_fail: b", "    max_fail_count: 3",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: A", "    check: ca", "    on_pass: b", "    on_fail: a", "    max_fail_count: 3",
+    "  - id: b", "    desc: 步骤 b", "    input: 上游产出", "    output: 本步产出", "    do: B", "    on_pass: done", "    on_fail: b", "    max_fail_count: 3",
   ].join("\n"));
   const sid = sidOf("v9");
   e.start("mixed", "V9 推进判据", sid);

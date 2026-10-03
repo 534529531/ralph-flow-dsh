@@ -81,7 +81,7 @@ console.log("== A. 加载期校验 ==");
 {
   const ok = wfFile("v-ok", [
     "adversarial_check:", "  model: openai/gpt-5", "steps:",
-    "  - id: a", "    do: X", "    check_voting:",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check_voting:",
     "      - check: 需求逐条落实",
     "      - check: 行为真实可用", "        model: anthropic/claude-sonnet",
     "      - check: 无遗漏边界",
@@ -95,31 +95,31 @@ console.log("== A. 加载期校验 ==");
   check("voterCountOf/expectedVerdicts 一致（3 票）", voterCountOf(s) === 3 && expectedVerdicts(s) === 3, JSON.stringify({ v: voterCountOf(s), e: expectedVerdicts(s) }));
   check("MAX_VOTERS = 5（照抄 opencode）", MAX_VOTERS === 5);
 
-  const both = wfFile("v-both", ["steps:", "  - id: a", "    do: X", "    check: c", "    check_voting:", "      - check: c1", "    on_pass: done", "    max_fail_count: 1"]);
+  const both = wfFile("v-both", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check: c", "    check_voting:", "      - check: c1", "    on_pass: done", "    max_fail_count: 1"]);
   check("check 与 check_voting 同写 → 硬错误（互斥）", !both.def && both.problems.some((p) => p.includes("互斥")), JSON.stringify(both.problems));
 
-  const bothBadType = wfFile("v-both-badtype", ["steps:", "  - id: a", "    do: X", "    check: true", "    check_voting:", "      - check: c1", "    on_pass: done", "    max_fail_count: 1"]);
+  const bothBadType = wfFile("v-both-badtype", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check: true", "    check_voting:", "      - check: c1", "    on_pass: done", "    max_fail_count: 1"]);
   check("互斥优先于类型检查（check: true + check_voting 仍报互斥）", !bothBadType.def && bothBadType.problems.some((p) => p.includes("互斥")), JSON.stringify(bothBadType.problems));
 
-  const empty = wfFile("v-empty", ["steps:", "  - id: a", "    do: X", "    check_voting: []", "    on_pass: done", "    max_fail_count: 1"]);
+  const empty = wfFile("v-empty", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check_voting: []", "    on_pass: done", "    max_fail_count: 1"]);
   check("check_voting 空数组 → 硬错误", !empty.def && empty.problems.some((p) => p.includes("1-5")), JSON.stringify(empty.problems));
 
-  const six = wfFile("v-six", ["steps:", "  - id: a", "    do: X", "    check_voting:", ...Array.from({ length: 6 }, (_, i) => `      - check: c${i}`), "    on_pass: done", "    max_fail_count: 1"]);
+  const six = wfFile("v-six", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check_voting:", ...Array.from({ length: 6 }, (_, i) => `      - check: c${i}`), "    on_pass: done", "    max_fail_count: 1"]);
   check("check_voting 超过 5 票 → 硬错误（上限）", !six.def && six.problems.some((p) => p.includes("超过上限")), JSON.stringify(six.problems));
 
-  const noCheck = wfFile("v-entry-nocheck", ["steps:", "  - id: a", "    do: X", "    check_voting:", "      - check: c1", "      - model: a/b", "    on_pass: done", "    max_fail_count: 1"]);
+  const noCheck = wfFile("v-entry-nocheck", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check_voting:", "      - check: c1", "      - model: a/b", "    on_pass: done", "    max_fail_count: 1"]);
   check("条目缺 check → 硬错误", !noCheck.def && noCheck.problems.some((p) => p.includes("check_voting[1]") && p.includes("check")), JSON.stringify(noCheck.problems));
 
-  const notMap = wfFile("v-entry-notmap", ["steps:", "  - id: a", "    do: X", "    check_voting:", "      - c1", "    on_pass: done", "    max_fail_count: 1"]);
+  const notMap = wfFile("v-entry-notmap", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check_voting:", "      - c1", "    on_pass: done", "    max_fail_count: 1"]);
   check("条目不是映射 → 硬错误", !notMap.def && notMap.problems.some((p) => p.includes("不是映射")), JSON.stringify(notMap.problems));
 
-  const badModel = wfFile("v-entry-badmodel", ["steps:", "  - id: a", "    do: X", "    check_voting:", "      - check: c1", "        model: 123", "    on_pass: done", "    max_fail_count: 1"]);
+  const badModel = wfFile("v-entry-badmodel", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check_voting:", "      - check: c1", "        model: 123", "    on_pass: done", "    max_fail_count: 1"]);
   check("条目 model 类型非法 → 硬错误", !badModel.def && badModel.problems.some((p) => p.includes("model")), JSON.stringify(badModel.problems));
 
-  const bareModel = wfFile("v-entry-bare", ["steps:", "  - id: a", "    do: X", "    check_voting:", "      - check: c1", "        model: sonnet", "    on_pass: done", "    max_fail_count: 1"]);
+  const bareModel = wfFile("v-entry-bare", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check_voting:", "      - check: c1", "        model: sonnet", "    on_pass: done", "    max_fail_count: 1"]);
   check("条目 model 裸名 → 告警回退（不拒收、不静默）", !!bareModel.def && bareModel.warnings.some((w) => w.includes("check_voting[0]") && w.includes("回退")), JSON.stringify(bareModel.warnings));
 
-  const removedFields = wfFile("v-entry-removed", ["steps:", "  - id: a", "    do: X", "    check_voting:", "      - check: c1", "        timeout_ms: 600000", "        system_prompt: 你是一个…", "        whatever: 1", "    on_pass: done", "    max_fail_count: 1"]);
+  const removedFields = wfFile("v-entry-removed", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check_voting:", "      - check: c1", "        timeout_ms: 600000", "        system_prompt: 你是一个…", "        whatever: 1", "    on_pass: done", "    max_fail_count: 1"]);
   check("条目 timeout_ms/system_prompt/未知键 → 告警忽略（与 adversarial_check 同口径）",
     !!removedFields.def
     && removedFields.warnings.some((w) => w.includes("timeout_ms"))
@@ -130,10 +130,10 @@ console.log("== A. 加载期校验 ==");
     removedFields.def && !("timeout_ms" in removedFields.def.steps[0].check_voting[0]) && !("system_prompt" in removedFields.def.steps[0].check_voting[0]),
     JSON.stringify(removedFields.def?.steps[0].check_voting));
 
-  const withCheckModel = wfFile("v-checkmodel", ["steps:", "  - id: a", "    do: X", "    check_voting:", "      - check: c1", "    check_model: a/b", "    on_pass: done", "    max_fail_count: 1"]);
+  const withCheckModel = wfFile("v-checkmodel", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check_voting:", "      - check: c1", "    check_model: a/b", "    on_pass: done", "    max_fail_count: 1"]);
   check("check_voting 与 check_model 同写 → 硬错误", !withCheckModel.def && withCheckModel.problems.some((p) => p.includes("check_model")), JSON.stringify(withCheckModel.problems));
 
-  const singleVoter = wfFile("v-single", ["steps:", "  - id: a", "    do: X", "    check_voting:", "      - check: c1", "    on_pass: done", "    max_fail_count: 1"]);
+  const singleVoter = wfFile("v-single", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: X", "    check_voting:", "      - check: c1", "    on_pass: done", "    max_fail_count: 1"]);
   check("单票且无 model → doctor 告警（等同单验证者）", !!singleVoter.def && singleVoter.warnings.some((w) => w.includes("等同单验证者")), JSON.stringify(singleVoter.warnings));
   check("投票步不再收到「不会被独立验证」告警", !!singleVoter.def && !singleVoter.warnings.some((w) => w.includes("不会被独立验证")), JSON.stringify(singleVoter.warnings));
 
@@ -196,7 +196,7 @@ console.log("== D. 运行期：N 票并发 + 全部终态才聚合 ==");
 {
   wfFile("v3", [
     "steps:",
-    "  - id: a", "    do: 做 A", "    check_voting:",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: 做 A", "    check_voting:",
     "      - check: 需求逐条落实",
     "      - check: 行为真实可用",
     "      - check: 无遗漏边界",
@@ -245,7 +245,7 @@ console.log("== D2. 五票同一拍返回（并发落账不丢票、只聚合一
 {
   wfFile("v5", [
     "steps:",
-    "  - id: a", "    do: 做 A", "    check_voting:",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: 做 A", "    check_voting:",
     "      - check: 票一", "      - check: 票二", "      - check: 票三", "      - check: 票四", "      - check: 票五",
     "    on_pass: done", "    on_fail: a", "    max_fail_count: 3",
   ]);
@@ -267,7 +267,7 @@ console.log("== E. 模型优先级：条目 model > 全局 adversarial_check.mod
 {
   wfFile("v-model", [
     "adversarial_check:", "  model: global/global-model", "steps:",
-    "  - id: a", "    do: 做 A", "    check_voting:",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: 做 A", "    check_voting:",
     "      - check: 票一", "        model: entry/entry-model",
     "      - check: 票二",
     "    on_pass: done", "    on_fail: a", "    max_fail_count: 3",
@@ -289,7 +289,7 @@ console.log("== F. 失败聚合与「failed 优先于 infra」==");
 {
   wfFile("v-fail", [
     "steps:",
-    "  - id: a", "    do: 做 A", "    check_voting:",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: 做 A", "    check_voting:",
     "      - check: 需求逐条落实",
     "      - check: 行为真实可用",
     "      - check: 无遗漏边界",
@@ -322,7 +322,7 @@ console.log("== G. infra 自动重试一次（只重跑故障票）==");
 {
   wfFile("v-infra", [
     "steps:",
-    "  - id: a", "    do: 做 A", "    check_voting:",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: 做 A", "    check_voting:",
     "      - check: 票一",
     "      - check: 票二",
     "      - check: 票三",
@@ -354,7 +354,7 @@ console.log("== H. 重试仍 infra → check_infra 暂停（不计失败）→ c
 {
   wfFile("v-infra2", [
     "steps:",
-    "  - id: a", "    do: 做 A", "    check_voting:",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: 做 A", "    check_voting:",
     "      - check: 票一",
     "      - check: 票二",
     "    on_pass: done", "    on_fail: a", "    max_fail_count: 3",
@@ -393,7 +393,7 @@ console.log("== I. 跨轮语义：DO 返工后重新交卷 → 全部重投（�
 {
   wfFile("v-round", [
     "steps:",
-    "  - id: a", "    do: 做 A", "    check_voting:",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: 做 A", "    check_voting:",
     "      - check: 票一",
     "      - check: 票二",
     "    on_pass: done", "    on_fail: a", "    max_fail_count: 3",
@@ -421,7 +421,7 @@ console.log("== J. 审查门 + 投票：全过后停门等放行 ==");
 {
   wfFile("v-gate", [
     "manual_step:", "  - a", "steps:",
-    "  - id: a", "    do: 做 A", "    check_voting:",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: 做 A", "    check_voting:",
     "      - check: 票一", "      - check: 票二",
     "    on_pass: done", "    on_fail: a", "    max_fail_count: 3",
   ]);
@@ -445,7 +445,7 @@ console.log("== K. 取消传播到全部在飞票 ==");
 {
   wfFile("v-cancel", [
     "steps:",
-    "  - id: a", "    do: 做 A", "    check_voting:",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: 做 A", "    check_voting:",
     "      - check: 票一", "      - check: 票二", "      - check: 票三",
     "    on_pass: done", "    on_fail: a", "    max_fail_count: 3",
   ]);
@@ -465,7 +465,7 @@ console.log("== L. 回归：单 check 与无检查步骤不受影响 ==");
 {
   wfFile("v-single-check", [
     "steps:",
-    "  - id: a", "    do: 做 A", "    check: 单检查依据",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: 做 A", "    check: 单检查依据",
     "    on_pass: done", "    on_fail: a", "    max_fail_count: 3",
   ]);
   const s = S();
@@ -480,7 +480,7 @@ console.log("== L. 回归：单 check 与无检查步骤不受影响 ==");
 
   const s2 = S();
   reset();
-  wfFile("v-no-check", ["steps:", "  - id: a", "    do: 做 A", "    on_pass: done", "    max_fail_count: 3"]);
+  wfFile("v-no-check", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    on_fail: a", "    do: 做 A", "    on_pass: done", "    max_fail_count: 3"]);
   const r2 = engine.start("v-no-check", "免验证任务", s2);
   check("免验证步：DO 提示词如实标注跳过对抗性验证", r2.text.includes("跳过对抗性验证") && r2.text.includes("不配置对抗性检查"));
   engine.onSubmit(s2, "done");
@@ -493,7 +493,7 @@ console.log("== M. fail-closed：票数不齐绝不能放行 + 投票步的孤�
 {
   wfFile("v-guard", [
     "steps:",
-    "  - id: a", "    do: 做 A", "    check_voting:",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: 做 A", "    check_voting:",
     "      - check: 票一", "      - check: 票二", "      - check: 票三",
     "    on_pass: done", "    on_fail: a", "    max_fail_count: 3",
   ]);
@@ -583,7 +583,7 @@ console.log("== N. 插件级端到端：真实链路（工具 → 引擎 → ver
   fs.mkdirSync(wfDir, { recursive: true });
   fs.writeFileSync(path.join(wfDir, "vplugin.yaml"), [
     "steps:",
-    "  - id: a", "    do: 做 A", "    check_voting:",
+    "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: 做 A", "    check_voting:",
     "      - check: 需求逐条落实",
     "      - check: 行为真实可用",
     "    on_pass: done", "    on_fail: a", "    max_fail_count: 3",

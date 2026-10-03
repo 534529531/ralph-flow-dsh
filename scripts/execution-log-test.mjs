@@ -232,6 +232,8 @@ manual_step:
   - gate
 steps:
   - id: work
+    input: 上游产出
+    output: 本步产出
     desc: 有 check 的工作步
     do: 做事
     check: 检查
@@ -239,6 +241,10 @@ steps:
     on_fail: work
     max_fail_count: 1
   - id: gate
+    input: 上游产出
+    output: 本步产出
+    on_fail: gate
+    max_fail_count: 3
     desc: 纯人工审查门（无 check）
     do: 做事
     on_pass: done
@@ -306,6 +312,8 @@ console.log("L3 轮转：注入 1 KB 阈值（验收 4）");
   writeWorkflow(ws, "log-probe", `description: 轮转验收用
 steps:
   - id: work
+    input: 上游产出
+    output: 本步产出
     desc: 有 check 且会长 reason 的步骤
     do: 做事
     check: 检查
@@ -346,6 +354,8 @@ steps:
   writeWorkflow(ws, "log-probe", `description: 环境变量阈值轮转验收
 steps:
   - id: work
+    input: 上游产出
+    output: 本步产出
     desc: 有 check 且会长 reason 的步骤
     do: 做事
     check: 检查
@@ -378,6 +388,8 @@ steps:
   writeWorkflow(ws, "log-probe", `description: 多代轮转验收用
 steps:
   - id: work
+    input: 上游产出
+    output: 本步产出
     desc: 反复返工的步骤
     do: 做事
     check: 检查
@@ -478,12 +490,19 @@ manual_step:
   - gate
 steps:
   - id: work
+    input: 上游产出
+    output: 本步产出
+    max_fail_count: 3
     desc: 有 check 的工作步
     do: 做事
     check: 检查
     on_pass: gate
     on_fail: work
   - id: gate
+    input: 上游产出
+    output: 本步产出
+    on_fail: gate
+    max_fail_count: 3
     desc: 门
     do: 做事
     on_pass: done
@@ -513,12 +532,19 @@ manual_step:
   - gate
 steps:
   - id: work
+    input: 上游产出
+    output: 本步产出
+    max_fail_count: 3
     desc: 有 check 的工作步
     do: 做事
     check: 检查
     on_pass: gate
     on_fail: work
   - id: gate
+    input: 上游产出
+    output: 本步产出
+    on_fail: gate
+    max_fail_count: 3
     desc: 门
     do: 做事
     on_pass: done
