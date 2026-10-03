@@ -11,7 +11,7 @@
  *      没填就逐层回退父级 —— 用验证端口收到的 model 取证，不只看加载出来的定义；
  *   4) 四条刻意差异：加载期硬错误（子文件加载不出来 / 成环 / id 含 `/` / workflow 名含路径分隔符 /
  *      展开后 id 撞名 / 展开前没有出口的调用点被标成审查门）、2000 步上限（展开中计数、立刻中止）、
- *      子步骤耗尽 max_fail_count → 暂停等人（不自动走父级 on_fail）、调用点除 id/desc/workflow/on_pass
+ *      子步骤耗尽 max_fail_count → 暂停等人（不自动走父级 on_fail）、调用点除 id/desc/do/workflow/on_pass
  *      外逐键告警 + 指路（manual_step 标调用点 = 整段跑完停门）；
  *   5) 回归：内置 loop/spec 零告警、平铺工作流行为不变；零新增 InstanceState 字段（落盘键集合）。
  *   6) **极深调用链**（本次缺陷）：1900 个互相串联、每层零步骤的工作流文件 → 步数上限看不见它，
@@ -20,6 +20,11 @@
  *   7) 负对照：`buildPluginCopy` 按锚点把「调用点识别」还原成「没有子工作流」、把「嵌套深度闸」
  *      摘掉 → **同一批判据必须为假**（摘掉深度闸后 1900 链重新变成 RangeError 崩溃）；
  *      也支持 `RF_LIB=<基线 lib 目录>` 跑同一支测试（正判据应当失败）。
+ *   8) **调用点的 `do` 生效**（本次任务）：下沉到子步骤的 `task` ——「## 任务」=「这段子工作流要
+ *      做什么」；同一个子工作流被两个调用点以不同 `do` 调用 → 两次展开各拿各自的 `do`；
+ *      调用点不写 `do` → 回落父级任务（向后兼容）；嵌套**最内层优先、外层继承**；
+ *      DO 与 CHECK 的「## 任务」同源；`inputs` 仍告警但文案指路到调用点的 `do`；
+ *      附负对照（按锚点还原「不下沉」→ 同一批判据为假）。
  *
  * 纪律：一律 `mkdtempSync` 造工作区 + 隔离 `process.env.HOME`；绝不读写真实 ~/.dsh 或真实工作区。
  */
@@ -49,6 +54,14 @@ const sleep = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 /** 取加载结果的步骤列表；`def` 为 null（拒收）时给空数组 —— 负对照跑基线库时断言失败而不是抛异常 */
 const stepsOf = (r) => r?.def?.steps ?? [];
 
+/**
+ * 调用点「某键不生效」告警的**精确**判据：文案头是 `调用点 \`id\` 的 \`key\` 不生效：…`。
+ *
+ * 为什么不用 `includes(key) && includes("不生效")` 的宽松写法：告警正文会**指路**提到别的键
+ * （实测 `inputs` 的文案指向 `do`），宽松判据会让「`do` 已不再告警」这条负判据被别的告警蒙混过关。
+ */
+const callKeyNotEffective = (w, callId, key) => w.startsWith(`调用点 \`${callId}\` 的 \`${key}\` 不生效：`);
+
 /** 改造前就有的落盘字段白名单（零新增 InstanceState 字段的判据） */
 const PRE_CHANGE_PERSISTED_FIELDS = [
   "active", "artifacts_dir_name", "current_step", "delegations", "do_submitted", "fail_counts", "history",
@@ -64,7 +77,7 @@ function mkEngine(tag) {
     deliver: (_sid, text) => { state.deliveries.push(text); return true; },
     verify: async (req) => {
       state.calls++;
-      state.verifyReqs.push({ step: req.step.id, model: req.model, checkIndex: req.checkIndex });
+      state.verifyReqs.push({ step: req.step.id, model: req.model, checkIndex: req.checkIndex, task: req.userTask });
       const v = state.scripted.shift();
       if (!v) throw new Error("no scripted verdict");
       return { check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), ...v };
@@ -125,11 +138,11 @@ const A = mkEngine("expand");
     (parent.def?.manual_step ?? []).join(",") === "delegate/c2", (parent.def?.manual_step ?? []).join(","));
   const callWarns = parent.warnings.filter((w) => w.includes("调用点 `delegate`"));
   check("调用点上**不生效**的键只剩 `check`（其余键都是调用点接受并校验的）",
-    callWarns.length === 1 && callWarns[0].includes("`check`") && callWarns[0].includes("不生效")
+    callWarns.length === 1 && callKeyNotEffective(callWarns[0], "delegate", "check")
     && callWarns[0].includes("子工作流内"),
     JSON.stringify(parent.warnings));
   check("调用点**接受**的键不再告警（desc/input/output/on_pass/on_fail/max_fail_count）",
-    ["desc", "input", "output", "on_pass", "on_fail", "max_fail_count"].every((k) => !callWarns.some((w) => w.includes(`的 \`${k}\` 不生效`))),
+    ["desc", "input", "output", "on_pass", "on_fail", "max_fail_count"].every((k) => !callWarns.some((w) => callKeyNotEffective(w, "delegate", k))),
     JSON.stringify(callWarns));
   check("调用点上的 max_fail_count / check 确实不生效（没被带进任何展开后的步骤）",
     !stepsOf(parent).some((s) => s.max_fail_count === 9 || (s.check ?? "").includes("不该生效"))
@@ -409,8 +422,8 @@ console.log("\n4) 验证模型链路：子层下沉的 model 真的发给验证�
   await sleep();
   check("父级步骤用父级模型、子工作流步骤用子文件下沉的模型（逐层继承可见）",
     JSON.stringify(G.verifyReqs) === JSON.stringify([
-      { step: "pre", model: { providerID: "anthropic", modelID: "claude-haiku" }, checkIndex: 0 },
-      { step: "call/c1", model: { providerID: "openai", modelID: "gpt-5" }, checkIndex: 0 },
+      { step: "pre", model: { providerID: "anthropic", modelID: "claude-haiku" }, checkIndex: 0, task: "模型链路用例" },
+      { step: "call/c1", model: { providerID: "openai", modelID: "gpt-5" }, checkIndex: 0, task: "模型链路用例" },
     ]), JSON.stringify(G.verifyReqs));
   check("验证次数 = 展开后的有 check 步骤数（调用点不额外烧一次验证）", G.calls === 2, String(G.calls));
   check("实例跑完销毁", G.gone(id));
@@ -493,21 +506,31 @@ console.log("\n6) 调用点逐键告警 + 平铺工作流零差异");
   W.wf("wc", ["steps:", "  - id: c1", "    desc: 步骤 c1", "    input: 上游产出", "    output: 本步产出", "    on_fail: c1", "    max_fail_count: 3", "    do: 做 C", "    check: 查 C", "    on_pass: done"]);
   const warny = W.wf("warny", ["manual_step: [call, tail]", "steps:",
     "  - id: call", "    on_pass: tail", "    desc: 保留的描述", "    workflow: wc",
-    "    do: 不该生效的 do", "    input: 输入", "    output: 产物", "    on_fail: tail",
+    "    do: 这段子工作流的任务", "    input: 输入", "    output: 产物", "    on_fail: tail",
     "    max_fail_count: 99", "    check: 不该生效的 check", "    check_model: vendor/x",
     "    inputs:", "      task: 不该生效的参数", "    reset: true", "    weird_key: 1",
     "  - id: tail", "    desc: 步骤 tail", "    input: 上游产出", "    output: 本步产出", "    on_fail: tail", "    max_fail_count: 3", "    do: 做 T", "    check: 查 T", "    on_pass: done"]);
   check("调用点带一堆键仍可加载（告警而非硬错误——作者多半只是写错了层级）", !!warny.def, JSON.stringify(warny.problems));
   const warns = warny.warnings.filter((w) => w.includes("调用点 `call`"));
   // 调用点上**不生效**的键：逐个告警 + 指路（`check` 不是必填项，写在这里仍是配置错误）
-  for (const key of ["do", "check", "check_model", "inputs", "weird_key"]) {
+  for (const key of ["check", "check_model", "inputs", "weird_key"]) {
     check(`调用点上不生效的 \`${key}\` 逐个告警且指路`,
-      warns.some((w) => w.includes(`\`${key}\``) && w.includes("不生效")), JSON.stringify(warns));
+      warns.some((w) => callKeyNotEffective(w, "call", key)), JSON.stringify(warns));
   }
-  // 调用点**接受并校验**的键（六个必填 + reset）：不再告警 —— 必填项若还告警「不生效」就是自相矛盾
-  for (const key of ["desc", "input", "output", "on_fail", "max_fail_count", "reset"]) {
-    check(`调用点接受 \`${key}\`（不再告警）`, !warns.some((w) => w.includes(`的 \`${key}\` 不生效`)), JSON.stringify(warns));
+  // 调用点**接受并校验**的键（六个必填 + `reset` + `do`）：不再告警 —— 必填项若还告警「不生效」就是自相矛盾。
+  // `do` 自本次起**生效**（下沉到子步骤的 `task`），它必须有别于上面的「不生效」清单。
+  for (const key of ["desc", "input", "output", "on_fail", "max_fail_count", "reset", "do"]) {
+    check(`调用点接受 \`${key}\`（不再告警）`, !warns.some((w) => callKeyNotEffective(w, "call", key)), JSON.stringify(warns));
   }
+  // `inputs` 仍然不被支持（告警忽略），但文案必须**指路到调用点的 `do`** —— 那才是「这段子工作流
+  // 要做什么」的载体，而不是含糊地说「写进任务描述或子步骤的 do」。
+  const inputsWarn = warns.find((w) => callKeyNotEffective(w, "call", "inputs"));
+  check("`inputs` 仍告警，且文案指路到调用点的 `do`（不再是「写进任务描述」）",
+    !!inputsWarn && inputsWarn.includes("`do`") && inputsWarn.includes("## 任务"),
+    inputsWarn);
+  check("调用点的 `do` 真的生效：下沉成子步骤的任务（不再是「不生效」告警）",
+    stepsOf(warny)[0]?.task === "这段子工作流的任务",
+    JSON.stringify(stepsOf(warny).map((s) => [s.id, s.task])));
   check("调用点的 desc 真的保留下来（与子步骤 desc 组合成 `调用点desc · 子步骤desc`）",
     stepsOf(warny)[0]?.desc === "保留的描述 · 步骤 c1" && !warns.some((w) => w.startsWith("调用点 `call` 的 `desc`")),
     stepsOf(warny)[0]?.desc);
@@ -684,6 +707,138 @@ console.log("\n8) 极深调用链 → 加载期硬错误（不爆栈崩溃）");
     check("负对照：崩溃原文就是 Maximum call stack size exceeded（缺陷真实存在）",
       reverted.threw === true && /Maximum call stack size exceeded/.test(reverted.crashText ?? ""), JSON.stringify(reverted));
     revDepth.cleanup();
+  }
+}
+
+// ═══ 9) 调用点的 `do` 生效：下沉到子步骤的 `task`（DO/CHECK 的「## 任务」）════════════
+// 语义：调用点的 `do` = 「这段子工作流要做什么」= 子工作流的任务；不写就继承父级任务（向后兼容）。
+// 嵌套按**最内层优先、外层继承**组合（与 `adversarial_check.model` 的继承形态一致）。
+console.log("\n9) 调用点 `do` 下沉：任务来自调用点；不写继承父级；嵌套最内层优先");
+{
+  /** 从 DO/CHECK 提示词里取「## 任务」段的内容（标题的下一行） */
+  const taskSection = (text) => {
+    const lines = String(text ?? "").split("\n");
+    const at = lines.indexOf("## 任务");
+    return at >= 0 ? (lines[at + 1] ?? "").trim() : undefined;
+  };
+  /**
+   * 判据（正/负对照复用同一条）：调用点 `do` 是否真的下沉成子步骤的 `task`、并进提示词。
+   * 只收「下沉」这一件事的事实 —— 「不写 do 时回落父级任务」是改造前就有的行为，放进这里
+   * 会让负对照失去鉴别力（还原构建里它照样为真）。
+   */
+  const taskCriteria = (engine, sid) => {
+    const wfFile = (name, lines) => {
+      fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
+      return engine.loadWorkflow(name);
+    };
+    const req = (id, extra = []) => [
+      `  - id: ${id}`, "    desc: 步骤 " + id, "    input: 上游产出", "    output: 本步产出",
+      `    on_fail: ${id}`, "    max_fail_count: 3", ...extra,
+    ];
+    // 一份子工作流 + 两个调用点各写不同的 `do`
+    wfFile("t-shared", ["steps:",
+      ...req("s1", ["    do: 做 S1", "    check: 查 S1", "    on_pass: s2"]),
+      ...req("s2", ["    do: 做 S2", "    check: 查 S2", "    on_pass: done"])]);
+    const twocallers = wfFile("t-twocallers", ["steps:",
+      ...req("alpha", ["    do: 任务甲", "    on_pass: beta", "    workflow: t-shared"]),
+      ...req("beta", ["    do: 任务乙", "    on_pass: done", "    workflow: t-shared"])]);
+    const byId = (id) => stepsOf(twocallers).find((s) => s.id === id);
+    // 嵌套：外层写了 `do`，内层调用点①不写（继承外层）、②写了自己的（覆盖外层）
+    wfFile("t-leaf", ["steps:", ...req("leaf", ["    do: 做 L", "    check: 查 L", "    on_pass: done"])]);
+    wfFile("t-mid", ["steps:", ...req("midcall", ["    on_pass: done", "    workflow: t-leaf"])]);
+    wfFile("t-mid2", ["steps:", ...req("midcall2", ["    do: 内层任务", "    on_pass: done", "    workflow: t-leaf"])]);
+    const outer = wfFile("t-outer", ["steps:", ...req("outcall", ["    do: 外层任务", "    on_pass: done", "    workflow: t-mid"])]);
+    const outer2 = wfFile("t-outer2", ["steps:", ...req("outcall2", ["    do: 外层任务", "    on_pass: done", "    workflow: t-mid2"])]);
+    const taskIn = (wf, id) => stepsOf(wf).find((s) => s.id === id)?.task;
+    // 提示词面：start 的返回文本就是首步 DO，「## 任务」必须取自调用点的 `do`
+    const first = engine.start("t-twocallers", "父级任务描述", sid);
+    return {
+      sunkAlpha: byId("alpha/s1")?.task === "任务甲" && byId("alpha/s2")?.task === "任务甲",
+      sunkBeta: byId("beta/s1")?.task === "任务乙" && byId("beta/s2")?.task === "任务乙",
+      noBleed: byId("alpha/s1")?.task === "任务甲" && byId("beta/s1")?.task === "任务乙",
+      nestedInherit: taskIn(outer, "outcall/midcall/leaf") === "外层任务",
+      nestedOverride: taskIn(outer2, "outcall2/midcall2/leaf") === "内层任务",
+      promptAlpha: taskSection(first.text) === "任务甲",
+    };
+  };
+
+  const D = mkEngine("call-do");
+  const crit = taskCriteria(D.engine, S());
+  check("两个调用点以不同 `do` 调用同一子工作流 → 各自展开的子步骤各拿自己的 `do`",
+    crit.sunkAlpha && crit.sunkBeta && crit.noBleed, JSON.stringify(crit));
+  check("首步 DO 提示词的「## 任务」= 调用点的 `do`（不是父级任务描述）",
+    crit.promptAlpha, JSON.stringify(crit));
+  check("嵌套：内层调用点没写 `do` → 继承外层（最外层下沉下来的任务）",
+    crit.nestedInherit, JSON.stringify(crit));
+  check("嵌套：内层调用点写了 `do` → **最内层优先**，覆盖外层",
+    crit.nestedOverride, JSON.stringify(crit));
+
+  // 调用点不写 `do`：子步骤的 `task` 不填，提示词回落父级任务（向后兼容，与改造前逐字一致）
+  const noDo = D.wf("t-nodo", ["steps:",
+    "  - id: only", "    desc: 步骤 only", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: only", "    max_fail_count: 3", "    workflow: t-shared"]);
+  check("调用点不写 `do` → 子步骤不带 `task`（定义里看不出差别）",
+    stepsOf(noDo).every((s) => s.task === undefined), JSON.stringify(stepsOf(noDo).map((s) => [s.id, s.task])));
+  const nd = D.start("t-nodo", "父级任务描述", S());
+  check("调用点不写 `do` → 子步骤 DO 的「## 任务」仍是父级任务（向后兼容）",
+    taskSection(nd.r.text) === "父级任务描述", taskSection(nd.r.text));
+
+  // DO 与 CHECK 的「## 任务」同源：执行者与验证者对着**同一个**任务干活
+  const E = mkEngine("call-do-e2e");
+  E.wf("e-shared", ["steps:",
+    ...["s1", "s2"].map((id) => [`  - id: ${id}`, `    desc: 子步 ${id}`, "    input: 上游产出", "    output: 本步产出",
+      `    do: 做 ${id}`, `    check: 查 ${id}`, id === "s1" ? "    on_pass: s2" : "    on_pass: done", "    on_fail: s1", "    max_fail_count: 3"]).flat()]);
+  E.wf("e-outer", ["steps:",
+    "  - id: alpha", "    desc: 甲", "    do: 任务甲", "    input: 上游产出", "    output: 本步产出", "    on_pass: beta", "    on_fail: alpha", "    max_fail_count: 3", "    workflow: e-shared",
+    "  - id: beta", "    desc: 乙", "    do: 任务乙", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: beta", "    max_fail_count: 3", "    workflow: e-shared"]);
+  const esid = S();
+  const est = E.start("e-outer", "父级任务描述", esid);
+  for (const v of [{ status: "passed", reason: "1" }, { status: "passed", reason: "2" }, { status: "passed", reason: "3" }, { status: "passed", reason: "4" }]) {
+    E.scripted.push(v);
+    E.engine.onSubmit(esid, `交卷 ${E.engine.readState(E.newestId())?.current_step}`);
+    await sleep();
+  }
+  // 首步 DO 是 start 的返回值（不经 deliver 端口），后续步骤才进 deliveries —— 两边都要找
+  const promptOf = (stepId) => [est.r.text, ...E.deliveries].find((t) => t.includes(`**${stepId}**`));
+  check("DO 提示词：alpha 段「## 任务」= 任务甲、beta 段「## 任务」= 任务乙",
+    taskSection(promptOf("alpha/s1")) === "任务甲" && taskSection(promptOf("beta/s1")) === "任务乙",
+    JSON.stringify({ a: taskSection(promptOf("alpha/s1")), b: taskSection(promptOf("beta/s1")) }));
+  check("CHECK 提示词与 DO 同源：验证者收到的任务也是调用点的 `do`",
+    E.verifyReqs.find((q) => q.step === "alpha/s1")?.task === "任务甲"
+    && E.verifyReqs.find((q) => q.step === "beta/s1")?.task === "任务乙",
+    JSON.stringify(E.verifyReqs.map((q) => [q.step, q.task])));
+
+  // 类型口径：调用点 `do` 给了但不是字符串 = 硬错误（静默当成「继承父级」会让作者以为传下去了）
+  const badDo = D.wf("t-baddo", ["steps:",
+    "  - id: call", "    desc: 步骤 call", "    do: 123", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: call", "    max_fail_count: 3", "    workflow: t-shared"]);
+  check("调用点 `do` 非字符串 → 加载期硬错误（不是静默忽略）",
+    !badDo.def && badDo.problems.some((p) => p.includes("`do`") && p.includes("必须是字符串")), JSON.stringify(badDo.problems));
+  // `do:` 只写键名（null）= 没写 → 继承父级任务（与 `reset` 的「只写键名 = 没写」同一口径）
+  const nullDo = D.wf("t-nulldo", ["steps:",
+    "  - id: call", "    desc: 步骤 call", "    do:", "    input: 上游产出", "    output: 本步产出", "    on_pass: done", "    on_fail: call", "    max_fail_count: 3", "    workflow: t-shared"]);
+  check("调用点 `do:` 只写键名（空值）= 没写 → 可加载且子步骤不带 `task`",
+    !!nullDo.def && stepsOf(nullDo).every((s) => s.task === undefined), JSON.stringify({ p: nullDo.problems, t: stepsOf(nullDo).map((s) => s.task) }));
+
+  // 负对照：按锚点还原「不下沉」→ 同一批判据必须为假
+  if (!process.env.RF_SUBWF_CHILD) {
+    const revDo = buildPluginCopy({
+      "engine.ts": (src) => {
+        const anchor = "    if (callTask !== undefined && s.task === undefined) step.task = callTask;";
+        if (!src.includes(anchor)) throw new Error("负对照锚点（调用点 `do` 下沉到子步骤 `task`）不见了 —— 实现被改写，请同步更新本负对照");
+        return src.replace(anchor, "    if (false) step.task = callTask; // 负对照：还原为「调用点 do 不下沉」");
+      },
+    }, "subworkflow-call-do-off");
+    const revDoLib = await import(pathToFileURL(path.join(revDo.dir, "lib", "engine.js")).href);
+    const revDoEngine = revDoLib.createEngine(revDo.dir + "-ws", {
+      deliver: () => true,
+      verify: async () => { throw new Error("负对照不该走到验证"); },
+      log: () => {},
+    });
+    revDoEngine.ensureLayout();
+    const revCrit = taskCriteria(revDoEngine, `rev-do-${Date.now()}`);
+    check("负对照：还原「不下沉」的构建里同一批判据全部为假（do 不再进「## 任务」）",
+      !revCrit.sunkAlpha && !revCrit.sunkBeta && !revCrit.noBleed && !revCrit.nestedInherit
+      && !revCrit.nestedOverride && !revCrit.promptAlpha, JSON.stringify(revCrit));
+    revDo.cleanup();
   }
 }
 

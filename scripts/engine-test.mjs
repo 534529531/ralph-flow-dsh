@@ -1161,11 +1161,15 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     check(`18) 调用点缺 \`${field}\` → 加载期硬错误（报错主语是「调用点」）`,
       !r.def && r.problems.some((p) => p.includes("调用点") && p.includes(`\`${field}\``)), JSON.stringify(r.problems));
   }
-  // 调用点上不再被接受的键照旧告警指路（不是硬错误）
-  const warnCall = wf("req-call-warn", [...callLines(), "    do: 不该生效", "    check: 不该生效", "    inputs:", "      task: x"]);
-  check("18) 调用点上 `do`/`check`/`inputs` 仍逐键告警指路（不硬错误）",
-    !!warnCall.def && ["do", "check", "inputs"].every((k) => warnCall.warnings.some((w) => w.includes(`\`${k}\``) && w.includes("不生效"))),
+  // 调用点上不再被接受的键照旧告警指路（不是硬错误）；`do` 自本次起**生效**（不再是「不生效」键）
+  const warnCall = wf("req-call-warn", [...callLines(), "    do: 这段子工作流的任务", "    check: 不该生效", "    inputs:", "      task: x"]);
+  check("18) 调用点上 `check`/`inputs` 仍逐键告警指路（不硬错误）",
+    !!warnCall.def && ["check", "inputs"].every((k) => warnCall.warnings.some((w) => w.startsWith(`调用点 \`call\` 的 \`${k}\` 不生效：`))),
     JSON.stringify(warnCall.warnings));
+  check("18) 调用点的 `do` 已生效：不再告警，且下沉为子步骤的 `task`（「## 任务」的取值）",
+    !warnCall.warnings.some((w) => w.startsWith("调用点 `call` 的 `do` 不生效："))
+    && warnCall.def?.steps?.[0]?.task === "这段子工作流的任务",
+    JSON.stringify({ w: warnCall.warnings, t: warnCall.def?.steps?.map((s) => [s.id, s.task]) }));
   // 悬空连线（含调用点的）仍是硬错误
   const dangling = wf("req-dangling", callLines().map((l) => (l.includes("on_pass: done") ? "    on_pass: nope" : l)));
   check("18) 调用点的悬空 on_pass 仍是硬错误", !dangling.def && dangling.problems.some((p) => p.includes("nope")), JSON.stringify(dangling.problems));

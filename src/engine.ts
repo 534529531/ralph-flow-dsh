@@ -222,6 +222,23 @@ export interface StepDef {
   desc?: string;
   do?: string;
   /**
+   * **本步生效的任务**（DO/CHECK 提示词「## 任务」段的内容）。
+   *
+   * 普通步骤不写它 → 提示词回落 `InstanceState.user_task`（发起会话的任务描述），行为与
+   * 改造前逐字一致。它只在**子工作流调用点带 `do`** 时被填上：调用点的 `do` 语义是
+   * 「这段子工作流要做什么」，**加载期静态展开**时下沉到该调用点展开出的每个子步骤
+   * （见 `prefixSubWorkflowSteps` / `loadWorkflow`）。嵌套按**最内层优先、外层继承**组合：
+   * 内层调用点写了 `do` 就覆盖外层，没写就继承外层下沉下来的值 —— 与 `adversarial_check.model`
+   * 的逐层继承形态一致。
+   *
+   * **定义期字段，不落状态**（宪法 §10.4）：它是工作流定义的属性，由 `loadWorkflow` 现算，
+   * `InstanceState` 里没有对应字段；`StepDef` 本身也只活在内存里（state 只记 `workflow_name`）。
+   *
+   * **内部字段**（作者不可写：`KNOWN_STEP_KEYS` 不含它，加载解析也不从 YAML 读它）——
+   * 与 {@link StepDef.reset_from_auto} 同一口径：载体是「调用点上的 `do`」，不是步骤上的 `task`。
+   */
+  task?: string;
+  /**
    * **子工作流调用点**：用 `workflow:` 代替 `do:`，整步委托给另一个工作流（对齐 opencode 的
    * 「子工作流步骤」）。本实现的落地方式是**加载期静态展开**（见 {@link MAX_EXPANDED_STEPS} 与
    * `loadWorkflow`）：调用点被就地替换成子工作流的步骤，每个子步骤 id 加 `调用点id/` 前缀，
@@ -229,13 +246,14 @@ export interface StepDef {
    *
    * 这是**加载期字段**：`loadWorkflow` 返回的 `steps` 里绝不会留下它（调用点已被展开掉）。
    *
-   * 调用点**接受并校验**的键 = `id` / `desc` / `input` / `output` / `workflow` / `on_pass` /
+   * 调用点**接受并校验**的键 = `id` / `desc` / `do` / `input` / `output` / `workflow` / `on_pass` /
    * `on_fail` / `max_fail_count` / `reset`（外加工作流级 `manual_step` 列表里的调用点 id =
    * 整段子工作流跑完后停门）。其中六个必填字段与普通步骤**同一条硬规则** ——
    * opencode/claude 的加载器把这六项排在 `workflow` 分支之前，调用点一个都少不了。
    * `reset: true` 在调用点上**生效**：进入子工作流 = 首个展开后子步骤的重置（下沉时打
-   * {@link StepDef.reset_from_call} 来源标记）。
-   * 其余键（`do`/`check`/`check_voting`/`check_model`/`inputs`/未识别键）一律**加载期告警并指路**。
+   * {@link StepDef.reset_from_call} 来源标记）。调用点上的 `do` 也**生效**：下沉到子步骤的
+   * {@link StepDef.task}（这段子工作流要做什么），不写就继承父级任务。
+   * 其余键（`check`/`check_voting`/`check_model`/`inputs`/未识别键）一律**加载期告警并指路**。
    */
   workflow?: string;
   check?: string;
@@ -416,6 +434,23 @@ export function stepWantsReset(
 }
 
 /**
+ * 本步**生效的任务**（DO 与 CHECK 提示词「## 任务」段的内容）—— 纯函数，只读 `StepDef` 与任务描述。
+ *
+ * 判据：{@link StepDef.task}（子工作流调用点的 `do` 在加载期下沉而来）优先；
+ * 没有（普通步骤、或调用点没写 `do`）就回落 `InstanceState.user_task`（发起会话的任务描述）。
+ *
+ * 为什么 DO 与 CHECK 必须用**同一个**函数：两边提示词的「## 任务」在改造前是同一句
+ * `user_task`，验证者据此核对产出。若只给 DO 换上调用点的 `do`、CHECK 仍拿父级任务，执行者
+ * 与验证者就会对着**两个不同的任务**干活 —— 那正是「资产不再表示它所说的话」。所以下沉出来的
+ * `task` 在**两个消费点**上一起生效，而不是只改 DO。
+ *
+ * **零新状态字段**（宪法 §10.4）：`task` 是工作流定义的属性，现算即可，不落 `InstanceState`。
+ */
+export function effectiveTaskOf(step: Pick<StepDef, "task">, userTask: string): string {
+  return step.task !== undefined && step.task !== "" ? step.task : userTask;
+}
+
+/**
  * 子工作流展开后的步骤 id 分隔符（`<调用点 id>/<子步骤 id>`，多层继续叠加）。
  *
  * 之所以是硬约束：调用点 id 与子工作流里的步骤 id **都不允许含**这个字符 —— 否则
@@ -480,6 +515,12 @@ export interface SubWorkflowLoadCtx {
   chain: string[];
   /** 调用链上生效的验证模型（`adversarial_check.model` 逐字段继承的父级值） */
   inheritedModel?: ModelRef;
+  /**
+   * 调用链上生效的**任务**（调用点 `do` 逐层继承的父级值）：外层调用点写了 `do`，内层调用点
+   * 没写时，子步骤的 {@link StepDef.task} 就继承它。形态与 {@link SubWorkflowLoadCtx.inheritedModel}
+   * 一致 —— **最内层优先、外层继承**。
+   */
+  inheritedTask?: string;
   /** 展开计数器（整条链共享一个对象，任一层的超限都会被立刻读到） */
   counter: { count: number };
 }
@@ -508,13 +549,19 @@ function composeDesc(callDesc: string | undefined, subDesc: string | undefined):
  *   · 调用点 `desc` → 每个子步骤 `desc` 的前缀（{@link composeDesc}）；
  *   · 子工作流 `auto_reset` → **每个**子步骤 `reset: true` + `reset_from_auto`；
  *   · 调用点 `reset: true` → **首个展开后子步骤** 的 `reset: true` + `reset_from_call`
- *     （进入子工作流 = 进入它的第一个步骤；来源标记记着调用点 id，措辞才说得出是谁标的）。
+ *     （进入子工作流 = 进入它的第一个步骤；来源标记记着调用点 id，措辞才说得出是谁标的）；
+ *   · 调用点 `do` → 每个子步骤的 {@link StepDef.task}（**最内层优先**：内层调用点已经下沉出
+ *     `task` 的子步骤不被覆盖，于是外层值只作继承、由更内层的那句说了算）。
+ *
+ * `callTask` 是**调用点这一层**生效的任务：调用点自己写了 `do` 就是它，没写就是外层继承下来的
+ * 值（`loadWorkflow` 的 `ctx.inheritedTask`）；两者都没有 = `undefined`（提示词回落父级任务）。
  */
 function prefixSubWorkflowSteps(
   sub: WorkflowDef,
   callId: string,
   callDesc: string | undefined,
   callReset: boolean,
+  callTask: string | undefined,
 ): StepDef[] {
   const pre = callId + SUBWORKFLOW_ID_SEP;
   return sub.steps.map((s, i) => {
@@ -530,6 +577,11 @@ function prefixSubWorkflowSteps(
       // 缺省 on_fail = 自身（展开后就是带前缀的那个 id，语义不变）
       on_fail: s.on_fail ? pre + s.on_fail : undefined,
     };
+    // 调用点的 `do` 下沉：这段子工作流「要做什么」= 提示词「## 任务」的内容。
+    // **最内层优先、外层继承**：`s.task` 已经有值 = 更内层的调用点已经下沉过了（那次展开
+    // 更具体），外层不许覆盖；没有值才填这一层的值。`undefined` = 这一层也没写 → 不填，
+    // 提示词回落 `InstanceState.user_task`（向后兼容：不写 `do` 照旧继承父级任务）。
+    if (callTask !== undefined && s.task === undefined) step.task = callTask;
     // 子工作流自己的 `auto_reset` 在加载期静态展开里会**丢宿主**（展开后只剩普通步骤，
     // 「子工作流」这个对象不存在了），所以在这里下沉成步骤级 `reset: true` —— 语义完全等价
     // （auto_reset = 给所有步骤标 reset）。不下沉的话子工作流里的 `auto_reset` 会静默失效。
@@ -582,23 +634,22 @@ function sinkVerificationModel(steps: StepDef[], model: ModelRef | undefined): v
  * 调用点上**不生效**的键：一律**加载期告警并指路**（不静默、不硬错误 —— 作者的本意多半是把
  * 配置写到错误的层级，指路比拒收有用）。
  *
- * 调用点**接受并校验**的键是 `id` / `desc` / `input` / `output` / `workflow` / `on_pass` /
+ * 调用点**接受并校验**的键是 `id` / `desc` / `do` / `input` / `output` / `workflow` / `on_pass` /
  * `on_fail` / `max_fail_count` / `reset`（前六个必填、`reset` 可选且**生效**：进入子工作流 =
- * 首个展开后子步骤的重置）。剩下这些键在调用点上没有归属，逐键说清「不生效 + 该写到哪儿」。
+ * 首个展开后子步骤的重置；`do` 可选且**生效**：这段子工作流要做什么，下沉到子步骤的 `task`）。
+ * 剩下这些键在调用点上没有归属，逐键说清「不生效 + 该写到哪儿」。
  */
 function callPointKeyWarning(callId: string, key: string, subName: string): string {
   const head = (what: string) => `调用点 \`${callId}\` 的 \`${key}\` 不生效：${what}`;
   switch (key) {
-    case "do":
-      return head(`调用点不做 DO —— 整步委托给子工作流 \`${subName}\`，子工作流的每个步骤自带 \`do\`。把这段指令写进子工作流内对应步骤的 \`do\`。`);
     case "check":
     case "check_voting":
     case "check_model":
       return head(`调用点没有 DO 阶段、不跑独立验证；验证配置属于具体步骤，请写到子工作流内需要验证的步骤上（子工作流的 \`adversarial_check.model\` 会自动下沉到它各步）。`);
     case "inputs":
-      return head(`本实现的子工作流不接收参数：任务描述原样传给子工作流的每个步骤（DO 提示词的「## 任务」就是它），要传信息请写进任务描述或子步骤的 \`do\`。`);
+      return head(`本实现的子工作流不接收参数：\`inputs\` 一律告警忽略。要在调用点上说明**这段子工作流要做什么**，请写调用点的 \`do\` —— 它在加载期静态展开时下沉到子工作流每个步骤的「## 任务」，不写就继承父级任务描述。`);
     default:
-      return head(`调用点只认 \`id\` / \`desc\` / \`input\` / \`output\` / \`workflow\` / \`on_pass\` / \`on_fail\` / \`max_fail_count\` / \`reset\`（外加工作流级 \`manual_step\` 列表里的调用点 id = 整段子工作流跑完后停门），其余键一律忽略。`);
+      return head(`调用点只认 \`id\` / \`desc\` / \`do\` / \`input\` / \`output\` / \`workflow\` / \`on_pass\` / \`on_fail\` / \`max_fail_count\` / \`reset\`（外加工作流级 \`manual_step\` 列表里的调用点 id = 整段子工作流跑完后停门），其余键一律忽略。`);
   }
 }
 
@@ -1390,9 +1441,11 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   /**
    * 调用点**接受**的键（其余走 {@link callPointKeyWarning} 逐键告警 + 指路）。
    * 前六个是必填（与普通步骤同一条硬规则，照抄 opencode/claude 的加载器顺序）；
-   * `reset` 可选且**在调用点上生效**（进入子工作流 = 首个展开后子步骤的重置）。
+   * `reset` 可选且**在调用点上生效**（进入子工作流 = 首个展开后子步骤的重置）；
+   * `do` 可选且**在调用点上生效**（这段子工作流要做什么 → 下沉到子步骤的 `task`，
+   * 不写就继承父级任务 —— 与 `reset` 一样是「零新概念：同一个键、同一个意思，只是层级不同」）。
    */
-  const CALL_POINT_KEYS = new Set(["id", "desc", "input", "output", "workflow", "on_pass", "on_fail", "max_fail_count", "reset"]);
+  const CALL_POINT_KEYS = new Set(["id", "desc", "do", "input", "output", "workflow", "on_pass", "on_fail", "max_fail_count", "reset"]);
   const KNOWN_WF_KEYS = new Set(["description", "manual_step", "adversarial_check", "auto_reset", "steps"]);
 
   function knownWorkflowDirs(): string[] {
@@ -1595,7 +1648,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       if (isCall) {
         const subName = typeof s.workflow === "string" ? s.workflow.trim() : "";
         if (subName === "") {
-          problems.push(`步骤 \`${s.id}\` 写了 \`workflow\` 但没有给出要调用的工作流名（必须是非空字符串，例如 \`workflow: analyze\`）。调用点用 \`workflow:\` 代替 \`do:\`。`);
+          problems.push(`步骤 \`${s.id}\` 写了 \`workflow\` 但没有给出要调用的工作流名（必须是非空字符串，例如 \`workflow: analyze\`）。调用点以 \`workflow:\` 声明委托（此时 \`do\` 可省略；写了就是这段子工作流的任务）。`);
         } else if (/[\\/]/.test(subName)) {
           problems.push(`步骤 \`${s.id}\` 的 \`workflow: ${subName}\` 含路径分隔符：\`workflow\` 只能是工作流**名**（对应 \`${workflowsDir}/<名字>.yaml\`、全局目录或内置同名文件），不能是路径。`);
         }
@@ -1607,6 +1660,13 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         // （加载期下沉 + 打 `reset_from_call` 来源标记，见 prefixSubWorkflowSteps）。
         if (s.reset !== undefined && s.reset !== null && typeof s.reset !== "boolean") {
           problems.push(`调用点 \`${s.id}\` 的 \`reset\` 必须是布尔值（当前是 ${describeValueKind(s.reset)}）：\`reset: true\` 表示**进入这个子工作流时**（即首个展开后子步骤）重置上下文。写成字符串（如 "true"）不会被当成真值，请改成布尔。`);
+        }
+        // 调用点上的 `do`（可选）：语义 = 「这段子工作流要做什么」，即子工作流的任务。
+        // 与步骤级 `do`（必填）不同，这里**可省略** —— 不写就照旧继承父级任务（向后兼容）。
+        // 类型口径与 `reset` 一致：`undefined`/`null`（只写了键名）= 没写；其它非字符串 = 硬错误
+        // （`do: 123` 几乎一定是笔误，静默当成「没写、继承父级任务」会让作者以为传下去了）。
+        if (s.do !== undefined && s.do !== null && typeof s.do !== "string") {
+          problems.push(`调用点 \`${s.id}\` 的 \`do\` 必须是字符串（当前是 ${describeValueKind(s.do)}）：这里写的是「这段子工作流要做什么」，会下沉到子工作流每个步骤的「## 任务」。不写就继承父级任务描述；写成非字符串不会被当成任务，请改成字符串。`);
         }
         // 其余键一律**告警且指路**：不生效、不静默、也不硬错误（作者多半只是写错了层级）。
         for (const k of Object.keys(s)) {
@@ -1626,6 +1686,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
             max_fail_count: typeof s.max_fail_count === "number" ? s.max_fail_count : undefined,
             // 调用点的 reset 由展开器消费（下沉到首个展开后子步骤）
             reset: typeof s.reset === "boolean" ? s.reset : undefined,
+            // 调用点的 do 同样由展开器消费（下沉到子步骤的 task）；空串/纯空白 = 没写
+            do: typeof s.do === "string" && s.do.trim() !== "" ? s.do.trim() : undefined,
           },
         });
         return;
@@ -1715,8 +1777,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     //   · 它用「运行时嵌套深度 5」兜住失控递归 —— 这里用**展开步骤总数上限**兜住
     //     （{@link MAX_EXPANDED_STEPS}，展开过程中计数，超了立刻中止）。
     // 另两条：子步骤耗尽 max_fail_count → 暂停等人（applyRoundOutcome 的既有行为，这里不接线到父级
-    // on_fail）；调用点接受 `id`/`desc`/`input`/`output`/`workflow`/`on_pass`/`on_fail`/`max_fail_count`/
-    // `reset`（前六个必填、`reset` 生效：下沉到首个展开后子步骤），manual_step 标调用点 = 整段跑完停门。
+    // on_fail）；调用点接受 `id`/`desc`/`do`/`input`/`output`/`workflow`/`on_pass`/`on_fail`/`max_fail_count`/
+    // `reset`（前六个必填、`reset` 与 `do` 生效：前者下沉到首个展开后子步骤、后者下沉到子步骤的 `task`），
+    // manual_step 标调用点 = 整段跑完停门。
     const steps: StepDef[] = [];
     /** 原始调用点 id → 展开后的入口步骤 id（指向调用点的 on_pass/on_fail 接到入口） */
     const callEntry = new Map<string, string>();
@@ -1733,13 +1796,19 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       }
       const call = e.step;
       const subName = call.workflow!; // 上面已硬校验非空（有 problems 时走不到这里）
+      // 这一层生效的任务：调用点自己写了 `do` 就是它（**最内层优先**），没写就继承外层调用点
+      // 下沉下来的值（`ctx.inheritedTask`）。两者都没有 = undefined → 子步骤的 `task` 不填，
+      // 提示词回落 `InstanceState.user_task`（向后兼容：不写 `do` 照旧继承父级任务）。
+      const callTask = call.do !== undefined && call.do !== "" ? call.do : ctx?.inheritedTask;
       // 成环（含自调用）：加载期硬错误，并给出环上的完整路径
       const at = chain.indexOf(subName);
       if (at >= 0) {
         problems.push(`${CYCLE_TAG}（加载期硬错误）：${[...chain.slice(at), subName].join(" → ")}。环上的调用点会被无限展开，请打破环。`);
         break;
       }
-      const sub = loadWorkflow(subName, { chain, inheritedModel: effectiveModel, counter });
+      // `inheritedTask: callTask` 让子工作流**内部的**调用点在没写 `do` 时继承这一层的任务
+      // （这样两层都只写了外层 `do` 时，内层展开出的子步骤仍拿到外层的任务）。
+      const sub = loadWorkflow(subName, { chain, inheritedModel: effectiveModel, inheritedTask: callTask, counter });
       if (sub.problems.some((p) => p.includes(CAP_TAG))) { capHit = true; break; }
       // 成环 / 嵌套过深的路径由检测到的那一层给出（已含完整调用链）——直接透传，
       // 不再套一层「无法加载」（否则每往上一层都套一遍，最终变成一坨嵌套报错）
@@ -1758,7 +1827,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       }
       // 子工作流自己的告警一并带上来（医生也会在子工作流名下报一遍；这里保证父级上下文里不静默）
       for (const w of sub.warnings) warnings.push(`子工作流 \`${subName}\`：${w}`);
-      const expanded = prefixSubWorkflowSteps(sub.def, call.id, call.desc, call.reset === true);
+      const expanded = prefixSubWorkflowSteps(sub.def, call.id, call.desc, call.reset === true, callTask);
       callEntry.set(call.id, expanded[0]!.id); // sub.def.steps 非空（空 steps 在加载期已硬错误）
       const start = steps.length;
       steps.push(...expanded);
@@ -2134,6 +2203,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    *
    * §1.7：每个 DO 提示词**各注入一行**「产出目录」（工作区相对路径）。
    * 由此 `do`/`output` 里写裸文件名即落到该目录，跨任务不再串味；内置 loop/spec 不用改。
+   *
+   * 「## 任务」= {@link effectiveTaskOf}：子工作流调用点写了 `do` 时，这里给的是**那段子工作流
+   * 要做什么**（加载期下沉到 `step.task`）；否则仍是发起会话的任务描述（向后兼容）。
    */
   function doPrompt(instId: string, wf: WorkflowDef, state: InstanceState, step: StepDef, rework?: string): string {
     const idx = wf.steps.findIndex((s) => s.id === step.id) + 1;
@@ -2146,7 +2218,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       `[ralphflow] 工作流 \`${wf.name}\` · 步骤 ${idx}/${wf.steps.length}：**${step.id}**${step.desc ? ` — ${step.desc}` : ""}`,
       "",
       `## 任务`,
-      state.user_task,
+      effectiveTaskOf(step, state.user_task),
       "",
       `## 本步要做什么`,
       (step.do || step.desc || step.id).trim(),
@@ -2287,7 +2359,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     let verdict: Verdict;
     try {
       verdict = await ports.verify({
-        instId, step, workflow: wf, userTask: state.user_task,
+        instId, step, workflow: wf, userTask: effectiveTaskOf(step, state.user_task),
         ownerSession: state.owner_session, checkIndex, artifactsRelDir: artifactsRelDirOf(instId),
         // 验证模型优先级链（对齐 opencode resolveVerifierModel）：
         //   步骤 check_model  >  全局 adversarial_check.model  >  发起会话当前模型
@@ -2381,7 +2453,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     let verdict: Verdict;
     try {
       verdict = await ports.verify({
-        instId, step, workflow: wf, userTask: state.user_task,
+        instId, step, workflow: wf, userTask: effectiveTaskOf(step, state.user_task),
         ownerSession: state.owner_session, checkIndex: index,
         // 该票的专属检查依据 + 序号：verify.ts 据此生成「你是 N 个之一」的投票提示词。
         voter: { index: index + 1, count, check: entry.check },
