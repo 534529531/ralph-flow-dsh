@@ -15,23 +15,23 @@ steps:
     - id: explore
       desc: 需求探索
       do: |
-        深入理解用户需求，探索项目现状，给出清晰的方向建议。
+        摸清需求与项目现状，产出一份能直接拍板的 proposal.md。
 
-        1. 审视涉及的文件/模块，了解现状
-        2. 评估可行方案，给出推荐方向
-        3. 输出 `proposal.md`（产物目录下）：
+        1. 审视涉及的文件/模块，写清现状
+        2. 评估可行方案并给出推荐方向（并列方案说明取舍）
+        3. 输出 `proposal.md`（产物目录下），只写四节：
            - **为什么做**（问题/动机）
            - **做什么**（变更概述、范围、影响）
            - **怎么做**（技术方向；复杂需求可另写 `design.md`）
            - **验收标准**（可验证的完成条件）
-        4. **不要**写长篇规格文档——proposal 控制在 1-2 页
+        4. 全文控制在 1-2 页：规格细节留到 propose 或确实需要时再展开
       input: 用户提供的任务描述
       output: proposal.md（+ 可选 design.md）
       check: |
-        检查 proposal.md：
-        1. 变更动机明确，范围清晰
-        2. 验收标准具体、可验证
-        3. 技术方向合理，无过度设计
+        打开 proposal.md 逐条核对：
+        1. 动机与范围明确：能说出要改哪些文件/模块
+        2. 每条验收标准都能由一个命令或一次检查判定真假
+        3. 技术方向与需求规模相称
       on_pass: propose
       on_fail: explore
       max_fail_count: 3
@@ -41,24 +41,19 @@ steps:
       desc: 提案与任务拆解
       # reset: true   # ← opencode 在此换入干净上下文；本版本未支持重置门，reset 门落地后启用
       do: |
-        基于探索阶段的 proposal.md，最终定稿并拆解可执行任务。
+        把 proposal.md 定稿，并拆成可逐项执行、逐项验证的 tasks.md。
 
-        1. 读取 explore 阶段产出的 proposal.md（和 design.md，如果存在）
+        1. 读 explore 阶段产出的 proposal.md（有 design.md 一并读）
         2. 按用户反馈最终定稿 proposal.md
-        3. 输出 `tasks.md`：
-           - 按依赖顺序排列的任务清单
-           - 使用 `- [ ]` 标记，每项足够小（≤ 50 行代码变动）
-           - 任务描述明确产出物
-        4. 如果探索阶段没有 design.md 且需求确实复杂：
-           先输出 design.md（架构、模块划分、接口设计），再拆 tasks.md
+        3. 输出 `tasks.md`：按依赖顺序排列的 `- [ ]` 清单，每项 ≤ 50 行代码变动，且写明产出物
+        4. 需求确实复杂而还没有 design.md 时：先补 `design.md`（架构、模块划分、接口设计），再拆 tasks.md
       input: proposal.md（来自 explore 产物目录）+ 用户意向
       output: 最终 proposal.md + tasks.md（+ 可选 design.md）
       check: |
-        检查 tasks.md：
-        1. 覆盖 proposal 中所有验收标准
-        2. 任务颗粒度合理（≤ 50 行/任务），每项可独立验证
-        3. 任务顺序正确（前置依赖 → 后置实现）
-        4. 无遗漏关键步骤
+        打开 tasks.md 与 proposal.md 交叉核对：
+        1. proposal 的每条验收标准都有任务承接（逐条点名）
+        2. 每项 ≤ 50 行代码变动、写明产出物，且单独一项就能判定完成
+        3. 顺序满足前置依赖（前置在前、后置在后）
       on_pass: implement
       on_fail: propose
       max_fail_count: 3
@@ -68,28 +63,27 @@ steps:
       desc: 逐任务实现
       # reset: true   # ← opencode 在此换入干净上下文；本版本未支持重置门，reset 门落地后启用
       do: |
-        按 tasks.md 逐任务实现。核心循环：
+        按 tasks.md 逐任务实现，每完成一项就勾掉一项。
 
         for each task in tasks.md:
-          1. 理解该任务的目标和产出物
+          1. 读该任务的目标与产出物
           2. 实现——遵循项目代码风格
-          3. 自验——运行 lint/typecheck/test 等验证命令
-          4. 通过后在 tasks.md 中将 `- [ ]` 改为 `- [x]`
-          5. 取下一个任务
+          3. 自验——跑 lint/typecheck/test
+          4. 通过后把 tasks.md 里该行的 `- [ ]` 改成 `- [x]`
 
         实现过程中：
-        - 如发现设计遗漏，直接改设计文档
-        - 每任务独立提交改动，不攒到一块
-        - 不在这一步写新的文档，只写代码
-        完成后 tasks.md 应全部 `- [x]`。
+        - 发现设计遗漏就直接改设计文档
+        - 每任务单独一个提交
+        - 这一步只改代码：新文档留给 propose 与 archive
+        全部完成时 tasks.md 的每一项都是 `- [x]`。
       input: "tasks.md（+ 可选 design.md）"
       output: 实现的代码文件 + 全部勾选的 tasks.md
       check: |
-        严格审查：
-        1. tasks.md 所有 `- [ ]` → `- [x]`
-        2. 项目的测试命令全绿
-        3. lint/typecheck 无错误
-        4. 无 TODO/FIXME/debugger/console.log 残留
+        打开 tasks.md 与仓库逐条取证：
+        1. 每一项都是 `- [x]`（出现 `- [ ]` 即不通过）
+        2. 真跑项目的测试命令，输出全绿
+        3. 真跑 lint/typecheck，零错误
+        4. 在改动过的源码里搜不到 TODO / FIXME / debugger / console.log
       on_pass: archive
       on_fail: implement
       max_fail_count: 5
@@ -98,15 +92,15 @@ steps:
     - id: archive
       desc: 归档总结
       do: |
-        1. 确认：tasks.md 全部打勾 + 测试全绿
-        2. 输出 `summary.md`（一句话总结 + 变更了多少文件）
-        3. 不需要单独验证步骤——验证在 implement 的逐任务循环里已完成
+        1. 确认 tasks.md 全部打勾、项目测试全绿
+        2. 输出 `summary.md`：一句话总结 + 变更了多少文件 + 遗留问题
       input: 全部产出 + 实现代码
       output: "summary.md"
       check: |
-        1. summary.md 存在且内容完整
-        2. tasks.md 全部打勾
-        3. 项目测试全绿
+        打开 summary.md 与 tasks.md 核对：
+        1. summary.md 存在，含一句话总结、变更文件数与遗留问题（没有遗留就写「无」）
+        2. tasks.md 每一项都是 `- [x]`
+        3. 真跑项目的测试命令，输出全绿
       on_pass: done
       on_fail: implement
       max_fail_count: 3

@@ -2,7 +2,7 @@
 
 > **npm:** [`ralphflow-dsh`](https://www.npmjs.com/package/ralphflow-dsh) · **源码:** [github.com/534529531/ralph-flow-dsh](https://github.com/534529531/ralph-flow-dsh)
 
-**执行者/验证者模式的具象化**：主会话执行任务，**有 `check` 的步骤**由独立验证者（全新会话，不可见主会话自辩）取证判定，失败自动返工（**没有 `check` 的步骤跳过对抗性验证**，见下文）；**是否推进只由机械程序决定**（裁判权定理，见 [docs/v2/design.md](docs/v2/design.md)）。这是 v2 原生重做版（旧版在 `archive/v1` 分支）。
+**执行者/验证者模式的具象化**：主会话执行任务，**有检查依据的步骤**（写了 `check` 或 `check_voting`）由独立验证者（全新会话，不可见主会话自辩）取证判定，失败自动返工；**没有检查依据的步骤跳过对抗性验证**（见下文）；**是否推进只由机械程序决定**（裁判权定理，见 [docs/v2/design.md](docs/v2/design.md)）。这是 v2 原生重做版（旧版在 `archive/v1` 分支）。
 
 ## 安装
 
@@ -22,7 +22,7 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 
 | 命令 | 工具 | 用途 |
 |---|---|---|
-| `/ralphflow-start` | `ralphflow_start` | 启动工作流（模型执行 → 有 `check` 的步骤独立验证 → 失败自动返工） |
+| `/ralphflow-start` | `ralphflow_start` | 启动工作流（模型执行 → 有检查依据的步骤独立验证 → 失败自动返工） |
 | `/ralphflow-continue` | `ralphflow_continue` | 放行审查门 / 解除暂停 / 接管实例 |
 | `/ralphflow-status` | `ralphflow_status` | 查看实例状态与判定 |
 | `/ralphflow-list` | `ralphflow_list` | 列出实例与工作流（表格） |
@@ -33,13 +33,13 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
 
 `reset / rewind` 已声明未实现（涉及上下文管理，暂缓）；其余命令与 opencode 版功能看齐。命令语义 = **触发词**：`/ralphflow-*` **一律**由模型自然语言回复（含用法错误与未实现命令），**零程序化卡片返回**，行为与 claude code/opencode 完全一致。
 
-内置工作流：`loop`（单步对抗验证循环，核对配方 = **4 票 `check_voting`**，前三条逐字照抄 opencode 版、第 4 条是本仓库的「既有行为没有被破坏」）、`spec`（探索→提案→逐任务实现→归档，propose 步带审查门）。自定义工作流按同一方言放到 `<workspace>/.dsh/ralph-flow/workflows/`。
+内置工作流：`loop`（单步对抗验证循环，核对配方 = **4 票 `check_voting`**，前三条逐字照抄 opencode 版、第 4 条是本仓库的「修改不影响原有功能，不破坏需求以外的边界」）、`spec`（探索→提案→逐任务实现→归档，propose 步带审查门）。自定义工作流按同一方言放到 `<workspace>/.dsh/ralph-flow/workflows/`。
 
-**`check` 决定本步是否被独立验证（与 opencode 一致）**：写了 `check` → 交卷后由独立验证者取证判定；**不写 `check` → 该步跳过对抗性验证**，DO 完成直接进入下一步（**工作流级** `manual_step` 列表里的这类步骤则是**纯人工审查**：停在审查门等你 `/ralphflow-continue` 放行）。跳过时通知、轨迹与归档报告一律写「跳过对抗性验证」——绝不会写成「检查通过」。不在 `manual_step` 列表里的无 `check` 步骤会在加载期与 `/ralphflow-doctor` 告警（提醒它不会被独立验证）；`check` 写了但非字符串（如 `check: true`）仍是加载期硬错误（本意是免验证请直接删掉该键）。内置 `loop`/`spec` 的每一步都有对抗性检查（`loop` 用 4 票 `check_voting`，`spec` 四步各一条 `check`），行为不受影响。
+**检查依据决定本步是否被独立验证（与 opencode 一致）**：写了 `check` 或 `check_voting` → 交卷后由独立验证者取证判定；**两者都不写 → 该步跳过对抗性验证**，DO 完成直接进入下一步（**工作流级** `manual_step` 列表里的这类步骤则是**纯人工审查**：停在审查门等你 `/ralphflow-continue` 放行）。跳过时通知、轨迹与归档报告一律写「跳过对抗性验证」——绝不会写成「检查通过」。不在 `manual_step` 列表里、又没有检查依据的步骤会在加载期与 `/ralphflow-doctor` 告警（提醒它不会被独立验证）；`check` 写了但非字符串（如 `check: true`）仍是加载期硬错误（本意是免验证请直接删掉该键）。内置 `loop`/`spec` 的每一步都有对抗性检查（`loop` 用 4 票 `check_voting`，`spec` 四步各一条 `check`），行为不受影响。
 
 **人工审查门只有一种写法：工作流级（顶层，与 `steps` 同级）的 `manual_step:` 列表**（列表写法，也接受逗号字符串 `"design,review"`；引用不存在的步骤 = 加载期硬错误）。**步骤级 `manual_step` 键已删除**：写进步骤里（不论 `true`/`false`/空值）都是**加载期硬错误**，报错文案会给出正确写法（把该步 id 列进顶层列表）。理由：opencode/pi 只认这个顶层列表，步骤级写法在那边只是「不认识的步骤键」——被警告忽略后**人工审查门静默消失**；静默跳过审查门比报错严重得多，所以这里 fail-fast。
 
-**多验证者投票（`check_voting`，行为对齐 opencode 2.8.0）**：把 `check` 换成 1–5 个验证者，各自**并行**只查自己那条检查依据（可各配 `model`），**全过才放行**；任一票不通过 → 整体失败，聚合所有失败票的理由（含各票检查依据原文）反馈 DO 返工。每票完成即时推送一行进度，`/ralphflow-status` 可看每票状态。基础设施故障（票没跑成）**自动重试一次**且不计失败次数，只重跑故障票（已通过的保留）；重试仍故障才暂停，`/ralphflow-continue` 只补跑未通过的票。与 `check` **互斥**（同写 = 加载期硬错误），与 `check` 都不写 = 跳过对抗性验证。
+**多验证者投票（`check_voting`，行为对齐 opencode 2.8.0）**：把 `check` 换成 1–5 个验证者，各自**并行**只查自己那条检查依据（可各配 `model`），**全过才放行**；任一票不通过 → 整体失败，聚合所有失败票的理由（含各票检查依据原文）反馈 DO 返工。每票完成即时推送一行进度，`/ralphflow-status` 可看每票状态。基础设施故障（票没跑成）**自动重试一次**且不计失败次数，只重跑故障票（已通过的保留）；重试仍故障才暂停，`/ralphflow-continue` 只补跑未通过的票。与 `check` **互斥**（同写 = 加载期硬错误）；`check` 与 `check_voting` 都不写 = 跳过对抗性验证。
 
 ```yaml
 steps:
@@ -66,7 +66,7 @@ steps:
 steps:
   - id: analyze
     desc: 需求分析
-    workflow: analyze      # 调用 workflows/analyze.yaml
+    workflow: analyze      # 调用自定义的 workflows/analyze.yaml
     on_pass: build         # 整段子工作流跑完后去哪（缺省 = 顺序下一步）
   - id: build
     desc: 实现

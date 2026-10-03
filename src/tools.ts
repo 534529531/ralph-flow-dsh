@@ -2,7 +2,7 @@
  * Ralph Flow for dsh v2 — 工具 + 命令（命名与 opencode/claude 版一致）
  *
  * 命令语义 = 触发词：/ralphflow-* 注入指令给模型，由模型调用同名工具并自然回复。
- * 已实现：start / list / status / continue / cancel / create / doctor + 工作流快捷命令（/loop /spec …）；
+ * 已实现：start / list / status / continue / cancel / create / doctor + 工作流快捷命令（/ralphflow-<工作流名>）；
  * reset / rewind 只声明（涉及上下文管理，暂缓）。
  */
 import type { Context } from "@deepseek-ai/cordis";
@@ -12,7 +12,7 @@ import type { Engine } from "./engine.js";
 import { CREATE_GUIDE } from "./create.js";
 
 /**
- * 工作流机制说明（/ralphflow-start 与 /loop、/spec 等快捷命令共享，opencode 版 SHARED_MECHANISM 的 v0 裁剪版）。
+ * 工作流机制说明（/ralphflow-start 与 /ralphflow-loop、/ralphflow-spec 等快捷命令共享，opencode 版 SHARED_MECHANISM 的 v0 裁剪版）。
  * 让模型知道：两阶段协议、自动验证、手动审查的放行语义、暂停恢复、以及**阶段播报**（AI 交互友好的来源）。
  */
 const SHARED_MECHANISM = `## 工作流机制（每次启动都会生效）
@@ -25,8 +25,8 @@ const SHARED_MECHANISM = `## 工作流机制（每次启动都会生效）
 - 只在回复里说「完成了」**不会**触发验证——必须调用工具。
 - 有 \`check\` / \`check_voting\` 的普通步骤到此为止——你空闲时系统会**自动**运行独立 CHECK，**不需要**调用其它工具。
 
-**CHECK 阶段（只对配置了 \`check\` / \`check_voting\` 的步骤自动进行）**：
-- 交卷后，一个**独立验证者会话**（全新上下文，看不到本对话）依据该步骤的检查依据取证判定。你会收到「🔍 验证中」与验证结果消息。**没有 \`check\` / \`check_voting\` 的步骤不走这一阶段**（见下方「未配置 \`check\` 的步骤」）。
+**CHECK 阶段（仅本步有 \`check\` / \`check_voting\` 时）**：
+- 交卷后，一个**独立验证者会话**（全新上下文，看不到本对话）依据该步骤的检查依据取证判定。你会收到「🔍 验证中」与验证结果消息。**没有 \`check\` / \`check_voting\` 的步骤不走这一阶段**（见下方「未配置 \`check\` / \`check_voting\` 的步骤」）。
 - 步骤写的是 \`check_voting\`（多验证者投票）时：**N 个验证者并行**、各查一条检查依据、**全过才放行**；每票完成会各推一行进度。
 - 验证是**异步**的：验证者（独立会话）会真的去读文件、跑命令取证，它在做什么你在会话里看得到；期间不需要你做任何操作，跑完会自动唤醒本会话。**不要给时长预估**——委派没有超时上界，任何时间承诺都是编的。
 - **通过** → 工作流自动推进到下一步并注入下一条 DO 提示。
@@ -38,9 +38,9 @@ const SHARED_MECHANISM = `## 工作流机制（每次启动都会生效）
 
 **暂停与恢复**：某步验证失败达到 \`max_fail_count\` 时工作流暂停。用 \`/ralphflow-status\` 看失败原因，修复后 \`/ralphflow-continue\` 恢复（重置失败计数并重试）。
 
-**重要**：\`ralphflow_continue\` 只用于 ① 批准手动审查 ② 恢复暂停 ③ 接管中断实例。**有 \`check\` / \`check_voting\` 的普通步骤不要调用它**——验证是自动的；没有检查的步骤交卷后也会自动继续。
+**重要**：\`ralphflow_continue\` 只用于 ① 批准手动审查 ② 恢复暂停 ③ 接管中断实例。**有 \`check\` / \`check_voting\` 的普通步骤不要调用它**——验证是自动的；没有检查依据的**普通步骤**交卷后也会自动继续，审查门步骤则按 ① 等你放行。
 
-**阶段播报**：收到系统阶段通知时，简短地确认一下，让用户随时了解进度（这是良好体验的一部分）：
+**阶段播报**：收到系统阶段通知时，简短地确认一下，让用户随时了解进度：
 - DO 阶段：「已启动步骤 [X]，正在处理 [任务]」
 - CHECK 阶段（仅本步有 \`check\` / \`check_voting\` 时）：「🔍 已交卷，独立验证者正在取证判定」（投票步：N 个验证者并行，全过才放行）
 - 完成：「✅ 所有步骤完成，工作流结束」`;
@@ -55,6 +55,9 @@ export interface ToolContext {
 }
 
 export type ToolHandler = (args: any, agent: Agent | undefined) => Promise<string> | string;
+
+/** 可用命令清单 —— 单一事实源：未实现命令的说明与兜底回执共用同一份，避免两处各写一遍后走样。 */
+const AVAILABLE_COMMANDS = "`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`";
 
 function sessionIdOf(agent: Agent | undefined): string | null {
   return (agent as { session?: { id?: string } } | undefined)?.session?.id ?? null;
@@ -126,12 +129,12 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     return engineOf(agent).onSubmit(sessionId, summary).text;
   };
 
-  const unimplHandler: ToolHandler = () => "本版本未实现（涉及上下文管理，暂缓）。已可用：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`。";
+  const unimplHandler: ToolHandler = () => `本版本未实现（涉及上下文管理，暂缓）。已可用：${AVAILABLE_COMMANDS}。`;
 
   const toolDefs: Array<{ name: string; description: string; params: Record<string, any>; handler: ToolHandler; concludeTurn?: boolean }> = [
     {
       name: "ralphflow_start",
-      description: "启动一个 Ralph Flow 工作流：模型执行当前步骤；有 `check` / `check_voting` 的步骤完成后由独立验证者（独立会话）取证判定（`check_voting` = N 个验证者并行投票，全过才放行），失败自动返工；没有 `check` / `check_voting` 的步骤则跳过对抗性验证（`manual_step` 的这类步骤停在审查门等人工放行）。",
+      description: "启动一个 Ralph Flow 工作流：模型执行当前步骤；有 `check` / `check_voting` 的步骤交卷后由独立验证者取证判定（投票步 N 票并行、全过才放行），失败自动返工；没有 `check` / `check_voting` 的步骤跳过对抗性验证。启动结果会给出本步的 DO 提示与交卷方式。",
       params: {
         workflow: { type: "string", required: true, description: "工作流名（loop / spec，或自定义 YAML 名）。" },
         task: { type: "string", required: true, description: "要完成的任务描述。" },
@@ -140,7 +143,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: "ralphflow_submit",
-      description: "【DO 阶段交卷】本步实际工作完成后调用本工具交卷；本步有 `check` / `check_voting` 时独立验证者随后取证判定（投票步为 N 票并行、全过才放行），没有 `check` / `check_voting` 时跳过对抗性验证并直接继续（`manual_step` 则停在审查门等放行）。不交卷则工作流不会推进。",
+      description: "【DO 阶段交卷】本步工作完成后调用。有 `check` / `check_voting` 的步骤：独立验证者随即取证判定（投票步 N 票并行、全过才放行）；没有 `check` / `check_voting` 的步骤：跳过对抗性验证直接继续（`manual_step` 则停在审查门等放行）。不交卷则工作流不会推进。",
       params: {
         summary: { type: "string", description: "可选：简述本步做了什么。**验证者看不到它**（T1：验证请求不含执行者自述），它只留在实例状态里；验证者只独立取证。" },
       },
@@ -165,7 +168,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: "ralphflow_list",
-      description: "列出可用工作流、活跃实例与已归档的历史运行（已结束实例从 reports/ 读出）。",
+      description: "列出可用工作流、活跃实例与已归档的历史运行。",
       params: {},
       handler: listHandler,
     },
@@ -249,7 +252,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
   }> = [
     {
       name: "ralphflow-start",
-      description: "启动工作流：模型执行 → 有 `check` / `check_voting` 的步骤交独立验证（投票步 N 票并行、全过才放行；失败自动返工），没有 `check` / `check_voting` 的步骤跳过对抗性验证。示例：/ralphflow-start loop 修复登录模块的空指针",
+      description: "启动工作流：模型执行 → 有 `check` / `check_voting` 的步骤交独立验证（投票步 N 票并行、全过才放行），失败自动返工；没有 `check` / `check_voting` 的步骤跳过对抗性验证。示例：/ralphflow-start loop 修复登录模块的空指针",
       input: { hint: "<工作流> <任务描述>" },
       shim: (inv) => {
         const parts = inv.rawInput.trim().split(/\s+/).filter(Boolean);
@@ -285,7 +288,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
     },
     {
       name: "ralphflow-status",
-      description: "查看实例状态与判定的命令。示例：/ralphflow-status",
+      description: "查看实例状态与判定。示例：/ralphflow-status",
       input: { hint: "[实例ID]" },
       shim: (inv) => {
         const parts = inv.rawInput.trim().split(/\s+/).filter(Boolean);
@@ -340,7 +343,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       description: "（本版本未实现）重做当前步。",
       shim: () => ({
         kind: "directive",
-        text: "用户执行了 /ralphflow-reset（重做当前步，涉及上下文管理，本版本暂缓实现）。**不要调用任何工具**，用自然语言说明：该命令本版本未实现、暂缓原因（涉及上下文管理），以及当前可用命令：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`；如用户确实想重做，可建议重新交卷触发自动返工，或取消后重启。",
+        text: `用户执行了 /ralphflow-reset（重做当前步，涉及上下文管理，本版本暂缓实现）。**不要调用任何工具**，用自然语言说明：该命令本版本未实现、暂缓原因（涉及上下文管理），以及当前可用命令 ${AVAILABLE_COMMANDS}；如用户确实想重做，可建议重新交卷触发自动返工，或取消后重启。`,
       }),
     },
     {
@@ -348,7 +351,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       description: "（本版本未实现）回退到上游步骤。",
       shim: () => ({
         kind: "directive",
-        text: "用户执行了 /ralphflow-rewind（回退到上游步骤，涉及上下文管理，本版本暂缓实现）。**不要调用任何工具**，用自然语言说明：该命令本版本未实现、暂缓原因（涉及上下文管理），以及当前可用命令：`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`。",
+        text: `用户执行了 /ralphflow-rewind（回退到上游步骤，涉及上下文管理，本版本暂缓实现）。**不要调用任何工具**，用自然语言说明：该命令本版本未实现、暂缓原因（涉及上下文管理），以及当前可用命令 ${AVAILABLE_COMMANDS}。`,
       }),
     },
   ];

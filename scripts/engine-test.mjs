@@ -72,9 +72,10 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     && loopStep.check_voting[1].check === "实现的行为符合预期，真实可用"
     && loopStep.check_voting[2].check === "没有遗漏的需求，边界情况已覆盖",
     JSON.stringify(loopStep.check_voting.map((e) => e.check)));
-  check("内置 loop 第 4 票是本仓库自己的「既有行为没有被破坏」口径",
-    loopStep.check_voting[3].check.startsWith("既有行为没有被破坏：仓库自带测试仍全绿")
-    && loopStep.check_voting[3].check.includes("测试往往只覆盖一半"), loopStep.check_voting[3].check);
+  check("内置 loop 第 4 票是本仓库自己的「修改不影响原有功能」口径（纯判断，不含取证动作）",
+    loopStep.check_voting[3].check === "修改不影响原有功能，不破坏需求以外的边界"
+    // 内置件要通用：check 正文里不得出现「测试套件 / 基线」这类项目专有假定
+    && !/测试|基线|lint|构建/.test(loopStep.check_voting[3].check), loopStep.check_voting[3].check);
   {
     // 与 opencode 的差异只写在注释里：reset / timeout_ms 都不抄进来（都是加载期告警忽略的键）
     const raw = fs.readFileSync(new URL("../workflows/loop.yaml", import.meta.url), "utf-8");

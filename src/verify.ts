@@ -21,9 +21,9 @@ import type { StepDef, WorkflowDef, Verdict, VerifyRequest } from "./engine.js";
  * 它不再是被拼进任务消息正文的「system prompt」，而是通过 DSH 原生的子代理 `persona`
  * 传入（在子代理 scope 注册 `deployment:persona-prefix` 系统提示段，是角色说明的正确通道）。
  *
- * **切分线**：persona 只承载「你是谁、你的纪律」（独立性、只读取证、不采信自述、只读不改
- * 文件）；本次任务的事实与**按 `wantStructured` 分支的判定提交方式**（`structured_output`
- * 工具 / `<promise-check>` 文本标记）由 `buildCheckPrompt` 承载 —— 后者是逐请求状态，
+ * **切分线**：persona 只承载「你是谁、你的纪律」（独立性、只读取证、不采信自述）；本次任务的
+ * 事实与**按 `wantStructured` 分支的判定提交方式**（`structured_output` 工具 /
+ * `<promise-check>` 文本标记）由 `buildCheckPrompt` 承载 —— 后者是逐请求状态，
  * 搬进 persona 会让降级路径失效。
  */
 export const VERIFIER_PERSONA = `你是一个严格、独立、对抗性的检查者。你的职责是按给定的检查依据**取证后判定**：执行者声称完成的工作是否真的完成。
@@ -31,9 +31,10 @@ export const VERIFIER_PERSONA = `你是一个严格、独立、对抗性的检�
 纪律：
 - 你与执行者完全隔离：你看不到它的对话历史，也看不到它的自我辩护；你只有任务与检查依据。
 - 用工具取证：读文件、跑命令、搜索代码。没有证据的结论无效。
-- 你是只读检查者：不要修改任何文件，不要写任何东西。
+- 只读取证：只读文件、只跑取证命令，不落任何文件。
 - 只看结果：不采信任何执行者自述或实现总结。
-- 按「检查依据」末尾说明的方式提交判定结果。`;
+- 默认判定为**不通过**：只有取证到的事实能把它推翻。
+- 按任务消息末尾给出的方式提交判定结果。`;
 
 const VERIFIER_TOOL_ALLOW = ["read", "grep", "glob", "bash", "read_image"] as const;
 
@@ -128,7 +129,7 @@ function supportsOutputSchema(ctx: Context, name: string): boolean {
 
 /** CHECK 提示词构造（导出供测试直接断言 §1.3 的 desc/交付物/产出目录） */
 export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): string {
-  // 通用兜底配方已随「无 check = 跳过对抗性验证」退役（no-check-semantics-brief §7）。
+  // 通用兜底配方已随「无检查依据 = 跳过对抗性验证」退役（no-check-semantics-brief §7）。
   // 本函数**只在有检查依据时被调用**：单 `check` 用 `step.check`，多验证者投票用 `req.voter.check`。
   // 传入两者都没有的步骤是引擎缺陷，必须明确失败，绝不静默产出兜底配方 ——
   // 那等于把已删除的行为留成暗门（校验形同虚设且不可见）。
@@ -152,6 +153,7 @@ export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): s
   ];
   // 投票变体（对齐 opencode `buildVotingCheckPrompt`）：共享上下文 + **该票专属**检查依据 +
   // 「你是 N 个之一，只查自己这一条」约束。目的：防止各票趋同成同一份泛泛检查。
+  // 三条约束各自只讲一件事：查什么、别横向协调、放行规则 —— 不再逐条重述同一层意思。
   const basis = voter
     ? [
       "## 你的检查依据（专属视角）",
@@ -159,10 +161,9 @@ export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): s
       "",
       `## 你是 ${voter.count} 个验证者之一`,
       "",
-      "- 你**只负责你自己的检查依据**（上方「你的检查依据」段），不要试图覆盖其他验证者的视角。",
-      "- 其他验证者正在并行检查其他方面，各有独立会话。",
-      "- 你的结论不受任何其他验证者影响，也不要等待或引用它们。",
-      "- 本步**全过才放行**，但汇总由程序完成：你只需给出你自己这一票的判定。",
+      "- 你**只判断你自己那条检查依据**（上方「你的检查依据」段）：其他视角由并行的其他验证者负责，各有独立会话。",
+      "- 不要等待、引用或回应它们：汇总由程序完成，你只需给出自己这一票的判定。",
+      "- 本步**全过才放行**：你这一票漏掉的问题，没有别人替你兜底。",
     ]
     : ["## 检查依据", req.step.check!.trim()];
   // T1：**不注入执行者的交卷自述**。验证者只看"结果是否满足检查依据"，不看执行者
@@ -180,7 +181,6 @@ export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): s
     "## 取证要求",
     "在**当前工作区**里取证（读文件、跑命令、搜索），逐条核对检查依据。",
     "产出目录也在这个工作区内，用上面的相对路径即可读到。",
-    ...(voter ? ["**只查你自己那条检查依据**：其他视角由别的验证者负责，不要替它们下结论。"] : []),
     "**只看结果**：以你亲自取证到的事实为准，不采信任何执行者自述或实现总结。",
     wantStructured
       // 原生结构化输出可用：判定由 structured_output 工具承载，不需要文本标签。
@@ -288,9 +288,9 @@ export async function runVerifier(deps: VerifyDeps, req: VerifyRequest): Promise
     // §3.2 可复盘证据之一：**发给验证者的提示词原文**（不截断）。
     // 这正是排查「验证者为什么判错」唯一有效的东西——提示词被截断，日志就等于没有。
     //
-    // ⚠️ 这一句**必须留在 try 内**：`buildCheckPrompt` 对无 `check` 的步骤**明确抛错**
+    // ⚠️ 这一句**必须留在 try 内**：`buildCheckPrompt` 对既无 `check` 又无投票票的步骤**明确抛错**
     // （兜底配方已退役，见 no-check-semantics-brief §7），该抛错要由下面的 catch 统一转成
-    // infra 判定 —— 挪到 try 外会让「无 check 被误委派」从 fail-closed 退化成未捕获异常。
+    // infra 判定 —— 挪到 try 外会让「无检查依据被误委派」从 fail-closed 退化成未捕获异常。
     const promptText = buildCheckPrompt(req, wantStructured);
     logSafe(req, "info", "verifier_prompt", {
       step: req.step.id,

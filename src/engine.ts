@@ -1845,6 +1845,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const rel = artifactsRelDirOf(instId);
     const hasCheck = stepHasVerification(step);
     const voters = voterCountOf(step);
+    // 本步是不是审查门：无检查依据 + 门 = 纯人工审查，交卷后停在门等用户放行（不是「自动进入下一步」）。
+    const gate = isGate(wf, step);
     const parts = [
       `[ralphflow] 工作流 \`${wf.name}\` · 步骤 ${idx}/${wf.steps.length}：**${step.id}**${step.desc ? ` — ${step.desc}` : ""}`,
       "",
@@ -1855,8 +1857,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       (step.do || step.desc || step.id).trim(),
       "",
       `## 产出目录`,
-      `\`${rel}/\` —— 本步的文档产出（清单、方案、报告、摘要等）统一放在此目录。`,
-      `步骤里提到的文件若没写路径（例如 \`summary.md\`），即指该目录下的文件；明确写了其它路径的除外。`,
+      `\`${rel}/\` —— 本步的文档产出（清单、方案、报告、摘要等）统一放这里：\`do\`/\`output\` 里只写文件名的（如 \`summary.md\`）落到这个目录，写了其它路径的按写的路径来。`,
     ];
     if (step.output) parts.push("", `## 交付物`, String(step.output).trim());
     if (rework) {
@@ -1874,7 +1875,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         ? (voters > 0
           ? `1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（${voters} 个独立验证者**并行**取证，各自只查一条检查依据，**全过才放行**；异步，**不需要用户做任何操作**；验证者是独立会话，正在读文件、跑命令取证，它在做什么用户在会话里看得到）→ 期间用户可以做什么（补充信息或纠正方向 / 用 \`/ralphflow-status\` 看进度 / 用 \`/ralphflow-cancel\` 中止）。**不要给任何时长预估**：委派没有超时上界，估计出来的时间只会是编的。用用户的语言写，不要把它埋进技术叙述里。`
           : "1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（异步，**不需要用户做任何操作**；验证者是独立会话，正在读文件、跑命令取证，它在做什么用户在会话里看得到）→ 期间用户可以做什么（补充信息或纠正方向 / 用 `/ralphflow-status` 看进度 / 用 `/ralphflow-cancel` 中止）。**不要给任何时长预估**：委派没有超时上界，估计出来的时间只会是编的。用用户的语言写，不要把它埋进技术叙述里。")
-        : "1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 本步**不配置对抗性检查**，会**跳过对抗性验证**（不会有独立验证进程来复核）→ 接下来自动进入下一步（`manual_step` 步骤则停在审查门等你放行，**不需要用户做任何操作**）。用用户的语言写，不要把它埋进技术叙述里。",
+        : (gate
+          ? "1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 本步**不配置对抗性检查**，会**跳过对抗性验证**（不会有独立验证进程来复核）→ 交卷后停在**审查门**，等用户运行 `/ralphflow-continue` 放行。用用户的语言写，不要把它埋进技术叙述里。"
+          : "1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 本步**不配置对抗性检查**，会**跳过对抗性验证**（不会有独立验证进程来复核）→ 接下来自动进入下一步（**不需要用户做任何操作**）。用用户的语言写，不要把它埋进技术叙述里。"),
       hasCheck
         ? (voters > 0
           ? `2. **调用 \`ralphflow_submit\` 工具交卷**（可在参数 \`summary\` 里简述你做了什么）。${voters} 个独立验证者会立刻**并行**检查你的产出（全过才放行）。`
@@ -1886,10 +1889,13 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         : "不要只在回复里说「完成了」——那样不会触发推进。**必须调用工具**。",
     );
     if (!hasCheck) {
-      // 照 opencode 的措辞（`opencode/src/engine.ts:1565`）
+      // 主干照 opencode 的措辞（`opencode/src/engine.ts:1565`）；manual_step 门这一支按本版本的
+      // 纯人工审查语义分开说 —— opencode 原文不区分，与上面的「停在审查门等放行」会自相矛盾。
       parts.push(
         "",
-        `ℹ️ 本步骤**不配置对抗性检查**：完成即可，不会有独立的验证进程来复核。请务必自查产出是否满足任务要求（manual_step 步骤则由你审查后运行 \`/ralphflow-continue\` 放行）。`,
+        gate
+          ? `ℹ️ 本步骤**不配置对抗性检查**：完成即可，不会有独立的验证进程来复核。请务必自查产出是否满足任务要求——交卷后停在**审查门**，等用户运行 \`/ralphflow-continue\` 放行。`
+          : `ℹ️ 本步骤**不配置对抗性检查**：完成即可，不会有独立的验证进程来复核。请务必自查产出是否满足任务要求。`,
       );
     }
     return parts.join("\n");
@@ -1904,12 +1910,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    */
   function noteCheckSkipped(instId: string, state: InstanceState, step: StepDef): void {
     if (state.history.some((h) => h.event === "check_skipped" && h.step === step.id)) return;
-    pushHistory(state, "check_skipped", `步骤 \`${step.id}\` 未配置 \`check\`，跳过对抗性验证`, step.id);
+    pushHistory(state, "check_skipped", `步骤 \`${step.id}\` 未配置 \`check\` / \`check_voting\`，跳过对抗性验证`, step.id);
     log("info", "check_skipped", { instId, step: step.id, reason: "no_check" });
   }
 
   /**
-   * 无 `check` 的步骤：**不委派验证者**，按工作流定义声明直接推进或停在审查门。
+   * 无检查依据（`check` / `check_voting` 都不写）的步骤：**不委派验证者**，按工作流定义声明直接推进或停在审查门。
    *
    * 判据是 `stepHasVerification(step)`（只读 `StepDef`，见 design §12.1 精修）：这不是
    * 「执行者跳过验证」，而是**作者已声明本步免验证**的机械推进。
@@ -1923,7 +1929,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     noteCheckSkipped(instId, state, step);
     writeState(state, instId);
     if (isGate(wf, step)) {
-      // 停在审查门的两种打开方式都要留痕：这里是「无 check 的纯人工审查」
+      // 停在审查门的两种打开方式都要留痕：这里是「无检查依据的纯人工审查」
       logEvent(instId, "info", "gate_opened", { step: step.id, kind: "manual_no_check" });
       notify(
         state,
@@ -1935,7 +1941,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     notify(
       state,
       `⏭ 步骤 \`${step.id}\` 未配置对抗性检查（无 \`check\`/\`check_voting\`），已**跳过对抗性验证**，直接进入下一步。`,
-      `⏭ 步骤 ${step.id} 已跳过对抗性验证（未配置 check），直接推进`,
+      `⏭ 步骤 ${step.id} 已跳过对抗性验证（未配置 check / check_voting），直接推进`,
     );
     advance(instId, state, wf, step);
     return false;
@@ -2360,12 +2366,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     pushHistory(state, "step_start", next.desc ?? "", next.id);
     logEvent(instId, "info", "step_start", { step: next.id });
     writeState(state, instId);
-    // 播报必须诚实：下一步没有 check 时不得宣称「会自动进入独立验证」（有 check 的分支逐字不变）
+    // 播报必须诚实：下一步没有检查依据时不得宣称「会自动进入独立验证」（有检查依据的分支逐字不变）
     deliver(state, doPrompt(instId, wf, state, next), stepHasVerification(next)
       ? (voterCountOf(next) > 0
         ? `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（完成后会自动进入 ${voterCountOf(next)} 个验证者的并行验证）`
         : `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（完成后会自动进入独立验证）`)
-      : `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（未配置 check：完成后跳过对抗性验证）`);
+      : `▶️ 步骤 ${next.id} 开始执行${next.desc ? `：${next.desc}` : ""}（未配置 check / check_voting：完成后跳过对抗性验证）`);
   }
 
   function complete(instId: string, state: InstanceState, wf: WorkflowDef): void {
@@ -2592,7 +2598,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const text = [
       `🚀 已启动工作流 **${wf.name}**（实例 \`${instId}\`，共 ${wf.steps.length} 步）。${warnText}`,
       "",
-      // 诚实标注：首步没有 check 时**不得预告一次不会发生的独立验证**（与 doPrompt / advance 播报同一口径）。
+      // 诚实标注：首步没有检查依据时**不得预告一次不会发生的独立验证**（与 doPrompt / advance 播报同一口径）。
       // 有 check 的分支与改造前**逐字相同**（回归基线）。
       stepHasVerification(first)
         ? (voterCountOf(first) > 0
@@ -2777,11 +2783,17 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     pushHistory(state, "submit_reminder", `第 ${used + 1} 次`, step.id);
     writeState(state, instId);
     const n = used + 1;
+    // 诚实标注：无检查依据的步骤本就不验证，不能说「独立验证不会自动开始」（那是另一回事）；
+    // 门步还要说清「停在审查门等用户放行」，不能写成「直接继续」（与 doPrompt 同一口径）。
+    const noSubmitReason = stepHasVerification(step)
+      ? "独立验证不会自动开始"
+      : isGate(wf, step)
+        ? "本步是纯人工审查门（未配置 `check` / `check_voting`）：交卷后**跳过对抗性验证**，停在审查门等用户放行"
+        : "工作流不会推进（本步未配置 `check` / `check_voting`，交卷后跳过对抗性验证直接继续）";
     return {
       remind: true,
       summary: `⚠️ 步骤 ${step.id} 尚未交卷（第 ${n}/${max} 次提醒）`,
-      // 诚实标注：无 check 的步骤本就不验证，不能说「独立验证不会自动开始」（那是另一回事）。
-      message: `[ralphflow] 提醒（第 ${n}/${max} 次）：本步（\`${step.id}\`）还没交卷，${stepHasVerification(step) ? "独立验证不会自动开始" : "工作流不会推进（本步未配置 `check`，交卷后跳过对抗性验证直接继续）"}。\n\n如果任务已完成，请调用 \`ralphflow_submit\` 工具交卷；如果还没做完，继续做。\n如果你正在等用户回答或需要用户介入，请直接说明，不必交卷。`,
+      message: `[ralphflow] 提醒（第 ${n}/${max} 次）：本步（\`${step.id}\`）还没交卷，${noSubmitReason}。\n\n如果任务已完成，请调用 \`ralphflow_submit\` 工具交卷；如果还没做完，继续做。\n如果你正在等用户回答或需要用户介入，请直接说明，不必交卷。`,
     };
   }
 
@@ -2886,8 +2898,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
 
     // ③ 放行判据（design §12.1 精修后的两支，机械可判）：
-    //    有 check → 判定齐 ∧ 全 passed ∧ 归属本步；
-    //    无对抗性检查 → **工作流定义已声明本步免验证**（`stepHasVerification` 只读 StepDef，执行者无法影响）。
+    //    有检查依据 → 判定齐 ∧ 全 passed ∧ 归属本步；
+    //    无检查依据 → **工作流定义已声明本步免验证**（`stepHasVerification` 只读 StepDef，执行者无法影响）。
     //    （审查门 / 普通步共用这一条：免验证的普通步在交卷时已直接推进，走到这里的是门。）
     if (allPassedVerified(state, step) || !stepHasVerification(step)) {
       const byDefinition = !stepHasVerification(step);
@@ -2925,7 +2937,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       return { ok: true, text: `🔍 步骤 \`${step.id}\` 已交卷但无判定记录，正在重新委派独立验证者。` };
     }
 
-    // ⑥ 还没交卷 → fail-closed（只对**有 check** 的步骤可达：无 check 已被 ③ 按定义声明放行）
+    // ⑥ 还没交卷 → fail-closed（只对**有检查依据**的步骤可达：无检查依据已被 ③ 按定义声明放行）
     return { ok: false, text: `步骤 \`${step.id}\` 还没交卷，无法推进（本步配置了 \`check\`，没有判定不能推进）。已完成工作就交卷，或让模型继续。` };
   }
 
@@ -3071,9 +3083,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       return "**无需操作**：独立验证者正在取证判定，跑完会自动唤醒本会话继续。可用 `/ralphflow-status` 看进度，`/ralphflow-cancel` 中止。";
     }
     if (s.do_submitted) {
-      // 无 check 的步骤（纯人工审查/免验证）：不得写「会再次验证」——本步没有独立验证
+      // 无检查依据的步骤（纯人工审查/免验证）：不得写「会再次验证」——本步没有独立验证
       if (step && !stepHasVerification(step)) {
-        return "**等你放行**：本步未配置 `check`（已**跳过对抗性验证**，纯人工审查）。确认无误运行 `/ralphflow-continue` 进入下一步；要修改就直接说明，改完重新交卷仍会停在这里。";
+        return "**等你放行**：本步未配置 `check` / `check_voting`（已**跳过对抗性验证**，纯人工审查）。确认无误运行 `/ralphflow-continue` 进入下一步；要修改就直接说明，改完重新交卷仍会停在这里。";
       }
       return "**等你放行**：确认无误运行 `/ralphflow-continue` 进入下一步；要修改就直接说明，改完重新交卷会再次验证。";
     }
