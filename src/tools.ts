@@ -3,17 +3,22 @@
  *
  * 命令语义 = 触发词：/ralphflow-* 注入指令给模型，由模型调用同名工具并自然回复。
  * 已实现：start / list / status / continue / cancel / create / doctor + 工作流快捷命令（/ralphflow-<工作流名>）；
- * `/ralphflow-rewind` **命令**仍只声明（回退到上游步骤，暂缓）。
+ * `/ralphflow-rewind` 与 `/ralphflow-reset` 是两条**机械命令**（见下）。
  *
- * **`/ralphflow-reset` 是唯一的例外路径，但不是例外「命令面」**：它由命令处理器**直接**调用
- * 引擎的 `resetCurrent` 完成机械动作（换干净上下文 + 重投当前步 DO，不赦免失败），
- * 再把结果交回模型自然语言回复。为什么不做成 `ralphflow_reset` 工具：
- *   · 重置是**机械程序**的职责（不赦免失败才守得住 `max_fail_count`），不该要求模型记得去调；
+ * **`/ralphflow-reset` 与 `/ralphflow-rewind` 是仅有的两条机械命令，但不是例外「命令面」**：
+ * 它们由命令处理器**直接**调用引擎完成机械动作 —— reset = `resetCurrent`（只换干净上下文
+ * + 重投当前步 DO，**不赦免失败**）；rewind = `rewindTo`（回退到更早的步骤 + 清暂停与失败计数
+ * + 整段替换上下文 + 目标步 DO 带着原因重投）—— 再把结果交回模型自然语言回复。
+ * 为什么不做成 `ralphflow_reset` / `ralphflow_rewind` 工具：
+ *   · 这两件事是**机械程序**的职责（reset 不赦免失败才守得住 `max_fail_count`；rewind 的
+ *     状态机倒退必须与机械动作原子发生），不该要求模型记得去调；
  *   · design §10.10 的边界 —— 不给模型任何「可调用的修复入口」（工具面保持固定）。
  *
  * 注意别把三者搞混：**步骤级 `reset: true` / 工作流级 `auto_reset: true`（重置门）**是工作流
- * 作者写的键（载体见 `src/reset.ts`）；`/ralphflow-reset` 是**用户**手里的手动入口，两者走
- * 引擎的同一根接线（`deliverStepDo` 的 `opts.manual`），语义一致（只换上下文、不赦免失败）。
+ * 作者写的键（载体见 `src/reset.ts`）；`/ralphflow-reset`（重做当前步）与 `/ralphflow-rewind`
+ * （回退到更早步骤并换方向）是**用户**手里的两个手动入口 —— 三条自动重置路径（步骤级 /
+ * `auto_reset` / 调用点）与这两个手动入口全都走引擎的同一根接线（`deliverStepDo` 的
+ * `opts.manual` / `opts.rewind`）。
  */
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
@@ -66,8 +71,8 @@ export interface ToolContext {
 
 export type ToolHandler = (args: any, agent: Agent | undefined) => Promise<string> | string;
 
-/** 可用命令清单 —— 单一事实源：未实现命令的说明与兜底回执共用同一份，避免两处各写一遍后走样。 */
-const AVAILABLE_COMMANDS = "`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-reset`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`";
+/** 可用命令清单 —— 单一事实源：命令被拒绝时给模型转达的「还能用什么」与兜底回执共用同一份，避免两处各写一遍后走样。 */
+const AVAILABLE_COMMANDS = "`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-reset`、`/ralphflow-rewind`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`";
 
 function sessionIdOf(agent: Agent | undefined): string | null {
   return (agent as { session?: { id?: string } } | undefined)?.session?.id ?? null;
@@ -138,8 +143,6 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     const summary = args?.summary !== undefined ? String(args.summary) : undefined;
     return engineOf(agent).onSubmit(sessionId, summary).text;
   };
-
-  const unimplHandler: ToolHandler = () => `本版本未实现（涉及上下文管理，暂缓）。已可用：${AVAILABLE_COMMANDS}。`;
 
   const toolDefs: Array<{ name: string; description: string; params: Record<string, any>; handler: ToolHandler; concludeTurn?: boolean }> = [
     {
@@ -226,14 +229,10 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     }));
   }
 
-  // `/ralphflow-rewind`：只声明不实现（design §8 / 宪法 §10.10）。
-  // 它**不注册为工具** —— 注册了就等于给模型一个可调用、会返回内容的实现，
-  // 与「命令面固定 + 只声明不实现」的边界冲突。命令处理面（/ralphflow-rewind）
-  // 仍然把指令交给模型，由模型自然语言解释暂缓原因。
-  //
-  // （`ralphflow_reset` 同样**不注册**：`/ralphflow-reset` 是命令处理器直接驱动引擎的机械路径，
-  //   不给模型可调用的修复入口；见文件头注释。）
-  handlers.set("ralphflow_rewind", unimplHandler);
+  // `/ralphflow-rewind` 与 `/ralphflow-reset` 一样**不注册为工具**：注册了就等于给模型一个
+  // 可调用、会返回内容的实现，与「命令面固定 + 不给模型可调用的修复入口」的边界冲突
+  // （design §10.10）。两者的机械动作都由命令处理器直接驱动引擎完成，见下面的 `run` 分支。
+  // 「未实现」的占位处理函数因此不再需要：命令面从今日起没有任何「只声明不实现」的命令。
 
   return handlers;
 }
@@ -383,11 +382,42 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
     },
     {
       name: "ralphflow-rewind",
-      description: "（本版本未实现）回退到上游步骤。",
-      shim: () => ({
-        kind: "directive",
-        text: `用户执行了 /ralphflow-rewind（回退到上游步骤，涉及上下文管理，本版本暂缓实现）。**不要调用任何工具**，用自然语言说明：该命令本版本未实现、暂缓原因（涉及上下文管理），以及当前可用命令 ${AVAILABLE_COMMANDS}。`,
-      }),
+      description: "回退到更早的步骤并换方向：清暂停与失败计数、作废本轮判定，属主会话上下文整段替换成交接稿，目标步 DO 带着原因重投。示例：/ralphflow-rewind design 改用另一种方案（回退只去当前步**之前**的步骤；目标步与原因都必填）",
+      input: { hint: "<步骤> <原因>" },
+      run: async (inv) => {
+        const sid = messageSessionId(inv.agent);
+        if (!sid) return { kind: "error", text: "当前会话已离线，无法回退。请刷新后重试。" };
+        // 参数解析：`<步骤> <原因>` 两个都必填；原因是自由文本（可含空格），所以第一段是步骤、
+        // 其余整段是原因。
+        const parts = inv.rawInput.trim().split(/\s+/).filter(Boolean);
+        if (parts.length < 2) {
+          // 缺参数**交回模型自然语言追问**（与 /ralphflow-start 同款：像 opencode 一样由模型
+          // 说明用法并问清缺失信息），不在这里给程序化卡片。
+          const have = parts.length === 1 ? `用户已给出目标步骤 \`${parts[0]}\`，缺的是**回退原因**。` : "目标步骤与回退原因两者都缺。";
+          deps.deliver(
+            sid,
+            `[ralphflow] 用户执行了 /ralphflow-rewind 但参数不完整（用法：\`/ralphflow-rewind <步骤> <原因>\`，两个都必填）：${have}\n\n**不要调用任何工具**，先用自然语言向用户说明用法并询问缺少的信息（要回到哪个更早的步骤、以及为什么要换方向——原因会写进目标步的 DO 提示词，接手这一步的模型一定看得到）。必要时用 \`ralphflow_status\` 看当前步与工作流的步骤列表，供用户选择。`,
+          );
+          return { kind: "success" };
+        }
+        const stepId = parts[0]!;
+        const reasonText = parts.slice(1).join(" ");
+        // 机械动作在**命令处理器**里完成（不经过模型调工具）：状态机倒退 + 清暂停/失败计数
+        // + 强制整段替换上下文 + 重投目标步 DO，必须与机械程序的决定原子发生，不能要求模型记得去调。
+        const res = deps.engineFor(deps.workspaceOfSession?.(sid)).rewindTo(sid, stepId, reasonText);
+        if (res.ok) {
+          // 成功：引擎已在**空闲窗口**排入整段替换，并会把目标步 DO（带着原因）+ 可见告知投出。
+          // 不给程序化卡片（命令语义 = 触发词，回复由模型/引擎消息承担）。
+          return { kind: "success" };
+        }
+        // 拒绝：把原因交回模型自然语言转达（调用点 / 未来步 / 当前步 / 不存在 / 已交卷…每条
+        // 都是具体理由），并叫停重复尝试（命令语义不变）。
+        deps.deliver(
+          sid,
+          `[ralphflow] 用户执行了 /ralphflow-rewind ${stepId} ${reasonText}，但**被拒绝**：${res.text}\n\n请用自然语言如实向用户说明拒绝原因与下一步（已交卷 / 验证中请等验证结果；想重做**当前步**用 \`/ralphflow-reset\`；想放行审查门或恢复暂停用 \`/ralphflow-continue\`）。当前可用命令：${AVAILABLE_COMMANDS}。**不要调用任何工具**，不要替用户重试回退。`,
+        );
+        return { kind: "success" };
+      },
     },
   ];
 

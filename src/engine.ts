@@ -460,6 +460,19 @@ export function effectiveTaskOf(step: Pick<StepDef, "task">, userTask: string): 
 export const SUBWORKFLOW_ID_SEP = "/";
 
 /**
+ * 这个 id 是**子工作流调用点**（而不是展开后的步骤）吗？
+ *
+ * 加载期静态展开把调用点**就地替换**成 `调用点id/子步骤id`，调用点自身不再是步骤；而步骤 id
+ * 含 {@link SUBWORKFLOW_ID_SEP} 是加载期硬错误。所以「某个步骤 id 以 `id/` 开头」就精确说明
+ * `id` 是调用点 —— 据此给 `/ralphflow-rewind` 一句**准确**的拒绝理由（说得出它被展开成了什么），
+ * 而不是笼统地说「没有这个步骤」。
+ */
+export function isSubWorkflowCallId(wf: Pick<WorkflowDef, "steps">, id: string): boolean {
+  const prefix = `${id}${SUBWORKFLOW_ID_SEP}`;
+  return wf.steps.some((s) => s.id.startsWith(prefix));
+}
+
+/**
  * 展开后步骤总数上限（**加载期**计数，超了立刻中止展开）。
  *
  * ralphflow 面向长程工作流：2000 是「够长程」与「一次误配不会把引擎拖死」之间的取舍。
@@ -2206,8 +2219,20 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    *
    * 「## 任务」= {@link effectiveTaskOf}：子工作流调用点写了 `do` 时，这里给的是**那段子工作流
    * 要做什么**（加载期下沉到 `step.task`）；否则仍是发起会话的任务描述（向后兼容）。
+   *
+   * `rewind` = 用户执行了 `/ralphflow-rewind`（从 `from` 退回本步，带着 `reason`）。它**自成一段**
+   * 写进 DO 提示词，而不是只写进交接稿 —— 交接稿是「换上下文成功」才有的东西，而原因是
+   * 换方向这件事本身的一部分：替换失败时 DO 照样带着原因落地（没有 `keep_session` 这类逃生口）。
+   * 那一段同时点明**下游旧产出仍在盘上、基于旧方向**（回退不删除、不作废任何已有产出）。
    */
-  function doPrompt(instId: string, wf: WorkflowDef, state: InstanceState, step: StepDef, rework?: string): string {
+  function doPrompt(
+    instId: string,
+    wf: WorkflowDef,
+    state: InstanceState,
+    step: StepDef,
+    rework?: string,
+    rewind?: { from: string; reason: string },
+  ): string {
     const idx = wf.steps.findIndex((s) => s.id === step.id) + 1;
     const rel = artifactsRelDirOf(instId);
     const hasCheck = stepHasVerification(step);
@@ -2229,6 +2254,25 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     if (step.output) parts.push("", `## 交付物`, String(step.output).trim());
     if (rework) {
       parts.push("", `## 上一轮验证未通过，请针对性修复`, rework.trim());
+    }
+    if (rewind) {
+      // 回退原因**自成一段**：不依赖交接稿、不依赖历史 —— 接手这一步的模型一定能看到它。
+      const at = wf.steps.findIndex((s) => s.id === step.id);
+      const downstream = wf.steps.slice(at + 1).map((s) => `\`${s.id}\``);
+      parts.push(
+        "",
+        `## 用户回退了这一步（\`/ralphflow-rewind\`：从 \`${rewind.from}\` 回到 \`${step.id}\`）`,
+        "",
+        "用户给出的回退原因（原文）：",
+        "",
+        rewind.reason,
+        "",
+        "请按这个原因**换方向重做本步**，不要沿原方向继续。",
+        "",
+        downstream.length > 0
+          ? `⚠️ **下游旧产出仍在盘上、且基于旧方向**：${downstream.join("、")} 的既有产出没有被删除、也不会自动作废，它们可能与本步的新方向不一致。交卷时请写清哪些下游旧产出需要随之重做或作废，供后续步骤与独立验证者判断。`
+          : "⚠️ **本步是工作流顺序上的最后一步**：它自己的既有产出仍在盘上、基于旧方向，重做时以新方向为准；交卷时请说明旧产出里哪些已不再适用。",
+      );
     }
     parts.push(
       "",
@@ -2783,10 +2827,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   // ─── reset 门（步骤级 `reset: true` / 工作流级 `auto_reset: true` / 手动 `/ralphflow-reset`）──
 
   /**
-   * 触发来源（比 {@link ResetCause} 多一支 `"manual"`）：手动重置在**行为**上与自动门完全
-   * 同构（同一根 `deliverStepDo` 接线），只有**由谁发起**不同 —— 而措辞必须按来源分。
+   * 触发来源（比 {@link ResetCause} 多两支 `"manual"` / `"rewind"`）：手动重置与
+   * `/ralphflow-rewind` 在**行为**上都与自动门完全同构（同一根 `deliverStepDo` 接线，
+   * 且**无论该步有没有标 `reset` 都强制替换**），只有**由谁发起**不同 ——
+   * 而措辞必须按来源分（播报要说得出「用户执行了 `/ralphflow-rewind`」）。
    */
-  type ResetTrigger = ResetCause | "manual";
+  type ResetTrigger = ResetCause | "manual" | "rewind";
 
   /**
    * 「为什么这次要重置」→ 一句**对人说的话**。这是本项目「绝不把 auto_reset / 调用点 reset
@@ -2806,6 +2852,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           : "子工作流调用点上标了 `reset: true`（进入子工作流 = 首个展开后子步骤的重置）";
       }
       case "manual": return "用户执行了 `/ralphflow-reset`";
+      // 回退是**用户手里的换方向入口**：它不只是换上下文，还会把状态机拨回更早的步骤
+      // 并带上原因。措辞必须说出是哪个命令做的，否则用户会以为这是自动门的机械动作。
+      case "rewind": return "用户执行了 `/ralphflow-rewind`";
     }
   }
 
@@ -2816,6 +2865,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       case "auto": return "工作流级 `auto_reset: true`";
       case "call": return step?.reset_from_call ? `调用点 \`${step.reset_from_call}\` 标了 \`reset: true\`` : "调用点标了 `reset: true`";
       case "manual": return "用户执行了 `/ralphflow-reset`";
+      case "rewind": return "用户执行了 `/ralphflow-rewind`";
     }
   }
 
@@ -2866,9 +2916,18 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    *
    * 交接稿只写**能现算**的四项（决定①：不含「已完成勾选」，因此不新增任何状态字段）：
    * 工作流名 / 第几步 / 产出目录 / 交互契约。任务描述不必写 —— 紧随其后的 DO 提示词
-   * 自带「## 任务」。
+   * 自带「## 任务」；**回退原因同样不进交接稿**（它在 DO 里自成一段：换上下文失败时
+   * DO 照样带着原因落地，交接稿写不写都不改变这一点）。
+   *
+   * `rewind` 只用于**可见告知**的措辞（说清是从哪一步退回本步的）。
    */
-  function resetRequestFor(instId: string, wf: WorkflowDef, step: StepDef, trigger: ResetTrigger): ResetRequest {
+  function resetRequestFor(
+    instId: string,
+    wf: WorkflowDef,
+    step: StepDef,
+    trigger: ResetTrigger,
+    rewind?: { from: string },
+  ): ResetRequest {
     const idx = wf.steps.findIndex((s) => s.id === step.id) + 1;
     const rel = artifactsRelDirOf(instId);
     const hasCheck = stepHasVerification(step);
@@ -2892,21 +2951,26 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     ].join("\n");
     return {
       handoff,
-      // 可见告知按来源分述：手动重置要让用户看到「这是你那句话的结果」，而自动门/调用点门是
-      // 「进入本步前的机械动作」。**来源必须写进告知**（任务书硬要求：回执措辞说清来源）——
-      // 只写「本步开始前做了重置」会让作者以为自己在这一步标了 `reset: true`。
-      // 两者对**模型**的交接稿逐字相同（来源不进模型上下文，交接稿只写现算的四项）。
+      // 可见告知按来源分述：手动重置 / 回退要让用户看到「这是你那句话的结果」，而自动门 /
+      // 调用点门是「进入本步前的机械动作」。**来源必须写进告知**（任务书硬要求：回执措辞
+      // 说清来源）——只写「本步开始前做了重置」会让作者以为自己在这一步标了 `reset: true`。
+      // 三者对**模型**的交接稿逐字相同（来源不进模型上下文，交接稿只写现算的四项）。
       notice: trigger === "manual"
         ? {
           summary: `♻️ 已按 /ralphflow-reset 重置上下文，重投步骤 ${step.id} 的 DO`,
           text: `[ralphflow] 用户执行了 \`/ralphflow-reset\`：当前步（\`${step.id}\`）的上下文已整段替换为一条交接稿，本步 DO 随即重投。此前对话已移出模型上下文；**失败计数原样保留**（重置只换干净上下文，不赦免失败）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。`,
         }
-        : {
-          summary: `♻️ 步骤 ${step.id} 开始前已重置上下文（${resetSourceShort(trigger, step)}）`,
-          // 这条告知是给用户看的：替换消息本身在 Chat 里不显示，不告知就成了
-          // 「用户看到的 ≠ 模型看到的」且是静默的（决定②）。
-          text: `[ralphflow] 本步（\`${step.id}\`）开始前做了上下文重置（来源：${resetSourceText(trigger, step)}）：此前对话已移出模型上下文，整段替换为一条交接稿（工作流 / 步骤 / 产出目录 / 交互契约）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。`,
-        },
+        : trigger === "rewind"
+          ? {
+            summary: `↩️ 已按 /ralphflow-rewind 回退到步骤 ${step.id}，重投其 DO`,
+            text: `[ralphflow] 用户执行了 \`/ralphflow-rewind\`：工作流已${rewind?.from ? `从步骤 \`${rewind.from}\` ` : ""}回退到 \`${step.id}\`，**暂停与失败计数已清**、本轮判定与在飞验证已作废。属主会话上下文已整段替换为一条交接稿，本步 DO 随即重投——**用户给出的回退原因写在 DO 里**（自成一段；换上下文失败时 DO 照样带着原因落地）。⚠️ 下游旧产出仍在盘上、基于旧方向，不会自动作废。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。`,
+          }
+          : {
+            summary: `♻️ 步骤 ${step.id} 开始前已重置上下文（${resetSourceShort(trigger, step)}）`,
+            // 这条告知是给用户看的：替换消息本身在 Chat 里不显示，不告知就成了
+            // 「用户看到的 ≠ 模型看到的」且是静默的（决定②）。
+            text: `[ralphflow] 本步（\`${step.id}\`）开始前做了上下文重置（来源：${resetSourceText(trigger, step)}）：此前对话已移出模型上下文，整段替换为一条交接稿（工作流 / 步骤 / 产出目录 / 交互契约）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。`,
+          },
     };
   }
 
@@ -2925,9 +2989,11 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 投递某一步的 DO。**要重置上下文的步骤先做整段替换、再投递 DO**（顺序不可颠倒：
    * DO 若先落地就会被自己这次替换一并遮蔽掉）。
    *
-   * 触发来源三类，全走这一根接线（不再有第二条重置路径）：
+   * 触发来源四类，全走这一根接线（不再有第二条重置路径）：
    *   · 步骤级 `reset: true` / 工作流级 `auto_reset: true`（advance 与返工都经这里）；
-   *   · 手动 `/ralphflow-reset`（`opts.manual`：**无论该步有没有标 reset 都强制重置**）。
+   *   · 手动 `/ralphflow-reset`（`opts.manual`：**无论该步有没有标 reset 都强制重置**）；
+   *   · 用户 `/ralphflow-rewind`（`opts.rewind`：同样强制重置，并把**回退原因**带进 DO ——
+   *     原因写进 DO 而不是只写交接稿：换上下文失败时 DO 照样带着原因落地）。
    *
    * 替换是异步的（宿主的 `runMaintenance` 返回 Promise），所以这里用 promise 链保证顺序；
    * **失败绝不吞掉 DO** —— 照常投递，并把失败原因如实写进用户可见的播报行。
@@ -2942,11 +3008,11 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     step: StepDef,
     summary: string,
     rework?: string,
-    opts?: { manual?: boolean },
+    opts?: { manual?: boolean; rewind?: { from: string; reason: string } },
   ): void {
-    const text = doPrompt(instId, wf, state, step, rework);
+    const text = doPrompt(instId, wf, state, step, rework, opts?.rewind);
     const sid = state.owner_session;
-    const trigger: ResetTrigger | undefined = opts?.manual ? "manual" : resetCauseOf(wf, step);
+    const trigger: ResetTrigger | undefined = opts?.rewind ? "rewind" : opts?.manual ? "manual" : resetCauseOf(wf, step);
     if (trigger === undefined || !sid) {
       deliver(state, text, summary);
       return;
@@ -2957,7 +3023,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       deliver(state, text, `${summary}（⚠️ ${resetSourceText(trigger, step)}，但本进程未装配重置端口：上下文未重置）`);
       return;
     }
-    const req = resetRequestFor(instId, wf, step, trigger);
+    const req = resetRequestFor(instId, wf, step, trigger, opts?.rewind);
     // 替换是异步的（跨一个 maintenance 窗口）。若这段时间里实例已结束/被取消，
     // 就**不再投递 DO**（别把一条指令塞进一个已经收摊的实例）。
     //
@@ -3388,9 +3454,26 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    *
    * 提醒次数从 history 派生（不新增状态字段，宪法 §10.4）；达到上限则暂停等用户，
    * 绝不死循环催促。
+   *
+   * **次数按「本次进入该步」起算**：`step_start` 就是那条边界（回退也会记一条）。
+   * 若统计整段 history，回退到一个已经用光提醒预算的步骤会**立刻** `no_submit` 暂停 ——
+   * 用户刚换了方向，工作流却一步没跑就停下。同理，返工（`rework_rewind` 换步、
+   * `do_submitted` 开启本步新一轮）与 `/ralphflow-continue` 恢复（`resume` 后重投 DO）
+   * 也都是新一轮的边界；只有**同一轮里**的提醒才累积。
    */
   function submitReminderCount(state: InstanceState, stepId: string): number {
-    return state.history.filter((h) => h.event === "submit_reminder" && h.step === stepId).length;
+    const boundaries = new Set(["step_start", "rework_rewind", "do_submitted", "resume"]);
+    let from = -1;
+    for (let i = 0; i < state.history.length; i++) {
+      const h = state.history[i]!;
+      if (h.step === stepId && boundaries.has(h.event)) from = i;
+    }
+    let n = 0;
+    for (let i = from + 1; i < state.history.length; i++) {
+      const h = state.history[i]!;
+      if (h.event === "submit_reminder" && h.step === stepId) n++;
+    }
+    return n;
   }
 
   function remindToSubmit(sessionId: string): { remind: boolean; message?: string; summary?: string } {
@@ -3675,6 +3758,144 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     writeState(state, instId);
     deliverStepDo(state, instId, wf, step, `♻️ 已按 /ralphflow-reset 重置上下文，重投步骤 ${step.id} 的 DO`, undefined, { manual: true });
     return { ok: true, text: `已按 /ralphflow-reset 排入上下文重置：步骤 \`${step.id}\` 的 DO 会在属主会话的空闲窗口完成整段替换后重投（失败计数保留，状态机不动）。` };
+  }
+
+  /**
+   * 回退（`/ralphflow-rewind <步骤> <原因>`）：**reset 的动作 + 状态机倒退 + 带走原因**。
+   *
+   * 机械动作 = 把 `current_step` 拨到目标步，清 `paused` / `pause_reason` / `fail_counts` /
+   * `do_submitted` / `verdicts` / `delegations`（并中止在飞验证者），记 `rewind` + `step_start`，
+   * 然后走**同一根** `deliverStepDo` 接线：整段替换上下文（强制，无论该步有没有标 `reset`）+
+   * 可见告知 + 重投目标步 DO（DO 里**自成一段**带着用户给出的原因）。
+   * 载体（`src/reset.ts`）一行都不用动 —— 这是策略层的事。
+   *
+   * **没有第二道门**：引擎对进度的全部认知就是 `current_step`，「已通过 CHECK 的步骤」是现算的
+   * 派生量（`verdicts[]` / `history`），不是状态。所以「回退到某步」与「跳到某步」在机械上是
+   * 同一件事，合法性判据只有一条：**按工作流定义顺序、当前步之前的步骤**。
+   * opencode 那份 `step-records.json` 现算出来的「已通过列表」本仓库已定案不移植（第二个事实源，
+   * 见 design §9「不移植 step-records.json」）。
+   *
+   * 四条判据（都是「这句话得是真的」，不是额外护栏）：
+   *   1. **属主必须是本会话**（与 reset 同）：别的会话要接管先走 `/ralphflow-continue <实例ID>`；
+   *   2. **未暂停时 `do_submitted === false`**（判据**不是** `paused`）：已交卷 = 验证在飞 /
+   *      停在审查门，回退会打断在飞验证、把判定变成孤儿。反过来**暂停态允许回退并顺带解除暂停**
+   *      —— 暂停意味着机械程序已经把这一轮收尾（`max_failures` / `check_infra` 的暂停路径
+   *      留下 `do_submitted=true` 只是那一轮的残留），「停下来后回到更早一步换方向」正是这个
+   *      命令的旅程；`/ralphflow-reset` 才是「暂停中一律拒绝」的那一条；
+   *   3. 目标必须是当前步**之前**的步骤；调用点 / 未来步 / 当前步 / 不存在的 id 各有一条**准确**
+   *      的拒绝理由（笼统说「不能回退」等于没说）；
+   *   4. 审查门是 `manual_step` **现算**的、静态展开后没有栈帧 —— **没有标记要清**。
+   *
+   * 失败绝不抛：返回 `ToolResult` 让命令处理器交回模型如实转达（与 reset 同一形态）。
+   */
+  function rewindTo(sessionId: string, targetRef: string, reason?: string): ToolResult {
+    const targetId = String(targetRef ?? "").trim();
+    const reasonText = String(reason ?? "").trim();
+    if (!targetId) return { ok: false, text: "缺少目标步骤：`/ralphflow-rewind <步骤> <原因>` 两者都必填。" };
+    if (!reasonText) {
+      return { ok: false, text: `缺少回退原因：\`/ralphflow-rewind ${targetId} <原因>\` 两者都必填 —— 原因会写进目标步的 DO 提示词（自成一段），换方向时下游一定看得到。` };
+    }
+
+    const info = activeInstanceOfSession(sessionId);
+    if (!info) {
+      const others = listInstances().filter((i) => i.state.active);
+      return {
+        ok: false,
+        text: others.length === 0
+          ? "当前会话没有活跃实例，无法回退。用 `/ralphflow-start <工作流> <任务>` 启动一个。"
+          : `当前会话没有活跃实例（回退只对**属主会话**生效）。项目里还有其它活跃实例：\n${others.map((i) => `- \`${i.id}\` — ${i.state.workflow_name} · ${i.state.current_step}${i.state.owner_session ? "" : "（无属主）"}`).join("\n")}\n\n要接管请用 \`/ralphflow-continue <实例ID>\`。`,
+      };
+    }
+    const { id: instId, state } = info;
+    const { def: wf, problems } = loadWorkflow(state.workflow_name);
+    if (!wf) {
+      return { ok: false, text: `工作流 \`${state.workflow_name}\` 已无法加载，无法回退：\n${problems.map((p) => `- ${p}`).join("\n")}` };
+    }
+    const curIdx = wf.steps.findIndex((s) => s.id === state.current_step);
+    if (curIdx < 0) return { ok: false, text: `实例状态损坏：当前步骤 \`${state.current_step}\` 不在工作流里。用 \`/ralphflow-cancel\` 结束。` };
+
+    // ② 已交卷 → 拒绝。判据是 `do_submitted`（**不是** `paused`）：
+    //    · 未暂停 + 已交卷 = 验证在飞 / 审查门已开 —— 回退会把在飞判定变成孤儿，必须拒；
+    //    · **暂停 + 已交卷 = 机械程序已经把这一轮收尾了**（`max_failures` / `check_infra` 的
+    //      暂停路径正是这么落的：判定已终态、委派已摘除，`do_submitted` 只是那一轮的残留）。
+    //      此时**允许回退并顺带解除暂停** —— 「停下来后回到更早一步换方向」正是这个命令的旅程。
+    //      这也正是它不能用 `paused` 当判据的原因（`/ralphflow-reset` 才是暂停中一律拒绝）。
+    if (state.do_submitted && !state.paused) {
+      return {
+        ok: false,
+        text: `步骤 \`${state.current_step}\` 已交卷（独立验证者正在取证，或已停在审查门），**拒绝回退**。\n\n回退只能在 DO 阶段做：等验证结果回来（会自动唤醒本会话），或用 \`/ralphflow-status\` 看进度。要重做当前步而**不动状态机**，用 \`/ralphflow-reset\`。`,
+      };
+    }
+    if (pendingDoDelivery.has(instId)) {
+      return { ok: false, text: `实例 \`${instId}\` 的当前步 DO 正在投递中，稍后再试（上下文替换只能落在步骤边界的空闲窗口）。` };
+    }
+
+    // ③ 目标合法性：按工作流定义顺序，**当前步之前的步骤**
+    const tgtIdx = wf.steps.findIndex((s) => s.id === targetId);
+    const earlier = wf.steps.slice(0, curIdx).map((s) => `\`${s.id}\``);
+    const earlierHint = earlier.length > 0 ? `本步之前可回退的步骤：${earlier.join("、")}。` : "";
+    if (tgtIdx < 0) {
+      if (isSubWorkflowCallId(wf, targetId)) {
+        const expanded = wf.steps.filter((s) => s.id.startsWith(`${targetId}${SUBWORKFLOW_ID_SEP}`)).map((s) => `\`${s.id}\``);
+        return {
+          ok: false,
+          text: `\`${targetId}\` 是**子工作流调用点**，不是可回退的步骤：加载期静态展开把它替换成了 ${expanded.join("、")}（调用点自己不在步骤列表里）。请用展开后的步骤 id。${earlierHint}`,
+        };
+      }
+      return { ok: false, text: `工作流 \`${wf.name}\` 里没有步骤 \`${targetId}\`，无法回退。${earlierHint}` };
+    }
+    if (tgtIdx === curIdx) {
+      return {
+        ok: false,
+        text: `目标 \`${targetId}\` **就是当前步**：回退只去**更早**的步骤；要重做当前步用 \`/ralphflow-reset\`（它不动状态机、也不赦免失败）。${earlierHint}`,
+      };
+    }
+    if (tgtIdx > curIdx) {
+      return {
+        ok: false,
+        text: `目标 \`${targetId}\` 在当前步 \`${state.current_step}\` **之后**（第 ${tgtIdx + 1}/${wf.steps.length} 步 vs 当前第 ${curIdx + 1} 步）：回退只能去当前步**之前**的步骤。${earlierHint}`,
+      };
+    }
+
+    // ── 机械动作：reset 的动作 + 状态机倒退 + 带走原因 ───────────────────────────
+    const target = wf.steps[tgtIdx]!;
+    const from = state.current_step;
+    // 在飞验证者一律中止（正常路径下 `do_submitted === false` ⇒ 无在飞委派；这里是硬护栏：
+    // 清掉 delegations 而不中止，判定回来时会变成无人认领的孤儿）
+    abortInstance(instId);
+    stopHeartbeatsOf(instId, state.delegations);
+    state.delegations = [];
+    state.verdicts = [];
+    state.current_step = target.id;
+    state.do_submitted = false;
+    state.last_submit_summary = undefined;
+    // 暂停与失败计数一并清：回退 = 换方向，旧方向的暂停理由与失败史都不再适用
+    // （审查门没有标记要清：它是 `manual_step` 现算的，静态展开后没有栈帧）。
+    state.paused = false;
+    state.pause_reason = undefined;
+    state.fail_counts = {};
+    state.fail_count = 0;
+    pushHistory(state, "rewind", `${from} → ${target.id}：${reasonText}`, target.id);
+    pushHistory(state, "step_start", target.desc ?? "", target.id);
+    log("info", "rewind", { instId, from, to: target.id, reason: reasonText });
+    logEvent(instId, "info", "rewind", { from, to: target.id, reason: reasonText });
+    logEvent(instId, "info", "step_start", { step: target.id });
+    writeState(state, instId);
+    // 同一根接线：整段替换上下文（强制）+ 可见告知 + 重投目标步 DO（带着原因）。
+    // 替换是异步的（等空闲窗口），本函数只排入、当场返回 —— 与 /ralphflow-reset 同形。
+    deliverStepDo(
+      state,
+      instId,
+      wf,
+      target,
+      `↩️ 已按 /ralphflow-rewind 回退到步骤 ${target.id}（从 ${from}），正在重投其 DO`,
+      undefined,
+      { rewind: { from, reason: reasonText } },
+    );
+    return {
+      ok: true,
+      text: `已按 /ralphflow-rewind 回退到步骤 \`${target.id}\`（从 \`${from}\`）：暂停与失败计数已清、本轮判定与在飞验证已作废；属主会话上下文会在空闲窗口整段替换成交接稿，目标步 DO 带着你给的原因随即重投。`,
+    };
   }
 
   function cancelInstance(sessionId: string, instanceRef?: string, reason?: string): ToolResult {
@@ -4072,7 +4293,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     ensureLayout, listWorkflows, loadWorkflow,
     readState, listInstances, listHistory, instanceDir,
     artifactsDirOf, artifactsRelDirOf, reportRelPathOf, destroyInstance,
-    start, onSubmit, noteAssistantText, remindToSubmit, continueInstance, resetCurrent, cancelInstance, statusOf, listAll, restore, diagnose,
+    start, onSubmit, noteAssistantText, remindToSubmit, continueInstance, resetCurrent, rewindTo, cancelInstance, statusOf, listAll, restore, diagnose,
     activeInstanceOfSession,
   };
 }

@@ -26,6 +26,8 @@
 
 opencode 的 `step-records.json` 是 `StepExecutionRecord[]`（`stepId/phase/status/failCount/startTime/endTime/reason/workflowName`）。它的主要消费者是 **`rewind`**（倒退到上游已通过 CHECK 的步骤）——而 `rewind` 本仓库**已定案押后**。
 
+> **后续注记（v1.1，2026-10）**：`/ralphflow-rewind` **已实现**（见 design §8 与路线图 v1.1 行），但**本节结论不变、「不移植 `step-records.json`」依然成立**：回退的合法性判据只需要 `current_step`（「哪些步已通过」是 `verdicts[]` / `history` 的现算派生量），**不需要这份第二个事实源**。上面那句「已定案押后」是对当时状态的如实记录，不改写。
+
 同时，**我们的报告已经从 `history` 派生了同样的信息**：每步耗时与重试次数（`stepStats()`，见 `src/engine.ts`），刚刚修好并补了合成 history 单测。
 
 再移植一份 step-records，就是给同一件事造**第二个事实源**：两处会漂移、报告会自相矛盾、将来做 rewind 时还得先决定信谁。**要补的是缺失的那一层（机器可读日志），不是补一份我们已有的派生量。**
