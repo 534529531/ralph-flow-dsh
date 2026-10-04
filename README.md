@@ -88,15 +88,9 @@ dsh plugin --profile web add ralphflow-dsh
 # 或本地路径：dsh plugin --profile web add /path/to/ralph-flow-dsh
 ```
 
-然后在 `~/.dsh/profiles/web/cordis.patch.yml` 追加：
-
-```yaml
-- insert:
-    - id: ralphflow
-      name: ralphflow-dsh
-```
-
 把 `web` 换成你实际使用的 profile 名，然后**重启 dsh**（重跑 `dsh web`）。
+
+本包是一个 **bundle**（自带 `cordis.patch.yml`），所以上面一条命令就够了：它装上依赖，并把它声明的 row 一并激活——Plugins 页里因此能看到它，也能开关或卸载。**不要去手改 profile 的 `cordis.patch.yml`**：手写的 insert 会和 bundle 自带的那份撞成两份 row。（`2.0.1` 之前的版本还不是 bundle，那时才需要手改；已经手改过的，删掉那段 `- insert:` 与 `- id: ralphflow` 覆盖即可。）
 
 确认装载：在新会话里运行 **`/ralphflow-list`**——应看到内置的 `loop` 与 `spec`，以及你自己的工作流。
 
