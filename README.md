@@ -1,16 +1,94 @@
-# Ralph Flow for DeepSeek Harness (dsh)
+<div align="center">
 
-> **npm:** [`ralphflow-dsh`](https://www.npmjs.com/package/ralphflow-dsh) · **源码:** [github.com/534529531/ralph-flow-dsh](https://github.com/534529531/ralph-flow-dsh)
+# ralphflow-dsh
 
-**执行者/验证者模式的具象化**：主会话执行任务，**有检查依据的步骤**（写了 `check` 或 `check_voting`）由独立验证者（全新会话，不可见主会话自辩）取证判定，失败自动返工；**没有检查依据的步骤跳过对抗性验证**（见下文）；**是否推进只由机械程序决定**（裁判权定理，见 [docs/v2/design.md](docs/v2/design.md)）。这是 v2 原生重做版（旧版在 `archive/v1` 分支）。
+**DeepSeek Harness 工作流自动化插件——把"执行、独立验证、重试"变成插件级强制**
 
-## 安装
+[![npm](https://img.shields.io/npm/v/ralphflow-dsh)](https://www.npmjs.com/package/ralphflow-dsh)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/534529531/ralph-flow-dsh/blob/main/LICENSE)
+[![dsh plugin](https://img.shields.io/badge/dsh-plugin-green.svg)](https://github.com/534529531/ralph-flow-dsh)
 
-```bash
-dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plugin --profile web add /path/to/ralph-flow-dsh
+</div>
+
+---
+
+## 这是什么
+
+你让 AI"实现认证模块、写测试、更新文档、确认全绿"，它常常写了代码就停——测试没跑、文档没写。ralphflow 把这类多步骤承诺变成必须遵循的状态机：**每步做完，由独立的验证会话按检查依据取证判定，通过才放行**。
+
+它不是提示词技巧，是插件级强制。两条中心定理决定了它为什么成立：
+
+> **裁判权在独立会话**——判定只可能产生于一个与执行者互不可见的会话。验证者看不到执行者的自辩，执行者无法转述、伪造、污染判定。
+>
+> **推进权在机械程序**——是否推进、回退、暂停，只由一段不读模型脸色、不可被说服的程序，根据判定与规则算出。模型可以干活、可以认错，但**不能声称自己通过**。
+
+这是 v2 原生重做版（旧版在 `archive/v1` 分支）。
+
+## 怎么工作的
+
+```mermaid
+flowchart TD
+    Start(["/ralphflow-start 或 /ralphflow-工作流名"]) --> Inst["创建实例，投递第一步 DO"]
+    Inst --> DO["DO：主会话执行任务"]
+    DO --> Submit{"调用 ralphflow_submit 交卷"}
+    Submit -->|"忘了交卷"| Remind["回合结束前提醒<br/>上限 2 次"]
+    Remind -->|"仍不交卷"| NoSubmit["暂停（no_submit）"]
+    Remind --> DO
+    Submit --> HasCheck{"本步有检查依据？<br/>check / check_voting"}
+    HasCheck -->|"否"| Manual2{"在 manual_step 列表？"}
+    Manual2 -->|"是"| Review2["停在审查门等人放行"]
+    Manual2 -->|"否"| Next
+    HasCheck -->|"是"| Check["独立验证者会话取证判定"]
+    Check --> Verdict{"判定"}
+    Verdict -->|"全过"| Gate{"在 manual_step 列表？"}
+    Gate -->|"是"| Review["停在审查门等人放行"]
+    Gate -->|"否"| Next{"on_pass"}
+    Verdict -->|"失败"| Fail["失败计数 +1，带理由返工"]
+    Verdict -->|"基础设施故障"| Infra["暂停（不计失败）<br/>投票场景自动重试一次"]
+    Fail -->|"未达上限"| DO
+    Fail -->|"达上限"| Pause["暂停等人"]
+    Review -->|"/ralphflow-continue"| Next
+    Review2 -->|"/ralphflow-continue"| Next
+    Infra -->|"/ralphflow-continue"| Check
+    NoSubmit -->|"/ralphflow-continue"| DO
+    Pause -->|"/ralphflow-continue"| DO
+    Next -->|"下一步"| DO
+    Next -->|"done"| Complete["完成：归档报告，销毁实例"]
 ```
 
-然后在 `~/.dsh/profiles/web/cordis.patch.yml` 追加并重启：
+CHECK 不是同一个会话再问一遍"你做完了吗"。它是一个**全新会话**——没看过 DO 阶段的对话、没有实现上下文、不认识你——只按检查依据判断工作有没有真的完成。AI 对自己的工作过度自信，验证者不会，它要求独立的证据。
+
+`check` 不是必填。步骤不写 `check` / `check_voting` 时，DO 完成后直接按 `on_pass` 推进，不跑对抗验证，也**绝不会写成"检查通过"**——跳过就诚实标注"跳过对抗性验证"。适合文档整理、纯编排这类不需要独立复核的步骤。需要人审的步骤用工作流级 `manual_step`。
+
+## 能力
+
+| 类别 | 能力 |
+|------|------|
+| 独立验证 | 全新会话的子代理按检查依据取证判定；只读工具白名单；结构化判定 + 文本兜底，**解析失败一律 fail-closed** |
+| 多验证者投票 | `check_voting`：1–5 个验证者**并行**独立检查（各自检查依据 / 模型），全过才放行；失败聚合多角度反馈，infra 自动重试一次并只重跑故障票 |
+| 检查可选 | 不写 `check` / `check_voting` 就跳过对抗验证，DO 完成后直接走 `on_pass`；`manual_step` 里的这类步骤是纯人工审查 |
+| 自动返工 | 判定失败带着**具体理由**回到 `on_fail`——不是盲目重来 |
+| 人工审查门 | 工作流级 `manual_step` 列表：先自动验证、通过后停下请你审查，`/ralphflow-continue` 放行（没写 check 时人工审查即最终验证） |
+| 上下文重置 | `/ralphflow-reset` 换干净上下文重做当前步；步骤级 `reset: true` / 工作流级 `auto_reset: true` 在步骤边界自动重置；**只换上下文、不赦免失败** |
+| 中途回退 | `/ralphflow-rewind <步骤> <原因>` 回退到当前步之前的步骤并换方向：状态机倒退、清暂停与失败计数、原因带进目标步 DO；暂停态也允许 |
+| 子工作流 | 一步整段委托给另一个工作流，多层嵌套，通用流程做成可复用资产（加载期静态展开） |
+| 多实例并行 | 一个工作区一个引擎；同一工作区多个会话各跑各的实例，互不干扰 |
+| 诊断与创建 | `/ralphflow-doctor` 提前抓定义错误与实例体检；`/ralphflow-create` 交互式设计并校验到零告警 |
+| 日志与报告 | JSONL 执行日志（含验证者提示词与判定原文）+ 逐步耗时/重试的归档报告 |
+| 方言共享 | 同一份工作流 YAML 在 opencode / claude / dsh 三端可跑；本端对"会让资产不再表示它所说的话"的配置一律加载期 fail-fast |
+
+## 快速开始
+
+### 安装
+
+前置：已安装 **dsh**（`@deepseek-ai/dsh-* >= 0.2.0-rc.2`、`cordis >= 4.0.4`）与 **pnpm**（`dsh plugin` 是 pnpm 的转发器）。
+
+```bash
+dsh plugin --profile web add ralphflow-dsh
+# 或本地路径：dsh plugin --profile web add /path/to/ralph-flow-dsh
+```
+
+然后在 `~/.dsh/profiles/web/cordis.patch.yml` 追加：
 
 ```yaml
 - insert:
@@ -18,124 +96,170 @@ dsh plugin --profile web add ralphflow-dsh          # 或本地路径：dsh plug
       name: ralphflow-dsh
 ```
 
-## 使用
+把 `web` 换成你实际使用的 profile 名，然后**重启 dsh**（重跑 `dsh web`）。
 
-| 命令 | 工具 | 用途 |
-|---|---|---|
-| `/ralphflow-start` | `ralphflow_start` | 启动工作流（模型执行 → 有检查依据的步骤独立验证 → 失败自动返工） |
-| `/ralphflow-continue` | `ralphflow_continue` | 放行审查门 / 解除暂停 / 接管实例 |
-| `/ralphflow-status` | `ralphflow_status` | 查看实例状态与判定 |
-| `/ralphflow-list` | `ralphflow_list` | 列出实例与工作流（表格） |
-| `/ralphflow-cancel` | `ralphflow_cancel` | 取消并归档报告 |
-| `/ralphflow-create` | `ralphflow_create` | 交互式创建自定义工作流 |
-| `/ralphflow-doctor` | `ralphflow_doctor` | 诊断工作流定义与实例状态 |
-| `/ralphflow-reset` | —（不注册同名工具） | 重做当前步：只换干净上下文 + 重投当前步 DO，**不赦免失败**，暂停中拒绝 |
-| `/ralphflow-rewind` | —（不注册同名工具） | 回退到更早的步骤并换方向：`<步骤> <原因>` 两个都必填。清暂停与失败计数、作废本轮判定，上下文整段替换成交接稿，目标步 DO 带着原因重投（回退只能去当前步**之前**的步骤） |
-| `/ralphflow-<工作流名>` | — | 动态注册的工作流快捷命令（如 `/ralphflow-loop`、`/ralphflow-spec`；命名与 claude code 版一致） |
+确认装载：在新会话里运行 **`/ralphflow-list`**——应看到内置的 `loop` 与 `spec`，以及你自己的工作流。
 
-**`/ralphflow-rewind` 已实现**（回退到更早的步骤并换方向，见上表）；其余命令与 opencode 版功能看齐。**别把三种 reset 混淆**：① 步骤级方言 `reset: true`、② 工作流级 `auto_reset: true`（等价于给所有步骤标 reset，含失败重试）、③ 手动 `/ralphflow-reset`（重做当前步）——三者**语义完全一致**：进入该步前把会话可见面整段替换成一条「交接稿」，模型收到的 messages = 系统提示 + 交接稿 + 本步 DO（内置 `spec` 的 `propose`/`implement` 标了 `reset: true`；载体见 `docs/v2/reset-feasibility.md` 与 `src/reset.ts`）。**子工作流调用点上的 `reset: true` 也生效**：语义按本实现的静态展开模型定 —— 进入子工作流 = **首个展开后子步骤**的重置。重置**只换干净上下文、不赦免失败**：失败计数原样保留，暂停中一律拒绝并指向 `/ralphflow-continue`（否则反复 reset 就能绕过 `max_fail_count`）。措辞**按来源分三支**（步骤级 / `auto_reset` / **调用点**）：子工作流的 `auto_reset` 与调用点的 `reset` 在加载期静态展开下沉时都会保留来源标记，绝不说成「本步标了 `reset: true`」（作者没标）；手动重置若在空闲窗口复查时发现实例已交卷/推进/取消，会**发一条可见告知**说明这次重置没有生效并给出下一步（绝不静默作废——命令处理器当场已回 success，这条告知是唯一结果通道）。命令语义 = **触发词**：`/ralphflow-*` **一律**由模型自然语言回复（含用法错误），**零程序化卡片返回**，行为与 claude code/opencode 完全一致；**两条机械命令是例外**：`/ralphflow-reset` 与 `/ralphflow-rewind` 的机械动作由命令处理器直接驱动引擎完成（**都不给模型可调用的工具**，§10.10），结果仍交回模型自然语言回复。
+### 跑起来
 
-**`/ralphflow-rewind <步骤> <原因>`（换方向回退）**：机械动作 = `reset` 的动作（步骤边界的空闲窗口里整段替换会话可见面，交接稿 = 系统提示之后唯一内容）+ **状态机倒退**（`current_step` 拨到目标步，清 `paused` / `pause_reason` / `fail_counts` / `do_submitted` / `verdicts` / `delegations` 并中止在飞验证者，记 `rewind` + `step_start`）+ **带走原因** —— 原因写进**目标步 DO 提示词、自成一段**（不是只写交接稿：换上下文失败时 DO 照样带着原因落地，所以没有 `keep_session` 这类逃生口），那一段同时点明**下游旧产出仍在盘上、基于旧方向**。目标合法性**只有一条**：按工作流定义顺序、**当前步之前的普通步骤** —— 没有「已通过 CHECK」这道门（引擎对进度的全部认知就是 `current_step`，不移植 opencode 的 `step-records.json`）。**暂停态允许回退并顺带解除暂停**（判据是 `do_submitted === false`，不是 `paused`）：`max_failures` / `check_infra` 的暂停路径留下 `do_submitted=true` 只是那一轮的残留，暂停本身就意味着机械程序已把该轮收尾；反之未暂停 + 已交卷 = 验证在飞 / 审查门已开，一律拒绝（回退会把判定变成孤儿）。`<步骤> <原因>` 两个都必填，缺参数交回模型自然语言追问；各条拒绝理由（当前步 / 未来步 / 不存在的步骤 / 子工作流调用点 / 已交卷）交回模型如实转达。顺带修一处：`submit_reminder` 次数按**本次进入该步**（`step_start`）起算，否则回退到已用光提醒预算的步骤会立刻 `no_submit` 暂停。验收 `scripts/rewind-test.mjs`。
+```
+/ralphflow-loop "用 JWT + refresh token 实现用户认证模块"
+```
 
-**六个步骤字段必填**：`desc` / `input` / `output` / `on_pass` / `on_fail` / `max_fail_count`（缺失、非字符串、**空串**都是**加载期硬错误**，整份拒收）。理由不是对齐而是**静默**：在 opencode/claude 的加载器里缺一个就 `skipStep`（该步被静默丢弃，或整份定义因「没有任何有效步骤」被拒收）——资产会不再表示它所说的话。**子工作流调用点同样必填这六个**（那两家的加载器把这六项校验排在第 `workflow` 分支之前）。因此不再有「`on_pass` 缺省 = 顺序下一步」「`on_fail` 缺省 = 自身」「`max_fail_count` 缺省 3」。
+工作流自动执行、自动验证、自动推进，绝大多数时间你只需等。需要你出手的只有：人工审查门、以及三类暂停（连续失败 / 基础设施故障 / 忘了交卷的提醒用尽）——都用 `/ralphflow-continue` 放行或恢复。
 
-内置工作流：`loop`（单步对抗验证循环，核对配方 = **4 票 `check_voting`**，前三条逐字照抄 opencode 版、第 4 条是本仓库的「修改不影响原有功能，不破坏需求以外的边界」）、`spec`（探索→提案→逐任务实现→归档，propose 步带审查门；`propose`/`implement` 带**重置门** `reset: true`）。自定义工作流按同一方言放到 `<workspace>/.dsh/ralph-flow/workflows/`。
+跑完后报告归档到 `<workspace>/.dsh/ralph-flow/reports/`，交付物在 `.dsh/ralph-flow/artifacts/<产出目录名>/`（两者永久保留）。
 
-**检查依据决定本步是否被独立验证（与 opencode 一致）**：写了 `check` 或 `check_voting` → 交卷后由独立验证者取证判定；**两者都不写 → 该步跳过对抗性验证**，DO 完成直接进入下一步（**工作流级** `manual_step` 列表里的这类步骤则是**纯人工审查**：停在审查门等你 `/ralphflow-continue` 放行）。跳过时通知、轨迹与归档报告一律写「跳过对抗性验证」——绝不会写成「检查通过」。不在 `manual_step` 列表里、又没有检查依据的步骤会在加载期与 `/ralphflow-doctor` 告警（提醒它不会被独立验证）；`check` 写了但非字符串（如 `check: true`）仍是加载期硬错误（本意是免验证请直接删掉该键）。内置 `loop`/`spec` 的每一步都有对抗性检查（`loop` 用 4 票 `check_voting`，`spec` 四步各一条 `check`），行为不受影响。
+> **跑之前确认宿主有委派后端**：验证者需要一个**全新上下文**的子代理后端。若本部署没有（或缺少 persona / 工具白名单能力），验证会以**基础设施故障**暂停（`check_infra`），`/ralphflow-continue` 只会重派、无法让它通过——这时需要先在 dsh 里启用支持该能力的后端。
 
-**人工审查门只有一种写法：工作流级（顶层，与 `steps` 同级）的 `manual_step:` 列表**（列表写法，也接受逗号字符串 `"design,review"`；引用不存在的步骤 = 加载期硬错误）。**步骤级 `manual_step` 键已删除**：写进步骤里（不论 `true`/`false`/空值）都是**加载期硬错误**，报错文案会给出正确写法（把该步 id 列进顶层列表）。理由：opencode/pi 只认这个顶层列表，步骤级写法在那边只是「不认识的步骤键」——被警告忽略后**人工审查门静默消失**；静默跳过审查门比报错严重得多，所以这里 fail-fast。
-
-**多验证者投票（`check_voting`，行为对齐 opencode 2.8.0）**：把 `check` 换成 1–5 个验证者，各自**并行**只查自己那条检查依据（可各配 `model`），**全过才放行**；任一票不通过 → 整体失败，聚合所有失败票的理由（含各票检查依据原文）反馈 DO 返工。每票完成即时推送一行进度，`/ralphflow-status` 可看每票状态。基础设施故障（票没跑成）**自动重试一次**且不计失败次数，只重跑故障票（已通过的保留）；重试仍故障才暂停，`/ralphflow-continue` 只补跑未通过的票。与 `check` **互斥**（同写 = 加载期硬错误）；`check` 与 `check_voting` 都不写 = 跳过对抗性验证。
+### 定义你自己的工作流
 
 ```yaml
+# <workspace>/.dsh/ralph-flow/workflows/my-flow.yaml
+description: 实现、测试并文档化一个功能
+
 steps:
-  - id: implement
-    do: 按 design.md 实现
-    output: 测试通过的代码
-    check_voting:                      # 1-5 条；写几条就是几个验证者
-      - check: 用户任务的每一条要求都已落实
-      - check: 实现的行为符合预期，真实可用
-        model: anthropic/claude-sonnet # 可选：该票专用模型（不填继承全局 adversarial_check.model）
-      - check: 没有遗漏的需求，边界情况已覆盖
+  - id: analyze
+    desc: 任务分析
+    do: 分析需求，产出 design.md
+    input: 用户需求
+    output: "design.md"
+    check: 打开 design.md，核对覆盖数据模型、API、错误处理
+    on_pass: execute
+    on_fail: analyze
+    max_fail_count: 3
+
+  - id: execute
+    desc: 实现
+    do: 按设计实现，跑全量测试到全绿
+    input: design.md
+    output: 测试通过的可工作代码
+    check: 自己跑测试套件；核对代码与 design.md 一致
     on_pass: done
-    on_fail: implement
+    on_fail: execute
     max_fail_count: 5
 ```
 
-票数超过 5、空数组、条目缺 `check`、`check` 与 `check_voting` 同写、`check_voting` 与 `check_model` 同写，都是**加载期硬错误**（说人话、不静默）。条目里写 `timeout_ms` / `system_prompt` 与 `adversarial_check` 下同名键同一口径：本版本不兑现，加载期告警并忽略（验证超时交给宿主 dsh 的原生看门狗；验证者职责是插件内部定义）。投票进度**不另立文件**：每票状态就是实例 `state.json` 里的判定与在飞委派（单根事实源，见设计 §10.4），`/ralphflow-status` 现算。
+`id` 与 `do` 必填（子工作流调用点上 `do` 可选）；此外 `desc` / `input` / `output` / `on_pass` / `on_fail` / `max_fail_count` **六个字段同样必填**（缺失、非字符串、空串都是**加载期硬错误**，整份拒收）。`check` 可选——不写就跳过对抗验证。写完运行 **`/ralphflow-doctor`** 抓出问题。
+
+## 核心概念
+
+**DO → CHECK → 推进。** 每个步骤分两个阶段：
+
+- **DO（主会话）**执行任务，最后调用 `ralphflow_submit` 工具交卷（dsh 原生：工具调用即事实，工具结果结束回合）
+- **CHECK（独立会话）**严格对照检查依据取证评判，不和 DO 阶段共享记忆
+
+**交卷是工具调用，不是文本标记。** 不再对模型自由文本做正则匹配——`ralphflow_submit` 的调用是事实。忘了交卷时，回合结束前会收到提醒（上限 2 次），用尽则暂停等你，绝不死循环催促。
+
+**独立验证不是自问自答。** 验证者的后端按**能力**选择（只考虑全新上下文的委派后端，绝不回退到继承父级历史的 `fork`）；身份与职责是插件内部定义，工作流无法配置。它只有只读工具，必须自己看文件、跑命令找证据。**它看不到执行者的交卷摘要**——自述是锚点，会软化独立判定。
+
+**上下文会脏，你能救。** 长工作流跑到后半段，会话里塞满探索、试错、验证记录——模型开始丢需求、跑偏。三种方式解决：
+
+| 场景 | 方式 | 效果 |
+|------|------|------|
+| 当前步的上下文脏了 | `/ralphflow-reset` | 换干净上下文重做当前步（**不赦免失败**，暂停中拒绝） |
+| 前面某步方向错了 | `/ralphflow-rewind <步骤> <原因>` | 状态机倒退到更早的步骤、清暂停与失败计数、原因带进目标步 DO |
+| 进入某个重步骤前 | 步骤标 `reset: true` 或工作流级 `auto_reset: true` | 进入该步时自动换干净上下文（含失败重试） |
+
+重置的语义在**所有触发来源下完全一致**（步骤级 / `auto_reset` / 调用点 / 手动 / 回退）：把属主会话的可见面整段替换成一条"交接稿"，模型收到的 messages = 系统提示 + 交接稿 + 本步 DO。**工作流首步的初次进入无法重置**（首步 DO 是启动工具的返回值），启动回执会如实说明。
+
+**随时接管。** 实例属主是状态里的 `owner_session`。`/ralphflow-continue` 在**无属主**时自动接管；有属主时列出候选并要求 `/ralphflow-continue <实例ID>` 显式指定。`/ralphflow-status` 无参且本会话没有活跃实例时，给全部活跃实例的概览（含属主会话）。
+
+## 命令一览
+
+| 命令 | 作用 |
+|------|------|
+| `/ralphflow-start <工作流> <任务>` | 启动工作流实例 |
+| `/ralphflow-continue [实例ID]` | 放行审查门 · 恢复暂停 · 接管实例 |
+| `/ralphflow-status [实例ID]` | 当前进度、指定实例详情，或全部活跃实例概览 |
+| `/ralphflow-list` | 列出可用工作流 + 活跃实例（只答"现在有什么在跑"） |
+| `/ralphflow-cancel [实例ID] [原因]` | 取消并归档报告 |
+| `/ralphflow-reset` | 换干净上下文重做当前步（**机械命令**，不注册工具） |
+| `/ralphflow-rewind <步骤> <原因>` | 回退到更早的步骤并换方向（**机械命令**，不注册工具） |
+| `/ralphflow-doctor` | 诊断工作流定义与实例状态（只报问题与修法，不代你修） |
+| `/ralphflow-create [流程想法]` | 交互式设计自定义工作流，校验到全部 ✅ 且无告警 |
+| `/ralphflow-<工作流名>` | 动态注册的工作流快捷命令（如 `/ralphflow-loop`、`/ralphflow-spec`） |
+
+命令语义 = **触发词**：`/ralphflow-*` 一律由模型自然语言回复（含用法错误），零程序化卡片返回。两条机械命令是例外——`/ralphflow-reset` 与 `/ralphflow-rewind` 的机械动作由命令处理器直接驱动引擎完成，结果仍交回模型自然语言回复，且**都不给模型可调用的工具**。
+
+## 内置工作流
+
+### loop——多验证者对抗驱动的单步循环
+
+开放式任务、Bug 修复、范围明确的功能开发。一个步骤内完成「实现 → 执行摘要 → 4 个验证者并行投票 → 修复」的迭代闭环，直到全过。
+
+```
+/ralphflow-loop "用 JWT + refresh token 实现用户认证模块"
+```
+
+```mermaid
+flowchart LR
+    L["loop<br/>实现 → 摘要 → 4 验证者投票"] -->|任一票不通过<br/>带失败理由返工| L
+    L -->|全过| Done
+```
+
+前三票逐字对齐 opencode 版（每一条要求都已落实 / 行为符合预期，真实可用 / 没有遗漏的需求，边界情况已覆盖），第 4 票是本仓库的口径「修改不影响原有功能，不破坏需求以外的边界」。标了 `reset: true`：失败返工时换干净上下文，每轮摘要追加到 `summary.md`。`max_fail_count: 100`。想增减验证者，改 `check_voting` 数组即可（1–5 条，写几个就几个）。
+
+### spec——四步开发流水线
+
+需要需求 → 方案 → 实现 → 归档的结构化开发。每步产出后独立验证。
+
+```
+/ralphflow-spec "添加 OAuth2 用户认证功能"
+```
+
+```mermaid
+flowchart LR
+    explore --> propose --> implement --> archive --> Done
+```
+
+`propose` 是人工审查门（验证通过后停下等你放行）；`propose` 与 `implement` 标了 `reset: true`，进入时换干净上下文。
 
 > **内置工作流不落盘**（对齐 opencode/claude）：它们只存在于插件目录，加载时回落取用，因此**始终是随插件发布的最新版本**。要定制，就在 `<workspace>/.dsh/ralph-flow/workflows/` 放一个同名文件——它会遮蔽内置（这是唯一的定制入口，也是有意行为）。
 
-**子工作流（`workflow:` 代替 `do:`，行为对齐 opencode 的「子工作流步骤 / 工作流嵌套」）**：一步可以整段委托给另一个工作流，多层可嵌套，通用流程因此可以做成可复用资产：
+## 与 opencode 和 claude 版的关系
 
-```yaml
-steps:
-  - id: analyze
-    desc: 需求分析
-    input: proposal.md      # 必填（调用点没有 DO/CHECK 阶段：只作为委托声明被保留与校验）
-    output: analysis.md     # 必填（同上）
-    workflow: analyze       # 调用自定义的 workflows/analyze.yaml
-    on_pass: build          # 必填：整段子工作流跑完后去哪（步骤 id 或 "done"）
-    on_fail: analyze        # 必填：只做引用校验（子步骤失败不会回到它）
-    max_fail_count: 3       # 必填：同上
-    reset: true             # 可选且**在调用点上生效**：进入子工作流 = 首个展开后子步骤的重置
-    do: 把 proposal 整理成 analysis.md   # 可选且**在调用点上生效**：这段子工作流「要做什么」
-                            # （下沉到子步骤的「## 任务」；不写就继承父级任务描述）
-  - id: build
-    desc: 实现
-    workflow: build
-```
+同一份工作流 YAML 在三端可跑（`description` / `manual_step` / `adversarial_check` / `auto_reset` / `steps` / `do` / `check` / `check_voting` / `check_model` / `workflow` / `input` / `output` / `on_pass` / `on_fail` / `max_fail_count` / `reset`）。dsh 是方言基准，**载体按 dsh 原生件重新组合，不移植任何一家的引擎**。读者需要知道的几处刻意差异：
 
-落地方式是**加载期静态展开**（不用 opencode 的运行时状态栈）：调用点被就地替换成子工作流的步骤，子步骤 id 是 `调用点id/子步骤id`（多层继续叠加），子工作流的出口接到调用点的 `on_pass`。所以运行期「嵌套」不可见——`current_step` 仍是单字符串、失败预算仍按步记账、审查门与验证者全按普通步骤走，**零新增实例状态字段**。
+| 主题 | opencode / claude 版 | 本端（dsh） |
+|------|---------------------|-------------|
+| DO 交卷 | 输出 `<promise>done</promise>` 文本标记，由 idle 驱动正则检测 | **调用 `ralphflow_submit` 工具**（工具调用即事实）；忘了交卷由 `agent/turn-stopping` 提醒，上限 2 次 |
+| 验证超时 | `adversarial_check.timeout_ms` | **不设**：委派生命周期交给宿主 dsh 的原生看门狗；写了该键是加载期告警 + 忽略 |
+| 验证者额外可读目录 | `extra_dirs` | **不存在对应物**：子代理继承发起会话的工作区与权限面，权限是宿主的职责 |
+| 子工作流 | 运行期状态栈，最多 5 层 | **加载期静态展开**，步骤总数上限 2000、嵌套深度上限 32；零新增实例状态字段 |
+| 步骤级 `manual_step` | 只是不认识的步骤键，被警告忽略（门静默消失） | **加载期硬错误**，文案给出顶层列表的正确写法 |
+| 六个步骤字段 | 缺失就 `skipStep`（静默丢步） | **加载期硬错误**，整份拒收 |
+| 换会话载体 | 可选物理新开终端窗口（`isNewOpen`） | 应用内整段替换属主会话可见面（无新窗口） |
 
-调用点**接受并校验** `id` / `desc` / `do` / `input` / `output` / `workflow` / `on_pass` / `on_fail` / `max_fail_count` / `reset`（外加工作流级 `manual_step` 里的调用点 id）——其中前六个是**必填**（与普通步骤同一条硬规则：opencode/claude 的加载器把这六项校验排在 `workflow` 分支之前，调用点一个都少不了），`reset` 与 `do` 可选且在调用点上**生效**。其余键（`check*`/`inputs`/未识别键）一律**加载期告警 + 指路**，绝不静默生效。与 opencode 的四处**刻意差异**：
+本端对"会让资产不再表示它所说的话"的配置一律 **fail-fast**；对"自己不兑现的键"一律 **告警 + 忽略 + 指路**，绝不静默生效、也绝不改作别的含义。
 
-1. 它静默忽略、或拖到运行期才炸的，这里一律**加载期硬错误**：子工作流文件加载不出来（报错含完整调用链）、**子工作流成环**（含自调用，打印环路径）、调用点 id 或子步骤 id 含 `/` 撞展开、展开后 id 撞名、`workflow` 名含路径分隔符。
-2. 展开后步骤总数上限 **2000**（面向长程工作流；展开过程中计数，超了立刻中止），**嵌套深度上限 32 层**（含最外层；展开器是递归的，过深的链在展开前就被拒 —— 步数上限看不见「每层只有调用点」的长链，那道闸负责不让宿主调用栈被打爆）。
-3. 子工作流内某步耗尽 `max_fail_count` → **暂停等人**（不做它那条「自动走父级 `on_fail`」）。
-4. `manual_step` 标在调用点 = **整段子工作流跑完后停门**（映射到子工作流的出口步骤；opencode 禁止这种写法）。子工作流内部的 `manual_step` 前缀化后原样生效。
+## 文档
 
-另外：子文件里的 `adversarial_check.model` **下沉到它各步的 `check_model`**（投票步则填进缺 `model` 的票），子层没填就逐层回退父级，所以最外层统一配一次即可；**调用点的 `do` 下沉到子步骤的「## 任务」**（这段子工作流的任务，DO 与 CHECK 同源；不写就继承父级任务描述，嵌套**最内层优先、外层继承**）；`inputs` 不生效（文案指路到调用点的 `do`）。展开是**复制**：同一个子工作流被 N 个调用点引用就展开 N 份。验收见 `scripts/subworkflow-test.mjs`。
+| 想了解 | 看这个 |
+|--------|--------|
+| 创建自己的工作流（YAML 字段、check 可选、重置门、回退、嵌套、多验证者投票） | [自定义工作流指南](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/custom-workflows.md) |
+| 架构、状态模型、独立验证、生命周期、工作区锚定 | [工作原理](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/how-it-works.md) |
+| 所有命令、工具、日志事件、实例目录结构 | [命令参考](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/commands.md) |
+| 完整导航（阅读顺序、场景速查、设计档案索引） | [文档主页](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/README.md) |
+| 设计定稿与宪法（不可违反的十二条） | [设计文档](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/v2/design.md) |
+| 历史任务书与验收证据 | [docs/v2/](https://github.com/534529531/ralph-flow-dsh/tree/main/docs/v2) |
 
-## 工作区结构
+## 致谢
 
-实例与资产沉淀在**发起会话的工作区**（dot-dir，与 opencode `.opencode/ralph-flow/`、claude `.claude/ralph-flow/` 形状一致）：
+ralphflow 的名字和核心理念（执行 → 验证 → 重试）来自 [ralph-loop](https://github.com/charfeng1/opencode-ralph-loop) 提示词模板。内置的 `loop` 工作流是其工作流化实现，`spec` 受 [OpenSpec](https://github.com/Fission-AI/OpenSpec) 启发重新设计。
 
-```
-<workspace>/.dsh/ralph-flow/
-├── workflows/     # 自定义工作流 YAML（内置 loop/spec 不在此，放同名文件即遮蔽内置）
-├── instances/     # **仅活跃**实例的机器状态（每实例一个目录：state.json + execution.log；结束时销毁）
-├── reports/       # 完成/取消后归档的报告（永久保留，历史的唯一入口；执行日志归档为 <实例ID>-execution.log）
-└── artifacts/     # 每实例隔离的产出目录（永久保留；只有空目录会随实例销毁）
-```
+姊妹实现：[opencode 版](https://github.com/534529531/ralph-flow)（`@yibener/ralph-flow`）与 claude code 版。多步骤状态机、独立验证、重置门等架构经验从 gsd2（现 [gsd-pi](https://github.com/open-gsd/gsd-pi)）吸取了大量工程教训。
 
-**执行日志（JSONL，机器可读）**：每个活跃实例在 `instances/<实例ID>/execution.log` 追加「一行一个 JSON 对象」（`{ts, level, event, …}`），完整记录生命周期事件与**验证者提示词原文、判定原文**（不截断）——报告给人看，日志给机器（`grep` / `jq`）看。结束/取消时随报告归档到 `reports/<实例ID>-execution.log`，报告里因此多一行 `- 执行日志：…` 指路（报告其余内容不变）。单文件上限 10 MB、保留 3 份轮转（`.log.1..3`），阈值可用 `RALPHFLOW_LOG_MAX_BYTES` 注入小值。写日志失败（目录只读、磁盘满）**只记一条 warning**，绝不影响工作流推进。
-
-**实例是临时的，报告与产出是永久的。** 工作流完成或取消时：报告归档到 `.dsh/ralph-flow/reports/<实例ID>.md` → 从实例列表除名 → 销毁 `.dsh/ralph-flow/instances/<实例ID>/`。产出目录名 = 任务摘要 slug + 实例 id 尾段（按码点截断，中文/emoji 不会被切碎），在 `artifacts/<名字>/` 下；**非空产出目录整个保留**（`rmdir` 拒绝非空目录——真实交付物永远活得比实例久），只有空产出目录才会被删掉。报告归档失败时**不销毁**实例目录（宁可留一个可见残留，也不静默丢掉轨迹），`/ralphflow-doctor` 会报出来。**销毁失败也不会谎称成功**：实例目录没删掉时，完成/取消播报会如实说明残留并指向 `/ralphflow-doctor`（残留目录缺 `state.json`，doctor 报「缺少 state.json」）；实例与报告都落在**发起会话的工作区**，与引擎进程的 cwd 无关。
-
-`artifacts/<产出目录名>/` 是 DO 阶段的交付物落点：DO 与 CHECK 提示词都会自动带上一行「产出目录」，所以工作流里写**裸文件名**（如 `summary.md`）即可落到该实例的目录，跨任务不串味、也不进仓库根。
-
-`/ralphflow-list` 只回答**现在有什么在跑**：可用工作流 + 活跃实例，外加一行指向报告目录。**已结束的运行不逐个列出**——一屏历史会把「现在有什么在跑」这个问题埋掉（作者实测的别扭）。归档是永久的：`reports/*.md` 自带头部字段（实例 id / 状态 / 任务 / 结束时间），需要时按目录翻即可。`/ralphflow-status <实例ID>` 对已销毁实例会直接指向它的报告，而不是谎称"没有实例"。
-
-**接管与 status 的两条口径**：① `/ralphflow-continue` **只在无属主**（`owner_session` 为空）时自动接管 —— 恰好一个无属主实例就直接接管；有属主（或不止一个无属主、无法判定）→ 列出候选（含属主会话）并要求 `/ralphflow-continue <实例ID>` **显式指定**（显式点名仍可接管有属主的实例，那正是「要求显式指定」的那条路）。② `/ralphflow-status` 无参且本会话没有活跃实例时，给**全部活跃实例的概览**（每行带属主会话，本会话的标出来），而不是随便挑最后一个实例讲成自己的；实例详情也显示属主会话。
-
-**一个工作区一个引擎**（对齐 opencode 的「每个项目目录一个插件实例」）：引擎的根就是**发起会话的工作区**，所以列表、历史、`doctor`、自定义工作流查找全都落在同一个地方。工作区之间互相独立、互不可见；**没有全局索引**——任何跨工作区的映射都会让「写入看会话工作区、读取看进程 cwd」这类缺陷复活（引擎的 `projectDir` 是 dsh 进程的 cwd，真实 GUI 里与会话工作区必然不同）。`.gitignore` 只忽略 `.dsh/ralph-flow/`（精确），不忽略整个 `.dsh/`。
-
-## 设计
-
-- **裁判权定理**：判定只可能产生于独立会话（T1）；推进只由机械程序决定（T2）。
-- 状态模型：无相位字段，全部阶段由原始事实派生（交卷了吗 / 判定落地了吗 / 有在飞委派吗 / 暂停了吗）。
-- **验证者**：全新独立会话（按能力自动选择全新上下文的后端，与名称无关），只见任务 + 检查依据 +（可读的）产出目录——**看不到执行者的交卷摘要**；只读工具白名单，结构化判定 + 文本兜底，fail-closed。
-- **验证者配置（YAML `adversarial_check`）**：**只接受 `model` 一个字段**（可选，`"provider/model"` 或 `{providerID, modelID}`），步骤级 `check_model` 可覆盖它；都不写就沿用发起会话当前模型。验证者的身份与职责是插件内部定义，工作流不再能配置它。写了其它字段（或 `adversarial_check` 不是对象）会在加载期告警并忽略，`/ralphflow-doctor` 同样报出。模型优先级链：`check_voting` 条目 `model` > 步骤 `check_model` > 全局 `adversarial_check.model` > 发起会话当前模型。
-- **多验证者投票**：N 票各自独立会话、独立提示词（共享上下文 + 该票专属检查依据 + 「你是 N 个之一」约束）、独立取消句柄与心跳；**全部终态才聚合**，聚合优先级 `failed > infra > 全过`（工作问题绝不被基础设施故障遮蔽）。
-- 完整设计、宪法与路线图见 [docs/v2/design.md](docs/v2/design.md)；多验证者投票验收见 `scripts/voting-test.mjs`（加载校验/提示词变体/聚合优先级/infra 重试与续跑/跨轮重投/每票进度/取消传播/单 check 回归）；引擎验证测试见 `scripts/engine-test.mjs`（含布局/产出目录/加载期硬校验/doctor lint/报告统计/**单根发现面**/CREATE_GUIDE 一致性），子工作流验收见 `scripts/subworkflow-test.mjs`（静态展开/出口接线/审查门映射/模型下沉/上限与成环等加载期硬错误 + 负对照），实例生命周期验收见 `scripts/lifecycle-test.mjs`，执行日志（JSONL）验收见 `scripts/execution-log-test.mjs`（JSONL 合法性 / 归档与报告指路 / 提示词与判定原文可复盘 / 轮转 / 写失败不致命 / 零状态字段；`RF_LIB=<基线库>` 即负对照），**回退验收见 `scripts/rewind-test.mjs`**（引擎级判据矩阵：当前步 / 未来步 / 不存在 / 调用点 / 已交卷各自被拒且理由准确、暂停实例回退后能继续跑、无检查依据的工作流也能回退、`submit_reminder` 按本次进入该步起算 + 负对照；真实 Session + 真实命令处理器：属主会话上下文整段替换成交接稿、目标步 DO 带着原因落地、可见告知说「用户执行了 /ralphflow-rewind」、不注册 `ralphflow_rewind` 工具），**reset 门验收见 `scripts/reset-surface-test.mjs`**（真实 Session + 真实插件装配的端到端：交接后 messages 只剩系统提示 + 交接稿 + DO / 负对照「不写 reset 时上下文没被清」/ 五条硬约束负例：工具调用内部拒绝、面不平衡放弃、node0 不被覆盖、sourceEventSeqs 覆盖每个被遮蔽节点、不冒用压缩检查点；**工作流级 `auto_reset` 每步推进恰一次替换、失败重试也触发、措辞按来源分（不说成「本步标了 reset: true」）、非布尔 = 加载期硬错误、子工作流下沉保留来源标记（嵌套 auto_reset 的启动回执仍走 auto 支）**；**手动 `/ralphflow-reset`：空闲窗口替换、当前步 DO 重投、失败计数原样保留、暂停中拒绝并指向 `/ralphflow-continue`、回合中以交卷收尾被丢弃时发可见告知 + 写执行日志 `manual_reset_dropped`（绝不静默）、不注册 `ralphflow_reset` 工具**）。
-- **生命周期不变量**（违反即回退）：实例是临时的、报告与产出是永久的；先除名（`unlink(state.json)`）后删物理文件（否则部分删除失败会留下幽灵实例）；销毁前先写完报告、先读出产出目录名；产出只用非递归 `rmdir`（非空即保留）；销毁后不再写 `state.json`（`writeState` 会 `mkdirSync` 复活的实例目录）。
-
-## v0 范围（诚实声明）
-
-有：YAML 引擎、loop + spec、审查门、续跑/接管、失败重试、按工作区单根、崩溃 fail-safe、报告归档（含每步耗时与重试）、产出目录、实例生命周期（终止即归档并销毁实例目录 + doctor 实例目录体检）、执行日志（JSONL，机器可读，随报告归档 + 轮转）、create/doctor 实现、**多验证者投票（`check_voting`）**、**子工作流（`workflow:`，加载期静态展开）**、**重置门（步骤级 `reset: true` + 工作流级 `auto_reset: true` + 手动 `/ralphflow-reset`：步骤边界的空闲窗口里整段替换会话可见面，交接稿 = 系统提示之后唯一内容；只换上下文、不赦免失败）**、**`/ralphflow-rewind`（换方向回退：状态机倒退 + 清暂停与失败计数 + 同一根接线整段替换 + 目标步 DO 带着原因重投；暂停态也允许，顺带解除暂停）**。
-无：客户端 UI、系统通知、验证者沙箱。每项的准入触发条件见设计文档 §11。
+与 ralph-loop 的关键差异：ralphflow 是插件级状态机而非提示词——具备独立验证（不依赖"自己审查自己"）、多步骤流水线、暂停/恢复、中途回退、可组合子工作流和完整日志记录。
 
 ## 许可
 
-[MIT](LICENSE)
+[MIT](https://github.com/534529531/ralph-flow-dsh/blob/main/LICENSE)
+
+---
+
+<div align="center">
+
+MIT · [GitHub](https://github.com/534529531/ralph-flow-dsh) · [npm](https://www.npmjs.com/package/ralphflow-dsh)
+
+</div>
