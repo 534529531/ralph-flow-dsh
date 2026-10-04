@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { createEngine, voterCountOf } from "../lib/engine.js";
 
+import { deliveryPorts } from "./helpers/ports.mjs";
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
 // 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
@@ -29,7 +30,7 @@ const sleep = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 
 function mkEngine(ws, scripted = []) {
   return createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async (req) => {
       const v = scripted.shift();
       if (!v) throw new Error("no scripted verdict");
@@ -108,7 +109,7 @@ console.log("\nA4 已交卷后重复调用：明确拒绝，不重复烧验证")
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-submit-dup-"));
   /** 每笔委派一个悬挂的 promise（投票步 = N 笔并发），逐笔记账便于分别 resolve */
   const pending = [];
-  const e = createEngine(ws, { deliver: () => true, verify: (req) => new Promise((r) => pending.push({ resolve: r, index: req.checkIndex })), log: () => {} });
+  const e = createEngine(ws, { ...deliveryPorts(), verify: (req) => new Promise((r) => pending.push({ resolve: r, index: req.checkIndex })), log: () => {} });
   e.ensureLayout();
   LOOP_VOTERS = voterCountOf(e.loadWorkflow("loop").def.steps[0]);
   e.start("loop", "重复交卷", "s4");

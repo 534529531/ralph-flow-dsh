@@ -26,11 +26,12 @@ import { Session, SESSION_FORMAT_VERSION } from "@deepseek-ai/dsh-session";
  */
 export function mkEnv(ws, sid, opts = {}) {
   const ctx = new Context();
-  const registered = { tools: [], commands: [] };
+  const registered = { tools: [], commands: [], skills: [] };
   const sent = [];
   const agents = new Map();
   const session = Session.create(sid, [], { version: SESSION_FORMAT_VERSION, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
   agents.set(sid, { id: sid, session, steer: (m) => sent.push(m), followup: (m) => sent.push(m) });
+  captureAppends(session, sent);
 
   ctx.provide("tools", {
     register: (d) => registered.tools.push(d),
@@ -38,6 +39,10 @@ export function mkEnv(ws, sid, opts = {}) {
     schemas: () => [{ name: "read" }, { name: "grep" }, { name: "glob" }, { name: "bash" }],
   });
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
+  // 技能注册面（`ctx.skills`）：启动类快捷入口是**技能**而不是命令，见 src/skills.ts。
+  // 替身只记「注册了什么」，不实现 registry 的合并/加载语义（那是 dsh-skill 的事；
+  // 用**真** registry 做的取证在 scripts/skills-surface-test.mjs）。
+  ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
@@ -48,6 +53,25 @@ export function mkEnv(ws, sid, opts = {}) {
   ctx.provide("sessions", { list: () => [], get: (id) => (id === sid ? session : undefined) });
   ctx.provide("logger", { info() {}, warn() {}, error() {} });
   return { ctx, registered, sent, sid, agents };
+}
+
+/**
+ * 让测试替身按**宿主真实形状**记录播报：播报的载体是直接 `session.append("user/message", …, {surfaceOp:"append"})`
+ * （不唤醒；见 `src/index.ts` 的 `deliverNotice`），所以把落成 `user/message` 的节点也记进 sink。
+ * 指令走 steer/followup（调用方自己记）—— 两类合起来就是「哪些消息真的到了会话里」。
+ *
+ * @param {object} session 真实 `Session`（或同形替身）
+ * @param {Array} sink 记录数组
+ * @returns {object} 同一个 session（链式用）
+ */
+export function captureAppends(session, sink) {
+  const append = session.append.bind(session);
+  session.append = (type, data, opts) => {
+    const out = append(type, data, opts);
+    if (type === "user/message") sink.push(data);
+    return out;
+  };
+  return session;
 }
 
 /** 注册表里取工具（名字与 dsh 工具名同形） */

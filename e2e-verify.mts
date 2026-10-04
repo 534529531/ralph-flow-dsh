@@ -1,4 +1,10 @@
 /**
+ * ⚠️ **历史脚本（v1，0.1.0）**：v2 原生重做后它引用的 `lib/jobs.js` / `lib/check.js` /
+ * `lib/mutex.js` 都不存在了，`npm run verify` 也**不跑**它。留在这里只为考古，**不要**把它
+ * 的断言当现行契约（例如「/ralphflow-start 是命令」在 v2 已不成立：启动类入口现在是**技能**，
+ * 见 `docs/v2/skills-vs-commands.md`）。现行验收面 = `scripts/*-test.mjs`。
+ */
+/**
  * Ralph Flow for dsh — 端到端验证脚本（verify 步骤）
  *
  * 模型配额 429 时无法跑真实验证者。本脚本用可控的 stub 验证者（ctx.subagents.start

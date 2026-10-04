@@ -19,6 +19,7 @@ import { RALPHFLOW_SOURCE_KIND } from "../lib/message-source.js";
 import * as plugin from "../lib/index.js";
 // 时长承诺的唯一判据来源（问题二用例共用）：summary 里不许再出现任何时间承诺
 import { findDurationPromises } from "./helpers/time-promise-scan.mjs";
+import { captureAppends } from "./helpers/plugin-harness.mjs";
 
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
 // 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
@@ -34,14 +35,16 @@ const SUMMARY_MAX = 120;
 
 function mkEnv(ws, sid) {
   const ctx = new Context();
-  const registered = { tools: [], commands: [] };
+  const registered = { tools: [], commands: [], skills: [] };
   /** 捕获插件实际投递的消息对象（不只看文本，要看 source） */
   const sent = [];
   const agents = new Map();
   const session = Session.create(sid, [], { version: SESSION_FORMAT_VERSION, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
   agents.set(sid, { id: sid, session, steer: (m) => { sent.push(m); }, followup: (m) => { sent.push(m); } });
+  captureAppends(session, sent);
   ctx.provide("tools", { register: (d) => registered.tools.push(d), schemas: () => [] });
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
+  ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
@@ -118,12 +121,14 @@ console.log("\nU3 暂停 / 审查门 / 返工：都必须对用户可见");
   const sid = `vis3-${RUN}`;
   // 验证者返回 infra → 触发 infra 暂停
   const ctx = new Context();
-  const registered = { tools: [], commands: [] };
+  const registered = { tools: [], commands: [], skills: [] };
   const sent = [];
   const session = Session.create(sid, [], { version: SESSION_FORMAT_VERSION, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
   const agent = { id: sid, session, steer: (m) => sent.push(m), followup: (m) => sent.push(m) };
+  captureAppends(session, sent);
   ctx.provide("tools", { register: (d) => registered.tools.push(d), schemas: () => [] });
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
+  ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),

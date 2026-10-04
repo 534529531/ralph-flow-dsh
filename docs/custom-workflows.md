@@ -8,7 +8,7 @@
 | `~/.dsh/ralph-flow/workflows/`（或绝对路径的 `$DSH_HOME/ralph-flow/workflows/`；`DSH_HOME` 为相对路径时忽略、回落 `~/.dsh`） | **全局**——所有工作区可用 | 中 |
 | 插件内置（`loop` / `spec`） | 随插件发布，**不落盘** | 最低 |
 
-**工作流名 = 文件名去掉扩展名**：`design-flow.yaml` 用 `/ralphflow-start design-flow <任务>` 或 `/ralphflow-design-flow <任务>` 启动。目录不存在时自己建（`mkdir -p .dsh/ralph-flow/workflows`）；只读操作（list / doctor / status）对目录缺失是容错的。
+**工作流名 = 文件名去掉扩展名**：`design-flow.yaml` 用 `/ralphflow-start design-flow <任务>` 或 `/ralphflow-design-flow <任务>` 启动。快捷入口 `/ralphflow-<工作流名>` 是**技能**，名字必须是小写 kebab（`[a-z0-9]+(-[a-z0-9]+)*`）；名字不合语法时**注册不了快捷入口**，我们会**如实告诉你原因与改法**（不静默跳过），而 `/ralphflow-start <工作流名> <任务>` 照旧可用。目录不存在时自己建（`mkdir -p .dsh/ralph-flow/workflows`）；只读操作（list / doctor / status）对目录缺失是容错的。
 
 解析顺序是**工作区 → 全局 → 内置**：同名工作流靠前的层**遮蔽**靠后的。所以你可以用全局层覆盖内置，或在某个工作区覆盖全局版本。内置工作流只存在于插件目录，因此**始终是随插件发布的最新版本**；要定制就在工作区（或全局）放一个同名文件。
 

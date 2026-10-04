@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { createEngine, makeArtifactsDirName, voterCountOf } from "../lib/engine.js";
 
+import { deliveryPorts } from "./helpers/ports.mjs";
 // HOME 隔离：索引与全局工作流目录都在这里；必须在 createEngine 之前设置。
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
 fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
@@ -36,7 +37,7 @@ const stateFileOf = (ws, id) => path.join(ws, ".dsh", "ralph-flow", "instances",
 function mkEngine(ws, scripted = [], logs = [], deliveries = []) {
   const queue = [];
   const engine = createEngine(ws, {
-    deliver: (_sid, text) => { deliveries.push(text); return true; },
+    ...deliveryPorts(deliveries),
     verify: async (req) => {
       const v = queue.shift();
       if (!v) throw new Error("no scripted verdict");
@@ -306,7 +307,7 @@ console.log("\nL9 迟到判定：销毁后到达的验证回调不得复活实�
   const logs = [];
   const inFlight = [];
   const engine = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: (req) => new Promise((r) => inFlight.push({ resolve: r, index: req.checkIndex })),
     log: (lvl, ev, d) => logs.push({ lvl, ev, d }),
   });

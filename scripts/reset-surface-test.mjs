@@ -34,6 +34,7 @@ import { createEngine, resetCauseOf, stepWantsReset } from "../lib/engine.js";
 import { createResetSurface } from "../lib/reset.js";
 import { cleanupTmp, mkTmp, textOf, toolOf } from "./helpers/plugin-harness.mjs";
 
+import { deliveryPorts } from "./helpers/ports.mjs";
 // HOME 隔离（工作协议）：测试绝不读写真实 ~/.dsh。必须在 apply/createEngine 之前设置。
 // 前缀用 `rf-`，这样收尾能用 helpers 的 cleanupTmp（它只肯删 mkdtemp 出来、名字带 rf- 的目录）。
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "rf-home-"));
@@ -247,7 +248,7 @@ function setup(workflows, wfName) {
 
   const sid = `session-reset-${++counter}`;
   const ctx = new Context();
-  const registered = { tools: [], commands: [] };
+  const registered = { tools: [], commands: [], skills: [] };
   const agents = new Map();
   const session = Session.create(sid, [], { version: SESSION_FORMAT_VERSION, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
 
@@ -285,6 +286,7 @@ function setup(workflows, wfName) {
     schemas: () => [{ name: "read" }, { name: "grep" }, { name: "glob" }, { name: "bash" }],
   });
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
+  ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
@@ -354,6 +356,16 @@ function setup(workflows, wfName) {
       stream: [],
     }, { surfaceOp: "append" });
   };
+  /**
+   * 播报（notice）的落点：**直接 append 到可见面**、不进收件箱（不唤醒；见 src/index.ts 的
+   * deliverNotice）。所以断言播报要按真实形状从 surface 上读，而不是从收件箱读。
+   */
+  const notices = () => {
+    const onSurface = new Set(session.surface.nodes);
+    return session.snapshotEvents()
+      .filter((e) => e.type === "user/message" && onSurface.has(e.seq) && e.data?.source?.kind === RALPHFLOW_SOURCE_KIND)
+      .map((e) => e.data);
+  };
   /** 驱动器在回合开始时把收件箱里的消息 append 成 user/message（DO 就是这样进上下文的） */
   const drainInbox = () => {
     const out = [];
@@ -393,7 +405,15 @@ function setup(workflows, wfName) {
     call, callAs, turn, appendToolExchange, appendUnmatchedToolCall, drainInbox,
     waitVerifier: () => waitFor(() => verifierDeferred !== null),
     releaseVerifier,
-    waitInbox: (n = 1) => waitFor(() => inbox.length >= n),
+    notices,
+    /**
+     * 等「插件往外推了东西」：**指令**（DO）进收件箱，**播报**（notice）直接落可见面 ——
+     * 两类都算。只在收件箱上等的话，播报型推进（审查门、判定落地）会白等一个超时。
+     */
+    waitInbox: (n = 1) => {
+      const base = notices().length;
+      return waitFor(() => inbox.length >= n || notices().length > base);
+    },
     turnStopping, instanceState, hasListener: (n) => (listeners.get(n)?.length ?? 0) > 0,
   };
 }
@@ -707,7 +727,7 @@ console.log("\n9) 审查门放行进入 implement（spec 的第二行 reset）")
   H.releaseVerifier(true);
   await H.waitInbox(1);
   await sleep(20);
-  const gateMsgs = H.drainInbox();
+  const gateMsgs = H.notices(); // 🙋 放行提示是**播报**：直接 append 到可见面，不进收件箱
   check("propose 通过后停在审查门（投递 🙋 放行提示，不是 implement 的 DO）",
     gateMsgs.some((m) => textOf(m).includes("审查门")) && !gateMsgs.some((m) => textOf(m).includes("按 tasks.md 逐任务实现")),
     JSON.stringify(gateMsgs.map((m) => textOf(m).slice(0, 50))));
@@ -1004,7 +1024,7 @@ console.log("\n14) auto_reset：校验、语义、子工作流下沉");
   fs.writeFileSync(path.join(wfDir, "parent.yaml"),
     "description: parent\nsteps:\n  - id: p1\n    desc: 父一步\n    input: 上游产出\n    output: 本步产出\n    do: p1\n    check: c1\n    on_pass: call\n    on_fail: p1\n    max_fail_count: 3\n"
     + "  - id: call\n    desc: 调用点\n    input: 上游产出\n    output: 本步产出\n    workflow: sub\n    on_pass: done\n    on_fail: call\n    max_fail_count: 3\n");
-  const eng = createEngine(ws, { deliver: () => true, verify: async () => ({ status: "passed", reason: "stub" }) });
+  const eng = createEngine(ws, { ...deliveryPorts(), verify: async () => ({ status: "passed", reason: "stub" }) });
 
   const ok = eng.loadWorkflow("ok");
   check("auto_reset: true 透传进定义，且无 problems",
@@ -1159,19 +1179,20 @@ console.log("\n17) 手动 /ralphflow-reset：空闲窗口复查发现已交卷 �
   check("命令当场受理（零程序化卡片）——所以可见告知是唯一结果通道",
     resetOut?.kind === "success" && resetOut?.text === undefined, JSON.stringify(resetOut));
   await H.waitInbox(1); await sleep(30);
-  const delivered = H.drainInbox();
+  // 可见告知是**播报**（直接 append 到可见面、不唤醒），从 surface 上读
+  const dropNotices = H.notices().filter((m) => textOf(m).includes("/ralphflow-reset"));
   check("回合以交卷收尾：手动重置**不发生替换**（0 次，绝不在验证在飞时打断）",
     replacementEventsOf(H.session).length === repsBefore,
     `count=${replacementEventsOf(H.session).length}`);
   check("被丢弃的手动重置发**可见告知**（点明 /ralphflow-reset 且说明没有生效）",
-    delivered.some((m) => textOf(m).includes("/ralphflow-reset") && textOf(m).includes("没有生效")),
-    JSON.stringify(delivered.map((m) => textOf(m).slice(0, 80))));
+    dropNotices.some((m) => textOf(m).includes("没有生效")),
+    JSON.stringify(dropNotices.map((m) => textOf(m).slice(0, 80))));
   check("告知带 summary（时间线上不展开也能读到「未生效」）",
-    delivered.some((m) => String(m?.source?.summary ?? "").includes("/ralphflow-reset") && String(m?.source?.summary ?? "").includes("未生效")),
-    JSON.stringify(delivered.map((m) => m?.source?.summary)));
+    dropNotices.some((m) => String(m?.source?.summary ?? "").includes("/ralphflow-reset") && String(m?.source?.summary ?? "").includes("未生效")),
+    JSON.stringify(dropNotices.map((m) => m?.source?.summary)));
   check("告知说清原因（已交卷 / 验证中）",
-    delivered.some((m) => textOf(m).includes("已经交卷") || textOf(m).includes("已交卷")),
-    JSON.stringify(delivered.map((m) => textOf(m).slice(0, 120))));
+    dropNotices.some((m) => textOf(m).includes("已经交卷") || textOf(m).includes("已交卷")),
+    JSON.stringify(dropNotices.map((m) => textOf(m).slice(0, 120))));
   check("执行日志记录 manual_reset_dropped（可事后复盘，不只在内存里）",
     execLogTextOf(H.ws).includes("manual_reset_dropped"), execLogTextOf(H.ws).slice(-400));
   const stAfter = H.instanceState();
@@ -1211,7 +1232,7 @@ console.log("\n18) 调用点 reset: true（进入子工作流 = 首个子步骤�
   fs.writeFileSync(path.join(wfDir, "callreset-bad.yaml"),
     "description: 调用点 reset 类型错\nsteps:\n"
     + "  - id: call\n    desc: 委托段\n    input: 上游产出\n    output: 本步产出\n    workflow: plain-sub\n    reset: \"true\"\n    on_pass: done\n    on_fail: call\n    max_fail_count: 3\n");
-  const eng = createEngine(ws, { deliver: () => true, verify: async () => ({ status: "passed", reason: "stub" }) });
+  const eng = createEngine(ws, { ...deliveryPorts(), verify: async () => ({ status: "passed", reason: "stub" }) });
 
   const cr = eng.loadWorkflow("callreset");
   const first = cr.def?.steps[0];

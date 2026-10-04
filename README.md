@@ -159,22 +159,24 @@ steps:
 
 **随时接管。** 实例属主是状态里的 `owner_session`。`/ralphflow-continue` 在**无属主**时自动接管；有属主时列出候选并要求 `/ralphflow-continue <实例ID>` 显式指定。`/ralphflow-status` 无参且本会话没有活跃实例时，给全部活跃实例的概览（含属主会话）。
 
-## 命令一览
+## 快捷入口一览
 
-| 命令 | 作用 |
-|------|------|
-| `/ralphflow-start <工作流> <任务>` | 启动工作流实例 |
-| `/ralphflow-continue [实例ID]` | 放行审查门 · 恢复暂停 · 接管实例 |
-| `/ralphflow-status [实例ID]` | 当前进度、指定实例详情，或全部活跃实例概览 |
-| `/ralphflow-list` | 列出可用工作流 + 活跃实例（只答"现在有什么在跑"） |
-| `/ralphflow-cancel [实例ID] [原因]` | 取消并归档报告 |
-| `/ralphflow-reset` | 换干净上下文重做当前步（**机械命令**，不注册工具） |
-| `/ralphflow-rewind <步骤> <原因>` | 回退到更早的步骤并换方向（**机械命令**，不注册工具） |
-| `/ralphflow-doctor` | 诊断工作流定义与实例状态（只报问题与修法，不代你修） |
-| `/ralphflow-create [流程想法]` | 交互式设计自定义工作流，校验到全部 ✅ 且无告警 |
-| `/ralphflow-<工作流名>` | 动态注册的工作流快捷命令（如 `/ralphflow-loop`、`/ralphflow-spec`） |
+启动类入口是**技能**（人敲同一串字，但走的是普通消息 + 宿主注入技能正文）——所以新会话第一句敲它们**会有标题**（命令落成 `command/run`，标题永远拿不到）；其余仍是**命令**。
 
-命令语义 = **触发词**：`/ralphflow-*` 一律由模型自然语言回复（含用法错误），零程序化卡片返回。两条机械命令是例外——`/ralphflow-reset` 与 `/ralphflow-rewind` 的机械动作由命令处理器直接驱动引擎完成，结果仍交回模型自然语言回复，且**都不给模型可调用的工具**。
+| 快捷入口 | 类别 | 作用 |
+|------|------|------|
+| `/ralphflow-start <工作流> <任务>` | 技能（两面可见） | 启动工作流实例；也是模型按描述自然触发的那一条 |
+| `/ralphflow-<工作流名>` | 技能（只给人看） | 工作流快捷入口（如 `/ralphflow-loop`、`/ralphflow-spec`） |
+| `/ralphflow-continue [实例ID]` | 命令 | 放行审查门 · 恢复暂停 · 接管实例 |
+| `/ralphflow-status [实例ID]` | 命令 | 当前进度、指定实例详情，或全部活跃实例概览 |
+| `/ralphflow-list` | 命令 | 列出可用工作流 + 活跃实例（只答"现在有什么在跑"） |
+| `/ralphflow-cancel [实例ID] [原因]` | 命令 | 取消并归档报告 |
+| `/ralphflow-reset` | 命令 | 换干净上下文重做当前步（**机械命令**，不注册工具） |
+| `/ralphflow-rewind <步骤> <原因>` | 命令 | 回退到更早的步骤并换方向（**机械命令**，不注册工具） |
+| `/ralphflow-doctor` | 命令 | 诊断工作流定义与实例状态（只报问题与修法，不代你修） |
+| `/ralphflow-create [流程想法]` | 命令 | 交互式设计自定义工作流，校验到全部 ✅ 且无告警 |
+
+命令语义 = **触发词**：`/ralphflow-*` 一律由模型自然语言回复（含用法错误），零程序化卡片返回。两条机械命令是例外——`/ralphflow-reset` 与 `/ralphflow-rewind` 的机械动作由命令处理器直接驱动引擎完成，结果仍交回模型自然语言回复，且**都不给模型可调用的工具**。逐条归类与理由见 [`docs/v2/skills-vs-commands.md`](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/v2/skills-vs-commands.md)。
 
 ## 内置工作流
 

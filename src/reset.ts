@@ -156,20 +156,31 @@ export function createResetSurface(ctx: Context, log?: ResetLog) {
         //    `user/message` —— 那时本次替换早已完成，告知会落在交接稿之后、
         //    变成模型可见的第 3 条（违反完成判据）。要「可见但不进模型上下文」，
         //    只能先让它成为 append 来源的节点、再让同一次替换把它遮蔽掉。
+        //
+        //    投递分类（判据 1）：**播报（notice）** —— 给人看的一行记录，不唤醒任何人。
+        //    它与 `src/index.ts` 的 `deliverNotice` 同一类，只是这里必须立刻落成
+        //    「即将被遮蔽」的节点，所以由 reset 自己 append（同一个不唤醒载体）。
         const notice = createUserMessage({
           content: [{ type: "text", text: req.notice.text }],
           source: { kind: RALPHFLOW_SOURCE_KIND, form: "notice", summary: boundContextSummary(req.notice.summary) },
         });
+        // @delivery notice —— 重置前的可见告知（播报：给人看，不唤醒）
         const noticeSeq = session.append("user/message", notice, { surfaceOp: "append" }).seq;
 
         // ── 整段替换：交接稿成为系统提示之外**唯一**的节点。
         //    1.6 sourceEventSeqs 必须逐条列出每个被遮蔽节点（= nodes[1..N] + 告知），
         //    缺一个即抛；1.4 用自有 plugin source，不发任何 compaction 事件。
+        //
+        //    投递分类（判据 1）：**指令侧的载荷** —— 交接稿不是「投给会话的一条消息」，
+        //    而是替换后模型上下文里**唯一**的上下文本身，紧接着由 `deliverStepDo` 用
+        //    指令（唤醒）把本步 DO 投出去。它永远与那次唤醒同生共死：只有要重置的步骤
+        //    才会走到这里，而这样的步骤必然要投 DO。
         const shadowed = [...nodes.slice(1), noticeSeq];
         const handoff = createUserMessage({
           content: [{ type: "text", text: req.handoff }],
           source: { kind: RALPHFLOW_SOURCE_KIND },
         });
+        // @delivery directive —— 交接稿是替换后上下文本身，永远与紧随其后的指令（DO）同生共死
         const handoffSeq = session.append("user/message", handoff, {
           surfaceOp: { op: "replace", startSeq, endSeq: noticeSeq },
           sourceEventSeqs: shadowed,

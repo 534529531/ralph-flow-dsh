@@ -25,6 +25,8 @@ import {
 } from "../lib/voting.js";
 import { CREATE_GUIDE } from "../lib/create.js";
 
+import { deliveryPorts } from "./helpers/ports.mjs";
+import { captureAppends } from "./helpers/plugin-harness.mjs";
 // HOME 隔离：全局工作流目录在 ~/.dsh 下，测试绝不读写真实 HOME。
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "rf-voting-home-"));
 fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
@@ -37,7 +39,7 @@ let pending = [];
 let verifyCalls = 0;
 
 const engine = createEngine(dir, {
-  deliver: (_sid, text, summary) => { deliveries.push({ text, summary }); return true; },
+  ...deliveryPorts((text, summary) => deliveries.push({ text, summary })),
   verify: (req) => new Promise((resolve) => {
     verifyCalls++;
     calls.push(req);
@@ -564,10 +566,11 @@ console.log("== N. 插件级端到端：真实链路（工具 → 引擎 → ver
   const starts = [];
   const sent = [];
   const ctx = new Context();
-  const registered = { tools: [], commands: [] };
+  const registered = { tools: [], commands: [], skills: [] };
   const session = Session.create(sid, [], { version: SESSION_FORMAT_VERSION, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
   ctx.provide("tools", { register: (d) => registered.tools.push(d), schemas: () => [{ name: "read" }, { name: "grep" }, { name: "glob" }, { name: "bash" }] });
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
+  ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
@@ -577,6 +580,7 @@ console.log("== N. 插件级端到端：真实链路（工具 → 引擎 → ver
     },
   });
   ctx.provide("agents", { get: (id) => (id === sid ? { id: sid, session, steer: (m) => sent.push(m), followup: (m) => sent.push(m) } : undefined) });
+  captureAppends(session, sent); // 播报载体是 append 到可见面（不唤醒），替身按真实形状一并记录
   ctx.provide("sessions", { list: () => [], get: (id) => (id === sid ? session : undefined) });
   ctx.provide("logger", { info() {}, warn() {}, error() {} });
   const wfDir = path.join(ws, ".dsh", "ralph-flow", "workflows");

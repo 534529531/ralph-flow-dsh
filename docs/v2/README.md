@@ -21,6 +21,8 @@
 | [execution-log-brief.md](execution-log-brief.md) | 执行日志（JSONL、归档、轮转） | 已实现 |
 | [spec-4step-brief.md](spec-4step-brief.md) | 内置 `spec` 从 7 步换成 4 步（三端一致） | 已实现 |
 | [hardening-brief.md](hardening-brief.md) | 插件加固（审计 dsh 原生能力用法与恶性 bug） | 已执行 |
+| [notice-wake-brief.md](notice-wake-brief.md) | 「播报唤醒会话」缺陷修复：播报不再叫醒驱动器（指令仍走 `steer`） | 已实现（验收 7 的真实运行复核已在 RA2 实例上现场走通） |
+| [shortcut-skills-brief.md](shortcut-skills-brief.md) | 启动类快捷从命令改成技能（修掉新会话未命名 + 技能描述成为自然语言触发词） | 已实现 |
 | [workspace-anchoring-brief.md](workspace-anchoring-brief.md) | 发现面锚定修复 | ⛔ **已作废**——思路被"引擎按工作区实例化"取代 |
 | [brief-style.md](brief-style.md) | 任务书写作规范（给作者） | 规范 |
 

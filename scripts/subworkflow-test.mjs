@@ -35,6 +35,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildPluginCopy } from "./helpers/reverted-build.mjs";
 
+import { deliveryPorts } from "./helpers/ports.mjs";
 // HOME 隔离：全局工作流目录在 ~/.dsh 下，测试绝不读写真实 HOME（必须在建引擎前设置）。
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
 fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
@@ -74,7 +75,7 @@ function mkEngine(tag) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `rf-subwf-${tag}-`));
   const state = { dir, deliveries: [], scripted: [], verifyReqs: [], calls: 0 };
   const engine = createEngine(dir, {
-    deliver: (_sid, text) => { state.deliveries.push(text); return true; },
+    ...deliveryPorts(state.deliveries),
     verify: async (req) => {
       state.calls++;
       state.verifyReqs.push({ step: req.step.id, model: req.model, checkIndex: req.checkIndex, task: req.userTask });
@@ -592,7 +593,7 @@ console.log("\n7) 负对照（还原实现 → 判据必须为假；锚点找不
     }, "subworkflow-off");
     const revLib = await import(pathToFileURL(path.join(rev.dir, "lib", "engine.js")).href);
     const revEngine = revLib.createEngine(rev.dir + "-ws", {
-      deliver: () => true,
+      ...deliveryPorts(),
       verify: async () => { throw new Error("负对照不该走到验证"); },
       log: () => {},
     });
@@ -695,7 +696,7 @@ console.log("\n8) 极深调用链 → 加载期硬错误（不爆栈崩溃）");
     }, "subworkflow-depth-off");
     const revDepthLib = await import(pathToFileURL(path.join(revDepth.dir, "lib", "engine.js")).href);
     const revDepthEngine = revDepthLib.createEngine(revDepth.dir + "-ws", {
-      deliver: () => true,
+      ...deliveryPorts(),
       verify: async () => { throw new Error("负对照不该走到验证"); },
       log: () => {},
     });
@@ -829,7 +830,7 @@ console.log("\n9) 调用点 `do` 下沉：任务来自调用点；不写继承�
     }, "subworkflow-call-do-off");
     const revDoLib = await import(pathToFileURL(path.join(revDo.dir, "lib", "engine.js")).href);
     const revDoEngine = revDoLib.createEngine(revDo.dir + "-ws", {
-      deliver: () => true,
+      ...deliveryPorts(),
       verify: async () => { throw new Error("负对照不该走到验证"); },
       log: () => {},
     });

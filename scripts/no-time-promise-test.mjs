@@ -41,9 +41,9 @@ const dump = (hits) => hits.slice(0, 6).map((h) => `${h.label}@${h.line}：${h.m
 /**
  * 真跑一遍插件，收集**所有会被人（用户/模型）读到的文本**。
  *
- * 覆盖：工具描述、命令描述、DO 提示词（工具返回）、交卷回执、投递出去的每一条播报
- * （含验证中 notice 的正文与 summary）、status/list/doctor 的返回、create 指引、
- * 以及命令触发词注入的机制说明（SHARED_MECHANISM 就是从这里进对话的）。
+ * 覆盖：工具描述、命令描述、**技能描述与技能正文**、DO 提示词（工具返回）、交卷回执、
+ * 投递出去的每一条播报（含验证中 notice 的正文与 summary）、status/list/doctor 的返回、
+ * create 指引、以及技能正文里的机制说明。
  */
 async function collectVisibleTexts(entryUrl, suffix) {
   const ws = mkTmp("promise");
@@ -59,6 +59,13 @@ async function collectVisibleTexts(entryUrl, suffix) {
 
   for (const t of A.registered.tools) push(`tool.description(${t.name})`, t.description);
   for (const c of A.registered.commands) push(`command.description(/${c.name})`, c.description);
+  // 启动类快捷入口是**技能**（不是命令）：描述（模型目录里那一行 / 人看的快捷入口）与正文
+  // （人敲时宿主注入、模型自然触发时由 skill 工具加载）都会进对话 ——
+  // SHARED_MECHANISM 现在就是从技能正文进对话的。
+  for (const s of A.registered.skills ?? []) {
+    push(`skill.description(${s.name})`, s.description);
+    push(`skill.content(${s.name})`, s.content);
+  }
 
   // DO 阶段：启动返回的 DO 提示词（含「交卷方式」那段）
   push("ralphflow_start 返回", await execTool(toolOf(A.registered, "ralphflow_start"), { workflow: "loop", task: "时长承诺用例" }, sid));
@@ -74,8 +81,8 @@ async function collectVisibleTexts(entryUrl, suffix) {
   }
   push("ralphflow_create 返回", await execTool(toolOf(A.registered, "ralphflow_create"), { idea: "示例流程" }, sid));
 
-  // 命令触发词：注入给模型的机制说明（/ralphflow-start 与 /loop、/spec 共用 SHARED_MECHANISM）
-  for (const cname of ["ralphflow-start", "ralphflow-continue", "ralphflow-status", "ralphflow-cancel", "loop", "spec"]) {
+  // 命令触发词：注入给模型的指令（启动类入口已是技能，这里只剩边界上的那几条命令）
+  for (const cname of ["ralphflow-continue", "ralphflow-status", "ralphflow-cancel"]) {
     const cmd = cmdOf(A.registered, cname);
     if (!cmd) continue;
     const before = A.sent.length;
@@ -150,7 +157,7 @@ console.log("\nT4【负对照】把文案还原成修复前那句编造的时长
       // 两处验证播报都要还原：单 check 的（它…）与多验证者投票的（它们…）。
       // 内置 loop 现在走投票路径，只还原单 check 那处负对照就没有鉴别力（锚点找不到会抛错）。
       "engine.ts": (src) => revertHonestVotingNotice(revertHonestVerifyNotice(src)),
-      "tools.ts": revertMechanismWording,
+      "skills.ts": revertMechanismWording,
     },
     "promise-reverted",
   );

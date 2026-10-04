@@ -37,6 +37,7 @@ import {
 } from "./helpers/plugin-harness.mjs";
 import { REPO, buildPluginCopy, revertOrphanLivenessGuard } from "./helpers/reverted-build.mjs";
 
+import { deliveryPorts } from "./helpers/ports.mjs";
 // HOME 隔离：索引/全局工作流目录都在 ~/.dsh 下，测试绝不读写真实 HOME。
 process.env.HOME = mkTmp("home");
 fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
@@ -275,7 +276,7 @@ console.log("\nI5 兼容：老 state.json（委派无心跳字段）仍走原安
 {
   const ws = mkTmp("iso-legacy-state");
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async (req) => ({ check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), status: "passed", reason: "ok" }),
     log: () => {},
   });

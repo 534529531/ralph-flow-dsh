@@ -954,20 +954,45 @@ export interface ResetOutcome {
   noticeSeq?: number;
 }
 
-/** 引擎对外的两个端口：向属主会话投递指令 / 委派独立验证者（T1 的唯一入口） */
+/**
+ * 引擎对外的端口：向属主会话投递**指令 / 播报**（两类，各自一个端口）/ 委派独立验证者（T1 的唯一入口）。
+ *
+ * **为什么要分成两个端口**（判据 1）：投递只有两种意图，载体必须跟着意图走 ——
+ *   · {@link EnginePorts.deliverDirective}（指令）= 唤醒：DO 提示词、命令要模型转达的话、
+ *     交卷提醒。载体是 `agent.steer`：空闲开新一轮、运行中在下一个 step 边界取走。
+ *   · {@link EnginePorts.deliverNotice}（播报）= 只记录：验证进度、判定、暂停/审查门/完成/取消
+ *     告知。载体是**直接 append 到会话可见面**：不进收件箱 ⇒ 不唤醒空闲驱动器、也不把正在
+ *     收尾的回合续上；立刻可见 ⇒ 用户时间线上马上多一行；仍在会话里 ⇒ 模型下一回合看得到，
+ *     且仍被 reset 的整段替换遮蔽。
+ * 端口名就是分类，调用点一眼看得出选了哪一类（见 `docs/v2/delivery-classification.md` 与
+ * `scripts/delivery-classification-test.mjs` 的静态审计）。
+ */
 export interface EnginePorts {
   /**
-   * 把指令投递给主会话（插件消息 + 唤醒）。
+   * **指令**投递给主会话（插件消息 + 唤醒）。用于「要模型干活」的一切投递。
    * `summary` 是给**用户看**的一行摘要：dsh 客户端按 `source.form === "notice"` + `summary`
    * 渲染成不展开就能读的 notice 行；省略则退化为不显眼的 opaque 注入行（用户看不到）。
-   * 凡是用户应当知道的播报都必须传 summary。
    *
    * `opts.dedupe === false` 表示**引擎自驱的投递**（DO / 推进 / 重置告知等）不去重：
    * 去重本是给「用户连按命令」的护栏，用在状态迁移上会把真实迁移吞掉（实测：手动 reset
    * 重投的 DO 与几秒前同一步的 DO 逐字相同 → 被去重 → 模型拿不到任何指令）。
    * 引擎的一律传 `{dedupe:false}`。
    */
-  deliver: (sessionId: string, text: string, summary?: string, opts?: { dedupe?: boolean }) => boolean;
+  deliverDirective: (sessionId: string, text: string, summary?: string, opts?: { dedupe?: boolean }) => boolean;
+  /**
+   * **播报**投递给主会话（给人看的记录，**不唤醒**）。载体是 `session.append(…, {surfaceOp:"append"})`：
+   * 立刻成为可见面节点（用户时间线上马上多一行），且完全不碰驱动器（空闲的保持空闲，
+   * 正在收尾的回合不被续上）。要求：**必须**传 `summary`，否则客户端退化成 opaque 注入行。
+   */
+  deliverNotice: (sessionId: string, text: string, summary?: string, opts?: { dedupe?: boolean }) => boolean;
+  /**
+   * 把该会话**挂起的播报**在安全边界补齐（可见面尾部工具配对平衡时才落）。
+   *
+   * reset 门在整段替换**之前**先调一次：让先前因工具调用在飞而挂起的播报也被这次替换一并
+   * 遮蔽掉 —— 否则它们会在交接稿之后落地，破坏「替换后表面 = 系统提示 + 交接稿 + DO」。
+   * 缺省（未装配）时引擎照常工作（挂起的播报由插件自己的定时器补齐）。
+   */
+  flushNotices?: (sessionId: string) => void;
   /**
    * 重置门（步骤级 `reset: true` / 工作流级 `auto_reset: true` / 手动 `/ralphflow-reset`）的载体：
    * 把属主会话可见面 `nodes[1]` 到末尾整段替换成 `req.handoff`。**必须**在步骤边界的空闲窗口内
@@ -2816,12 +2841,30 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
   }
 
-  function deliver(state: InstanceState, text: string, summary?: string): void {
+  /**
+   * **指令**投递（要模型干活）：DO / 推进 / 重置后的 DO / 解除暂停的 DO。
+   * 引擎自驱投递一律不去重（`{dedupe:false}`）：每一次都对应一次真实状态迁移，
+   * 被命令去重护栏吞掉会让工作流停在「上下文已被替换、DO 却没到」的中间态。
+   */
+  function deliverDirective(state: InstanceState, text: string, summary?: string): void {
     if (!state.owner_session) return;
-    // 引擎自驱投递一律不去重（`{dedupe:false}`）：每一次都对应一次真实状态迁移，
-    // 被命令去重护栏吞掉会让工作流停在「上下文已被替换、DO 却没到」的中间态。
-    const ok = ports.deliver(state.owner_session, text, summary, { dedupe: false });
-    if (!ok) log("warn", "deliver_failed", { instId: state.owner_session });
+    const ok = ports.deliverDirective(state.owner_session, text, summary, { dedupe: false });
+    if (!ok) log("warn", "deliver_directive_failed", { instId: state.owner_session });
+  }
+
+  /**
+   * **播报**投递（给人看的记录，不唤醒；原样文本，前缀由调用方给）。
+   * **必须**给 summary —— 它是用户在时间线上不展开就能读到的那一行；不传就等于用户看不到。
+   */
+  function deliverNotice(state: InstanceState, text: string, summary: string): void {
+    if (!state.owner_session) return;
+    const ok = ports.deliverNotice(state.owner_session, text, summary, { dedupe: false });
+    if (!ok) log("warn", "deliver_notice_failed", { instId: state.owner_session });
+  }
+
+  /** 用户可见播报：统一加 `[ralphflow] ` 前缀（= {@link deliverNotice} 的常规入口）。 */
+  function notify(state: InstanceState, text: string, summary: string): void {
+    deliverNotice(state, `[ralphflow] ${text}`, summary);
   }
 
   // ─── reset 门（步骤级 `reset: true` / 工作流级 `auto_reset: true` / 手动 `/ralphflow-reset`）──
@@ -3014,16 +3057,20 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const sid = state.owner_session;
     const trigger: ResetTrigger | undefined = opts?.rewind ? "rewind" : opts?.manual ? "manual" : resetCauseOf(wf, step);
     if (trigger === undefined || !sid) {
-      deliver(state, text, summary);
+      deliverDirective(state, text, summary);
       return;
     }
     if (typeof ports.resetSurface !== "function") {
       // 端口没装配：不假装做过（要重置的步骤也照常执行，只是没有重置）
       log("warn", "reset_surface_unavailable", { instId, step: step.id, trigger });
-      deliver(state, text, `${summary}（⚠️ ${resetSourceText(trigger, step)}，但本进程未装配重置端口：上下文未重置）`);
+      deliverDirective(state, text, `${summary}（⚠️ ${resetSourceText(trigger, step)}，但本进程未装配重置端口：上下文未重置）`);
       return;
     }
     const req = resetRequestFor(instId, wf, step, trigger, opts?.rewind);
+    // 替换之前先把**挂起的播报**补齐：它们因工具调用在飞而没能立刻 append，若拖到替换之后
+    // 才落，就会站在交接稿后面，破坏「替换后表面 = 系统提示 + 交接稿 + DO」（判据 5）。
+    // 此刻可见面必须配平（否则替换本身也会被判 unbalanced 放弃），所以这一步几乎总能落成。
+    try { ports.flushNotices?.(sid); } catch {}
     // 替换是异步的（跨一个 maintenance 窗口）。若这段时间里实例已结束/被取消，
     // 就**不再投递 DO**（别把一条指令塞进一个已经收摊的实例）。
     //
@@ -3059,33 +3106,25 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           if (trigger === "manual" && !outcome.ok) {
             const note = manualResetDropNote(instId, step.id);
             logEvent(instId, "warn", "manual_reset_dropped", { step: step.id, reason });
-            deliver(state, note.text, note.summary);
+            deliverNotice(state, note.text, note.summary);
           }
           return;
         }
         if (outcome.ok) {
           log("info", "reset_surface_applied", { instId, step: step.id, trigger, shadowed: outcome.shadowed });
           logEvent(instId, "info", "reset_surface", { step: step.id, trigger, shadowed: outcome.shadowed, handoffSeq: outcome.handoffSeq, noticeSeq: outcome.noticeSeq });
-          deliver(state, text, summary);
+          deliverDirective(state, text, summary);
           return;
         }
         log("warn", "reset_surface_skipped", { instId, step: step.id, trigger, reason: outcome.reason, detail: outcome.detail });
         logEvent(instId, "warn", "reset_surface_skipped", { step: step.id, trigger, reason: outcome.reason ?? "unknown", detail: outcome.detail });
-        deliver(state, text, `${summary}（⚠️ ${resetSourceText(trigger, step)}，但本次上下文重置未生效：${resetFailureText(outcome)}）`);
+        deliverDirective(state, text, `${summary}（⚠️ ${resetSourceText(trigger, step)}，但本次上下文重置未生效：${resetFailureText(outcome)}）`);
       })
       .catch((e) => {
         releasePending();
         log("warn", "reset_surface_failed", { instId, step: step.id, trigger, error: e instanceof Error ? e.message : String(e) });
-        if (stillLive()) deliver(state, text, `${summary}（⚠️ ${resetSourceText(trigger, step)}，但本次上下文重置未生效：宿主异常）`);
+        if (stillLive()) deliverDirective(state, text, `${summary}（⚠️ ${resetSourceText(trigger, step)}，但本次上下文重置未生效：宿主异常）`);
       });
-  }
-
-  /**
-   * 用户可见播报。**必须**给 summary —— 它是用户在时间线上不展开就能读到的那一行；
-   * 不传就等于用户看不到（client 会退化成 opaque 注入行）。
-   */
-  function notify(state: InstanceState, text: string, summary: string): void {
-    deliver(state, `[ralphflow] ${text}`, summary);
   }
 
   // ─── 报告归档 ──────────────────────────────────────────────────────────────
@@ -3622,7 +3661,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         void launchVerification(instId, state, wf, step);
         return { ok: true, text: `▶️ 已解除暂停（原因：${reason}），正在重新委派独立验证者检查步骤 \`${step.id}\`。` };
       }
-      deliver(state, doPrompt(instId, wf, state, step), `▶️ 步骤 ${step.id} 继续执行`);
+      deliverDirective(state, doPrompt(instId, wf, state, step), `▶️ 步骤 ${step.id} 继续执行`);
       return { ok: true, text: `▶️ 已解除暂停（原因：${reason}），已让模型继续步骤 \`${step.id}\`。` };
     }
 

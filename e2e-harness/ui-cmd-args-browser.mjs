@@ -1,4 +1,10 @@
 /**
+ * ⚠️ **历史探针（v1）**：它断言的「/ralphflow-start + 参数被当命令执行」在 v2 已不成立 ——
+ * 启动类入口现在是**技能**（人敲落成普通 user/message，宿主注入技能正文；同名命令必须保持
+ * 删除，否则新会话拿不到标题）。见 `docs/v2/skills-vs-commands.md`。现行验收面 =
+ * `scripts/skills-surface-test.mjs`（真 SkillRegistry + 真 CommandRuntime + 真标题服务）。
+ */
+/**
  * ralphflow 命令+参数验证 —— 真实 chromium 验证 opencode 式交互
  *
  * 前置：dsh --profile web 已启动（http://127.0.0.1:3080），ralphflow 已装入 profile

@@ -27,6 +27,7 @@ provide("tools", {
   schemas() { return []; },
 });
 provide("commands", { register() {} });
+provide("skills", { register() {} });
 provide("subagents", {
   list() { return ["spawn"]; },
   getProvider() { return { capabilities: { outputSchema: false, toolFilter: true, persona: true }, inheritsParentContext: false }; },

@@ -1,6 +1,6 @@
 {
   "name": "ralphflow-dsh",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Ralph Flow for DeepSeek Harness — 执行者/验证者模式的具象化：主会话执行，独立验证者对抗检查，推进权在机械程序（v2 原生重做）",
   "type": "module",
   "main": "lib/index.js",
@@ -43,7 +43,8 @@
     "@deepseek-ai/dsh-subagent": ">=0.2.0-rc.2",
     "@deepseek-ai/dsh-session": ">=0.2.0-rc.2",
     "@deepseek-ai/dsh-compaction": ">=0.2.0-rc.2",
-    "@deepseek-ai/dsh-commands": ">=0.2.0-rc.2"
+    "@deepseek-ai/dsh-commands": ">=0.2.0-rc.2",
+    "@deepseek-ai/dsh-skill": ">=0.2.0-rc.2"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",

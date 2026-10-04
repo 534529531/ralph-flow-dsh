@@ -9,6 +9,7 @@ import { createEngine, resolveCheckModel, makeArtifactsDirName, stepHasCheck, li
 import { buildCheckPrompt } from "../lib/verify.js";
 import { CREATE_GUIDE } from "../lib/create.js";
 
+import { deliveryPorts } from "./helpers/ports.mjs";
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
 // 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
@@ -21,7 +22,7 @@ let scripted = [];
 /** 验证端口调用计数：无 check 的步骤必须**一次都不调用**（验收 2 要求用计数器断言，不能只看返回值） */
 let verifyCalls = 0;
 const engine = createEngine(dir, {
-  deliver: (_sid, text) => { deliveries.push(text); return true; },
+  ...deliveryPorts(deliveries),
   verify: async (req) => {
     verifyCalls++;
     const v = scripted.shift();
@@ -230,7 +231,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   const s = S();
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-ws-"));
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async (req) => ({ check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), status: "passed", reason: "ok" }),
     log: () => {},
   });
@@ -291,7 +292,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-native-"));
   let sawSignal = false;
   const e2 = createEngine(dir2, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async (req) => {
       sawSignal = req.signal instanceof AbortSignal;
       return { check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), status: "passed", reason: "ok" };
@@ -310,7 +311,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-layout-"));
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async (req) => ({ check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), status: "passed", reason: "布局 ok" }),
     log: () => {},
   });
@@ -492,7 +493,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   const seen = [];
   const eng2 = createEngine(engine.projectDir, {
     verify: async (req) => { seen.push(req.model); return { status: "passed", reason: "s" }; },
-    deliver: () => true,
+    ...deliveryPorts(),
   });
   const sid = "prio-session";
   eng2.start("prio", "t", sid);
@@ -666,7 +667,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-scan-"));
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }),
     log: () => {},
   });
@@ -686,7 +687,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-ro-"));
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }),
     log: () => {},
   });
@@ -709,7 +710,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-sid-"));
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }),
     log: () => {},
   });
@@ -1055,7 +1056,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-reset-first-"));
     const resetCalls = [];
     const e = createEngine(ws, {
-      deliver: () => true,
+      ...deliveryPorts(),
       verify: async (req) => ({ check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), status: "failed", reason: "没过" }),
       resetSurface: async (sid, req) => { resetCalls.push({ sid, handoff: req.handoff }); return { ok: true, shadowed: 3 }; },
       log: () => {},
@@ -1098,7 +1099,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-req-"));
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }),
     log: () => {},
   });
@@ -1180,7 +1181,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-adopt-"));
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }),
     log: () => {},
   });
@@ -1204,7 +1205,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   check("19) 接管记入轨迹（adopted）", e.readState(owned).history.some((h) => h.event === "adopted"));
   // ③ 无属主：无参 → **自动接管**（恰好一个无属主实例）
   const orphanWs = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-adopt2-"));
-  const e2 = createEngine(orphanWs, { deliver: () => true, verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }), log: () => {} });
+  const e2 = createEngine(orphanWs, { ...deliveryPorts(), verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }), log: () => {} });
   e2.ensureLayout();
   fs.writeFileSync(path.join(e2.workflowsDir, "adopt.yaml"), wf);
   e2.start("adopt", "无属主用例", "session-gone1-aaaa-bbbb");
@@ -1219,7 +1220,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     !adopted.text.includes("显式指定") && !adopted.text.includes("有属主"), adopted.text.slice(0, 200));
   // ④ 多个无属主 → 无法判定，列候选要求显式指定（绝不乱挑一个）
   const e3ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-adopt3-"));
-  const e3 = createEngine(e3ws, { deliver: () => true, verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }), log: () => {} });
+  const e3 = createEngine(e3ws, { ...deliveryPorts(), verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }), log: () => {} });
   e3.ensureLayout();
   fs.writeFileSync(path.join(e3.workflowsDir, "adopt.yaml"), wf);
   e3.start("adopt", "无属主 A", "session-gonea-aaaa-bbbb");
@@ -1243,7 +1244,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-status-"));
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }),
     log: () => {},
   });

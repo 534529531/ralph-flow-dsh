@@ -19,6 +19,7 @@ import path from "node:path";
 import { createEngine, voterCountOf } from "../lib/engine.js";
 import { runVerifier, parseVerdict, VERIFIER_PERSONA } from "../lib/verify.js";
 
+import { deliveryPorts } from "./helpers/ports.mjs";
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
 // 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
@@ -45,7 +46,7 @@ console.log("D1 委派请求只带 dsh 契约字段，不注入自造超时");
     tools: { schemas: () => [{ name: "read" }] },
     agents: { get: () => undefined },
   };
-  const e = createEngine(ws, { deliver: () => true, verify: (r) => runVerifier({ ctx }, r), log: () => {} });
+  const e = createEngine(ws, { ...deliveryPorts(), verify: (r) => runVerifier({ ctx }, r), log: () => {} });
   e.ensureLayout();
   const startRes = e.start("loop", "原生字段", "d1");
 
@@ -87,7 +88,7 @@ console.log("\nD2 取消能真正中止在飞验证者（原生取消语义）")
   let aborted = false;
   let resolveVerify;
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: (req) => new Promise((resolve) => {
       resolveVerify = resolve;
       req.signal.addEventListener("abort", () => { aborted = true; resolve({ check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), status: "infra", reason: "已中止" }); });

@@ -55,6 +55,7 @@ flowchart TD
 2. 验证者自主探索工作区，按检查依据取证评估——它完全没看过 DO 阶段的对话。
 3. 判定经程序通道返回：优先原生结构化输出（`structured_output`），provider 不支持时降级为 `<promise-check>true|false</promise-check>` 文本标签。
 4. 引擎处理判定：要么推进（`on_pass`），要么带失败理由返工（`on_fail`）。
+5. 进度播报（「验证者 i/N 通过 / 不通过」、判定结论、暂停/完成告知）**直接落在会话时间线上**（你马上看得到），但**不会唤醒本会话**——空闲的保持空闲，正在收尾的回合也不会被续上。只有「要模型干活」的指令（下一步 DO、要转达的话、交卷提醒）才唤醒驱动器。分类台账见 [投递分类台账](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/v2/delivery-classification.md)。
 
 **跳过验证**：步骤不写 `check` / `check_voting` 时，交卷后直接按 `on_pass` 推进，不创建验证会话，轨迹与报告显示"跳过对抗性验证"。`manual_step` 列表里的这类步骤是纯人工审查（交卷即停）。
 
@@ -242,7 +243,7 @@ check_voting 条目 model  >  步骤 check_model  >  全局 adversarial_check.mo
 |------|----------|------|
 | `agent/turn-stopping` | 回合即将结束 | 检查"本步未交卷且无在飞委派"→ 提醒交卷（上限 2 次） |
 | `session/event`（`assistant/message`） | 助手输出消息 | 记录助手文本，供审查门改稿重交去重 |
-| `session/created` | 新会话创建 | 按其工作区补登记动态工作流快捷命令 |
+| `session/created` | 新会话创建 | 按其工作区补登记动态工作流快捷**技能**（`/ralphflow-<工作流>`） |
 
 所有投递给用户的播报都带 `form: "notice"` + 非空 summary，客户端据此渲染折叠行——**用户可见性与消息来源 kind 无关**。
 

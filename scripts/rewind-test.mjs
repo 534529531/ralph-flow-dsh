@@ -28,6 +28,7 @@ import * as plugin from "../lib/index.js";
 import { createEngine, isSubWorkflowCallId } from "../lib/engine.js";
 import { cleanupTmp, mkTmp, textOf, toolOf } from "./helpers/plugin-harness.mjs";
 
+import { deliveryPorts } from "./helpers/ports.mjs";
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "rf-rewind-home-"));
 fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
 
@@ -126,7 +127,7 @@ function mkEngine(workflows, opts = {}) {
   const resets = [];         // ResetRequest
   let scripted = [];
   const engine = createEngine(ws, {
-    deliver: (_sid, text, summary) => { delivered.push({ text, summary }); return true; },
+    ...deliveryPorts((text, summary) => delivered.push({ text, summary })),
     verify: async (req) => {
       const v = scripted.shift();
       if (!v) throw new Error("no scripted verdict");
@@ -433,7 +434,7 @@ function mkRealEnv(workflows, wfName) {
 
   const sid = "session-rewind-real";
   const ctx = new Context();
-  const registered = { tools: [], commands: [] };
+  const registered = { tools: [], commands: [], skills: [] };
   const agents = new Map();
   const session = Session.create(sid, [], { version: SESSION_FORMAT_VERSION, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
   let phase = "idle";
@@ -459,6 +460,7 @@ function mkRealEnv(workflows, wfName) {
     schemas: () => [{ name: "read" }, { name: "grep" }, { name: "glob" }, { name: "bash" }],
   });
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
+  ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),

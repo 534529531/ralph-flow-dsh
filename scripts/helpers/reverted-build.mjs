@@ -90,7 +90,13 @@ export function revertHonestVerifyNotice(src) {
   return src.replace(honest, "验证通常需要 1–5 分钟（它要真的去读文件、跑命令取证）。");
 }
 
-/** 【问题二的还原·第二处】机制说明（tools.ts）：把诚实措辞还原成编造的时长承诺。 */
+/**
+ * 【问题二的还原·第二处】机制说明（`src/skills.ts` 的 `SHARED_MECHANISM`）：把诚实措辞还原成
+ * 编造的时长承诺。
+ *
+ * 锚点文件从 `tools.ts` 挪到 `skills.ts`：启动类入口（`/ralphflow-start`、`/ralphflow-<工作流>`）
+ * 从命令改成技能之后，这段机制说明随**技能正文**进对话，不再随命令指令进对话。
+ */
 export function revertMechanismWording(src) {
   const honest = "验证者（独立会话）会真的去读文件、跑命令取证，它在做什么你在会话里看得到；期间不需要你做任何操作，跑完会自动唤醒本会话。**不要给时长预估**——委派没有超时上界，任何时间承诺都是编的。";
   if (!src.includes(honest)) throw new Error("负对照锚点（机制说明文案）不见了 —— 修复被改写，请同步更新负对照");
@@ -106,4 +112,18 @@ export function revertHonestVotingNotice(src) {
   const honest = "它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。";
   if (!src.includes(honest)) throw new Error("负对照锚点（投票播报的诚实措辞）不见了 —— 修复被改写，请同步更新负对照");
   return src.replace(honest, "通常需要 1–5 分钟（它们要真的去读文件、跑命令取证）。");
+}
+
+/**
+ * 【启动类入口「命令 → 技能」的还原】把 `/ralphflow-start` 还原成**命令**（修复前的形状）。
+ *
+ * 锚点 = `defs` 数组的第一个条目 `ralphflow-continue`。还原后同名命令又存在了，客户端会把它
+ * 解析成 `command/run`，于是 `scripts/skills-surface-test.mjs` 的「不是命令」判据必然判不通过
+ * —— 这就是那条判据的鉴别力。
+ */
+export function revertStartShortcutToCommand(src) {
+  const anchor = `  }> = [\n    {\n      name: "ralphflow-continue",`;
+  if (!src.includes(anchor)) throw new Error("负对照锚点（命令表首条 ralphflow-continue）不见了 —— 修复被改写，请同步更新负对照");
+  const injected = `  }> = [\n    {\n      name: "ralphflow-start",\n      description: "负对照：启动类快捷入口还原成命令",\n      input: { hint: "<工作流> <任务描述>" },\n      shim: () => ({ kind: "directive", text: "负对照：把启动入口交回模型" }),\n    },\n    {\n      name: "ralphflow-continue",`;
+  return src.replace(anchor, injected);
 }

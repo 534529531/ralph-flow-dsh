@@ -21,6 +21,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { deliveryPorts } from "./helpers/ports.mjs";
 // HOME 隔离：全局工作流目录在 ~/.dsh 下；必须在 import 引擎之前设置。
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
 fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
@@ -84,7 +85,8 @@ function mkEngine(ws, { scripted = [], ports = {} } = {}) {
    */
   let round = null;
   const engine = createEngine(ws, {
-    deliver: (_sid, text, summary) => { notes.push({ text, summary }); return true; },
+    deliverDirective: (_sid, text, summary) => { notes.push({ text, summary }); return true; },
+    deliverNotice: (_sid, text, summary) => { notes.push({ text, summary }); return true; },
     verify: async (req) => {
       requests.push(req);
       const voters = Math.max(1, voterCountOf(req.step));
@@ -197,7 +199,7 @@ console.log("L1 运行期 JSONL → 归档 → 报告指路 → 可复盘（验�
     const bws = wsOf("l1base");
     const bsid = `l1base-${RUN}`;
     const base = createBase(bws, {
-      deliver: () => true,
+      ...deliveryPorts(),
       verify: async (req) => ({ check_index: req.checkIndex, step_id: req.step.id, ts: "2026-01-01T00:00:00.000Z", status: "passed", reason: REASON }),
       log: () => {},
     });
@@ -550,7 +552,7 @@ steps:
     on_pass: done
 `);
     const base = createBase(bws, {
-      deliver: () => true,
+      ...deliveryPorts(),
       verify: async (req) => ({ check_index: req.checkIndex, step_id: req.step.id, ts: "2026-01-01T00:00:00.000Z", status: "passed", reason: "通过" }),
       log: () => {},
     });

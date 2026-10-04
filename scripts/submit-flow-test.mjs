@@ -12,6 +12,7 @@ import path from "node:path";
 import { Context } from "@deepseek-ai/cordis";
 import { Session, SESSION_FORMAT_VERSION } from "@deepseek-ai/dsh-session";
 import * as plugin from "../lib/index.js";
+import { captureAppends } from "./helpers/plugin-harness.mjs";
 
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
 // 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
@@ -25,16 +26,18 @@ const sleep = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 
 function mkEnv(ws) {
   const ctx = new Context();
-  const registered = { tools: [], commands: [] };
+  const registered = { tools: [], commands: [], skills: [] };
   const delivered = [];
   const agents = new Map();
   const listeners = new Map();
   const pid = "sess-submit-flow";
   const session = Session.create(pid, [], { version: SESSION_FORMAT_VERSION, id: pid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
   agents.set(pid, { id: pid, session, steer: (m) => delivered.push(m), followup: (m) => delivered.push(m) });
+  captureAppends(session, delivered);
 
   ctx.provide("tools", { register: (d) => registered.tools.push(d), schemas: () => [] });
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
+  ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
@@ -150,7 +153,7 @@ console.log("\nS4 交卷工具调用 concludeTurn（宿主原生回合结束）"
   fs.rmSync(ws, { recursive: true, force: true });
 }
 
-console.log("\nS5 工具/命令描述：无 check 的步骤不得被描述成会走独立验证（诚实标注的类级断言）");
+console.log("\nS5 工具/命令/技能描述：无 check 的步骤不得被描述成会走独立验证（诚实标注的类级断言）");
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-flow-desc-"));
   process.env.RALPHFLOW_WORKSPACE = ws;
@@ -159,7 +162,10 @@ console.log("\nS5 工具/命令描述：无 check 的步骤不得被描述成会
   const byName = (n) => registered.tools.find((t) => t.name === n);
   const startDesc = byName("ralphflow_start")?.description ?? "";
   const submitDesc = byName("ralphflow_submit")?.description ?? "";
-  const cmdStart = registered.commands.find((c) => c.name === "ralphflow-start")?.description ?? "";
+  // 启动类快捷入口现在是**技能**（不是命令）：描述是触发词（逐字固定），
+  // 「有 check / 没有 check」的限定随**技能正文**（机制说明）进对话。
+  const startSkill = (registered.skills ?? []).find((s) => s.name === "ralphflow-start");
+  const startSkillContent = startSkill?.content ?? "";
   // continue 指令是**投递给模型**的文本：走真实 handler，再从投递队列里取回
   delivered.length = 0;
   await registered.commands.find((c) => c.name === "ralphflow-continue")
@@ -169,8 +175,10 @@ console.log("\nS5 工具/命令描述：无 check 的步骤不得被描述成会
     startDesc.includes("有 `check`") && startDesc.includes("没有 `check`") && startDesc.includes("跳过对抗性验证"), startDesc);
   check("ralphflow_submit 描述同样限定（不再无条件「独立验证者随后取证判定」）",
     submitDesc.includes("有 `check`") && submitDesc.includes("没有 `check`"), submitDesc);
-  check("命令描述同步限定（有 check → 独立验证；无 check → 跳过）",
-    cmdStart.includes("有 `check`") && cmdStart.includes("没有 `check`"), cmdStart);
+  check("ralphflow-start 已是技能（同名命令不存在），技能正文同样限定（有 check → 独立验证；无 check → 跳过）",
+    !registered.commands.some((c) => c.name === "ralphflow-start")
+      && startSkillContent.includes("有 `check`") && startSkillContent.includes("没有 `check`"),
+    `commands=${registered.commands.map((c) => c.name).join(",")}`);
   check("continue 指令说明手动审查的两种情形（有 check 通过 / 无 check 跳过）",
     continueText.includes("有 `check`") && continueText.includes("没有 `check`") && continueText.includes("跳过对抗性验证"), continueText.slice(0, 220));
   check("有 check 的语义仍如实保留（描述里仍有「取证判定」）", /取证判定/.test(startDesc) && /取证判定/.test(submitDesc));

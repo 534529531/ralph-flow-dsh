@@ -1,9 +1,14 @@
 /**
  * Ralph Flow for dsh v2 — 工具 + 命令（命名与 opencode/claude 版一致）
  *
- * 命令语义 = 触发词：/ralphflow-* 注入指令给模型，由模型调用同名工具并自然回复。
- * 已实现：start / list / status / continue / cancel / create / doctor + 工作流快捷命令（/ralphflow-<工作流名>）；
+ * 命令语义 = 触发词：`/ralphflow-*` 注入指令给模型，由模型调用同名工具并自然回复。
+ * 已实现：list / status / continue / cancel / create / doctor；
  * `/ralphflow-rewind` 与 `/ralphflow-reset` 是两条**机械命令**（见下）。
+ *
+ * **启动类入口不在这里**：`/ralphflow-start` 与 `/ralphflow-<工作流>` 是**技能**（见
+ * `src/skills.ts`）—— 人敲同一串字，但它落成一条普通 `user/message`（`source.kind === "user"`）
+ * 而不是 `command/run`，所以新会话能自动命名；同名命令必须保持删除状态，否则客户端会把它
+ * 解析回命令、标题照旧没有。逐条归类见 `docs/v2/skills-vs-commands.md`。
  *
  * **`/ralphflow-reset` 与 `/ralphflow-rewind` 是仅有的两条机械命令，但不是例外「命令面」**：
  * 它们由命令处理器**直接**调用引擎完成机械动作 —— reset = `resetCurrent`（只换干净上下文
@@ -26,53 +31,35 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 import type { Engine } from "./engine.js";
 import { CREATE_GUIDE } from "./create.js";
 
-/**
- * 工作流机制说明（/ralphflow-start 与 /ralphflow-loop、/ralphflow-spec 等快捷命令共享，opencode 版 SHARED_MECHANISM 的 v0 裁剪版）。
- * 让模型知道：两阶段协议、自动验证、手动审查的放行语义、暂停恢复、以及**阶段播报**（AI 交互友好的来源）。
- */
-const SHARED_MECHANISM = `## 工作流机制（每次启动都会生效）
-
-每个工作流步骤有两个阶段：
-
-**DO 阶段（执行）**：
-- 按收到的提示执行当前步骤的任务，完成实际工作（写代码、创建文件、运行命令）。
-- 所有任务要求满足后，**调用 \`ralphflow_submit\` 工具交卷**（可在 \`summary\` 参数里简述做了什么）。
-- 只在回复里说「完成了」**不会**触发验证——必须调用工具。
-- 有 \`check\` / \`check_voting\` 的普通步骤到此为止——你空闲时系统会**自动**运行独立 CHECK，**不需要**调用其它工具。
-
-**CHECK 阶段（仅本步有 \`check\` / \`check_voting\` 时）**：
-- 交卷后，一个**独立验证者会话**（全新上下文，看不到本对话）依据该步骤的检查依据取证判定。你会收到「🔍 验证中」与验证结果消息。**没有 \`check\` / \`check_voting\` 的步骤不走这一阶段**（见下方「未配置 \`check\` / \`check_voting\` 的步骤」）。
-- 步骤写的是 \`check_voting\`（多验证者投票）时：**N 个验证者并行**、各查一条检查依据、**全过才放行**；每票完成会各推一行进度。
-- 验证是**异步**的：验证者（独立会话）会真的去读文件、跑命令取证，它在做什么你在会话里看得到；期间不需要你做任何操作，跑完会自动唤醒本会话。**不要给时长预估**——委派没有超时上界，任何时间承诺都是编的。
-- **通过** → 工作流自动推进到下一步并注入下一条 DO 提示。
-- **未通过** → 你收到失败原因并重做该步（自动重试，不会反复打扰用户）。
-
-**手动步骤**（工作流 \`manual_step\` 列出的步骤，**且本步有 \`check\` / \`check_voting\`**）：CHECK **通过后**系统停下等**用户**审查（会收到 🙋 消息）。用户的 \`/ralphflow-continue\` 是**放行**——直接进入下一步，不重复验证。用户要求修改时，你改完再次调用 \`ralphflow_submit\`，会再次自动验证，通过后再停下。
-
-**未配置 \`check\` / \`check_voting\` 的步骤**（工作流定义声明本步免验证）：**不做独立验证**——交卷后**跳过对抗性验证**，直接进入下一步；\`manual_step\` 的这类步骤则是**纯人工审查**（交卷后停在审查门，等用户 \`/ralphflow-continue\` 放行）。这类步骤务必自查产出是否满足任务要求。
-
-**暂停与恢复**：某步验证失败达到 \`max_fail_count\` 时工作流暂停。用 \`/ralphflow-status\` 看失败原因，修复后 \`/ralphflow-continue\` 恢复（重置失败计数并重试）。
-
-**重要**：\`ralphflow_continue\` 只用于 ① 批准手动审查 ② 恢复暂停 ③ 接管中断实例。**有 \`check\` / \`check_voting\` 的普通步骤不要调用它**——验证是自动的；没有检查依据的**普通步骤**交卷后也会自动继续，审查门步骤则按 ① 等你放行。
-
-**阶段播报**：收到系统阶段通知时，简短地确认一下，让用户随时了解进度：
-- DO 阶段：「已启动步骤 [X]，正在处理 [任务]」
-- CHECK 阶段（仅本步有 \`check\` / \`check_voting\` 时）：「🔍 已交卷，独立验证者正在取证判定」（投票步：N 个验证者并行，全过才放行）
-- 完成：「✅ 所有步骤完成，工作流结束」`;
-
 export interface ToolContext {
   ctx: Context;
-  /** 按工作区取引擎（**一个工作区一个引擎**，见 index.ts 的 engineFor）；缺省用进程工作区 */
-  engineFor: (workspace?: string) => Engine;
-  deliver: (sessionId: string, text: string) => boolean;
+  /**
+   * 按工作区取引擎（**一个工作区一个引擎**，见 index.ts 的 engineFor）；缺省用进程工作区。
+   * 第二个参数是发起会话 id（可选）：引擎创建时会把该工作区的工作流补登记成快捷技能，
+   * 名字不合语法的工作流要**当场说清原因**给这个会话听（见 src/skills.ts）。
+   */
+  engineFor: (workspace?: string, sessionId?: string) => Engine;
+  /**
+   * **指令**投递（唤醒）。命令语义 = 触发词：`/ralphflow-*` 的每一条投递都是「要模型接着干活」
+   * （调工具、用自然语言转达或追问），因此本文件**只有指令**，没有播报 —— 播报全部由引擎
+   * 在状态迁移时发出（见 `src/engine.ts` 的 `notify` / `deliverNotice`）。
+   * 分类审计见 `docs/v2/delivery-classification.md` 与 `scripts/delivery-classification-test.mjs`。
+   */
+  deliverDirective: (sessionId: string, text: string) => boolean;
   /** 解析发起会话的工作区（实例资产落点） */
   workspaceOfSession?: (sessionId: string) => string;
 }
 
 export type ToolHandler = (args: any, agent: Agent | undefined) => Promise<string> | string;
 
-/** 可用命令清单 —— 单一事实源：命令被拒绝时给模型转达的「还能用什么」与兜底回执共用同一份，避免两处各写一遍后走样。 */
-const AVAILABLE_COMMANDS = "`/ralphflow-start`、`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-reset`、`/ralphflow-rewind`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`";
+/**
+ * 可用**命令**清单 —— 单一事实源：命令被拒绝时给模型转达的「还能用什么」与兜底回执共用同一份，
+ * 避免两处各写一遍后走样。
+ *
+ * `/ralphflow-start` 与 `/ralphflow-<工作流>` **不在**这里：它们是技能（人敲同一串字，但落成
+ * 普通 `user/message` + 宿主注入技能正文），不是命令。把它们写进「可用命令」会指错面。
+ */
+const AVAILABLE_COMMANDS = "`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-reset`、`/ralphflow-rewind`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`";
 
 function sessionIdOf(agent: Agent | undefined): string | null {
   return (agent as { session?: { id?: string } } | undefined)?.session?.id ?? null;
@@ -95,7 +82,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
    */
   const engineOf = (agent: Agent | undefined): Engine => {
     const sid = sessionIdOf(agent);
-    return deps.engineFor(sid ? deps.workspaceOfSession?.(sid) : undefined);
+    return deps.engineFor(sid ? deps.workspaceOfSession?.(sid) : undefined, sid ?? undefined);
   };
 
   const startHandler: ToolHandler = (args, agent) => {
@@ -239,7 +226,15 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
 
 // ─── 命令注册 ────────────────────────────────────────────────────────────────
 
-export function registerCommands(deps: ToolContext & { handlers: Map<string, ToolHandler> }): (workflows: Array<{ name: string; desc: string }>) => void {
+/**
+ * 注册命令面。
+ *
+ * 这里**只注册命令**：启动类快捷入口（`/ralphflow-start`、`/ralphflow-<工作流>`）是技能，
+ * 见 `src/skills.ts`。同名命令必须保持删除状态 —— 只要同名命令还在，客户端就把它解析成
+ * `command/run`（`dsh-commands` 的 `execute`），会话标题照旧没有（`dsh-session-title` 只认
+ * `user/message` 且 `source.kind === "user"`）。
+ */
+export function registerCommands(deps: ToolContext & { handlers: Map<string, ToolHandler> }): void {
   const { ctx } = deps;
   const commands = (ctx as unknown as {
     commands: {
@@ -270,27 +265,6 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       { kind: "success"; text?: string } | { kind: "error"; text: string }
     >;
   }> = [
-    {
-      name: "ralphflow-start",
-      description: "启动工作流：模型执行 → 有 `check` / `check_voting` 的步骤交独立验证（投票步 N 票并行、全过才放行），失败自动返工；没有 `check` / `check_voting` 的步骤跳过对抗性验证。示例：/ralphflow-start loop 修复登录模块的空指针",
-      input: { hint: "<工作流> <任务描述>" },
-      shim: (inv) => {
-        const parts = inv.rawInput.trim().split(/\s+/).filter(Boolean);
-        if (parts.length < 2) {
-          // 用法错误也交回 AI：像 opencode 一样由模型说明用法并追问缺失信息
-          return {
-            kind: "directive",
-            text: "用户执行了 /ralphflow-start 但参数不完整（需要工作流名 + 任务描述）。**不要调用任何工具**，先用自然语言向用户说明用法并询问缺少的信息：只有任务没有工作流 → 问用哪个工作流；只有工作流没有任务 → 问要做什么；都没有 → 两者都问。必要时用 ralphflow_list 查看可用工作流供用户选择。",
-          };
-        }
-        const workflow = parts[0]!;
-        const task = parts.slice(1).join(" ");
-        return {
-          kind: "directive",
-          text: `用户通过 /ralphflow-start 启动了 ralphflow 工作流。请调用 \`ralphflow_start\` 工具：workflow = \`${workflow}\`，task = \`${task}\`。若工具报错，如实转达；若成功，按它返回的指示执行并遵循下面的机制。\n\n${SHARED_MECHANISM}`,
-        };
-      },
-    },
     {
       name: "ralphflow-continue",
       description: "推进工作流：放行审查门 / 解除暂停 / 接管实例。示例：/ralphflow-continue <实例ID>",
@@ -373,7 +347,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
           return { kind: "success" };
         }
         // 拒绝：把原因交回模型自然语言转达，并叫停重复尝试（命令语义不变）。
-        deps.deliver(
+        deps.deliverDirective(
           sid,
           `[ralphflow] 用户执行了 /ralphflow-reset，但**被拒绝**：${res.text}\n\n请用自然语言如实向用户说明拒绝原因与下一步（暂停中指向 \`/ralphflow-continue\`；验证/审查门中请等结果）。**不要调用任何工具**，不要替用户重试重置。`,
         );
@@ -394,7 +368,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
           // 缺参数**交回模型自然语言追问**（与 /ralphflow-start 同款：像 opencode 一样由模型
           // 说明用法并问清缺失信息），不在这里给程序化卡片。
           const have = parts.length === 1 ? `用户已给出目标步骤 \`${parts[0]}\`，缺的是**回退原因**。` : "目标步骤与回退原因两者都缺。";
-          deps.deliver(
+          deps.deliverDirective(
             sid,
             `[ralphflow] 用户执行了 /ralphflow-rewind 但参数不完整（用法：\`/ralphflow-rewind <步骤> <原因>\`，两个都必填）：${have}\n\n**不要调用任何工具**，先用自然语言向用户说明用法并询问缺少的信息（要回到哪个更早的步骤、以及为什么要换方向——原因会写进目标步的 DO 提示词，接手这一步的模型一定看得到）。必要时用 \`ralphflow_status\` 看当前步与工作流的步骤列表，供用户选择。`,
           );
@@ -412,7 +386,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
         }
         // 拒绝：把原因交回模型自然语言转达（调用点 / 未来步 / 当前步 / 不存在 / 已交卷…每条
         // 都是具体理由），并叫停重复尝试（命令语义不变）。
-        deps.deliver(
+        deps.deliverDirective(
           sid,
           `[ralphflow] 用户执行了 /ralphflow-rewind ${stepId} ${reasonText}，但**被拒绝**：${res.text}\n\n请用自然语言如实向用户说明拒绝原因与下一步（已交卷 / 验证中请等验证结果；想重做**当前步**用 \`/ralphflow-reset\`；想放行审查门或恢复暂停用 \`/ralphflow-continue\`）。当前可用命令：${AVAILABLE_COMMANDS}。**不要调用任何工具**，不要替用户重试回退。`,
         );
@@ -435,7 +409,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
             if (out.kind === "directive") {
               const sid = messageSessionId(inv.agent);
               if (sid) {
-                deps.deliver(sid, `[ralphflow] ${out.text}`);
+                deps.deliverDirective(sid, `[ralphflow] ${out.text}`);
                 // 回复留给模型（claude/opencode 语义），命令卡不渲染任何程序文本
                 return { kind: "success" };
               }
@@ -452,58 +426,6 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       ctx.logger?.warn?.("[ralphflow] command registration skipped:", err);
     }
   }
-
-  // ─── 动态工作流快捷命令：/ralphflow-<工作流名>（与 claude code 版看齐）────────
-  // claude 版：cmdName = SLASH_COMMAND_PREFIX("ralphflow-") + wf.name，且只对
-  // 名字安全（^[a-zA-Z0-9_-]+$）的工作流注册。这里同款，另加 dsh 命令名约束
-  // （小写、^[a-z][a-z0-9_-]*$）与静态命令撞名保护（如工作流叫 start → ralphflow-start 已占用则跳过）。
-  //
-  // **引擎按工作区惰性创建**，所以这里返回一个登记器而不是一次性注册：每新建一个引擎，
-  // 就把该工作区新出现的工作流补登记成快捷命令（同名先到先得，与「绝不覆盖」语义一致）。
-  const taken = new Set<string>(defs.map((d) => d.name));
-  return function registerWorkflowShortcuts(workflows: Array<{ name: string; desc: string }>): void {
-  try {
-    for (const wf of workflows) {
-      const rawName = String(wf.name);
-      if (!/^[a-zA-Z0-9_-]+$/.test(rawName)) continue;
-      const cmd = `ralphflow-${rawName.toLowerCase()}`;
-      if (!/^[a-z][a-z0-9_-]*$/.test(cmd)) continue;
-      if (taken.has(cmd)) continue;
-      taken.add(cmd);
-      const desc = wf.desc || `启动 ${wf.name} 工作流`;
-      try {
-        commands.register({
-          name: cmd,
-          description: `(ralphflow) ${desc} · 示例：/${cmd} <任务描述>`,
-          input: { hint: "<任务描述>" },
-          handler: async (inv: { rawInput: string; agent: Agent; signal: AbortSignal }) => {
-            try {
-              const task = inv.rawInput.trim();
-              const sid = messageSessionId(inv.agent);
-              if (!task) {
-                // 缺任务也交回 AI：先说明用法再等任务（claude 版同款：先问要完成什么）
-                if (sid) {
-                  deps.deliver(sid, `[ralphflow] 用户执行了 /${cmd}（\`${wf.name}\` 工作流）但没有附带任务描述。**不要调用任何工具**，先用自然语言说明用法：\`/${cmd} <任务描述>\`，并请用户补上要完成的任务。`);
-                }
-                return { kind: "success" };
-              }
-              if (sid) {
-                deps.deliver(sid, `[ralphflow] 用户通过 /${cmd} 启动了 \`${wf.name}\` 工作流。请调用 \`ralphflow_start\` 工具：workflow = \`${wf.name}\`，task = \`${task}\`。若工具报错，如实转达；若成功，按它返回的指示执行并遵循下面的机制。\n\n${SHARED_MECHANISM}`);
-              }
-              return { kind: "success" };
-            } catch (err) {
-              return { kind: "error", text: err instanceof Error ? err.message : String(err) };
-            }
-          },
-        });
-      } catch {
-        // 与其它插件撞名：静默跳过，与 claude/opencode 版"绝不覆盖"语义一致
-      }
-    }
-  } catch (err) {
-    ctx.logger?.warn?.("[ralphflow] workflow shortcut registration skipped:", err);
-  }
-  };
 }
 
 function messageSessionId(agent: Agent | undefined): string {

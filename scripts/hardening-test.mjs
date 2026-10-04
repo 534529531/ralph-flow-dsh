@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { createEngine, voterCountOf } from "../lib/engine.js";
 
+import { deliveryPorts } from "./helpers/ports.mjs";
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
 // 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
@@ -17,7 +18,7 @@ const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-hardening-"));
 const deliveries = [];
 let scripted = [];
 const engine = createEngine(dir, {
-  deliver: (_sid, text) => { deliveries.push(text); return true; },
+  ...deliveryPorts(deliveries),
   verify: async (req) => {
     const v = scripted.shift();
     if (!v) throw new Error("no scripted verdict");
@@ -208,7 +209,7 @@ console.log("\nH8 判定丢弃必须可诊断（交卷丢失告警的姊妹缺�
   const logs = [];
   const inFlight = [];
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: (req) => new Promise((r) => inFlight.push({ resolve: r, index: req.checkIndex })),
     log: (lvl, ev, d) => logs.push({ lvl, ev, d }),
   });
@@ -247,7 +248,7 @@ console.log("\nH9 审查门 + 在飞委派：改稿重交必须生效（不得�
   /** 每笔委派一个独立 resolver —— 绝不复用，否则测不出迟到判定 */
   const resolvers = [];
   const e = createEngine(ws, {
-    deliver: (_s, t) => { deliveries.push(t); return true; },
+    ...deliveryPorts(deliveries),
     verify: () => new Promise((r) => { resolvers.push(r); }),
     log: (lvl, ev, d) => log.push({ lvl, ev, d }),
   });

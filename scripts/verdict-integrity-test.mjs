@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { createEngine, voterCountOf } from "../lib/engine.js";
 
+import { deliveryPorts } from "./helpers/ports.mjs";
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
 // 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
@@ -30,7 +31,7 @@ const mkPending = (ws, logRef) => {
   const resolvers = [];
   const notes = [];
   const e = createEngine(ws, {
-    deliver: (_s, t) => { notes.push(t); return true; },
+    ...deliveryPorts(notes),
     verify: () => new Promise((r) => { resolvers.push(r); }),
     log: (lvl, ev, d) => { if (logRef) logRef.push({ lvl, ev, d }); },
   });
@@ -126,7 +127,7 @@ console.log("\nV3 fail_count：换步必须清零（每步 max_fail_count 语义
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-v3-"));
   const sc = [];
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async (req) => ({ check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), ...sc.shift() }),
     log: () => {},
   });
@@ -169,7 +170,7 @@ console.log("\nV4 continue 恢复：必须重置失败计数（否则修好后�
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-v4-"));
   const sc = [];
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async (req) => ({ check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), ...sc.shift() }),
     log: () => {},
   });
@@ -205,7 +206,7 @@ console.log("\nV5 on_fail：失败必须回退到 on_fail 指定的步骤");
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-v5-"));
   const sc = [];
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async (req) => ({ check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), ...sc.shift() }),
     log: () => {},
   });
@@ -237,7 +238,7 @@ console.log("\nV5 on_fail：失败必须回退到 on_fail 指定的步骤");
 console.log("\nV6 on_fail: done 非法 → 加载期 fail-fast");
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-v6-"));
-  const e = createEngine(ws, { deliver: () => true, verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }), log: () => {} });
+  const e = createEngine(ws, { ...deliveryPorts(), verify: async () => ({ status: "infra", reason: "x", check_index: 0, step_id: "s", ts: "" }), log: () => {} });
   e.ensureLayout();
   fs.writeFileSync(path.join(e.workflowsDir, "bad.yaml"), [
     "description: on_fail done 非法", "steps:",
@@ -262,7 +263,7 @@ console.log("\nV7 on_fail 跨步回退：按步计数（不串味 + 成环仍有
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-v7-"));
   const sc = [];
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async (req) => ({ check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), ...sc.shift() }),
     log: () => {},
   });
@@ -311,7 +312,7 @@ console.log("\nV8 state.json：老格式可读（迁移）+ 派生量不落盘�
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-v8-"));
   const sc = [];
   const e = createEngine(ws, {
-    deliver: () => true,
+    ...deliveryPorts(),
     verify: async (req) => ({ check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), ...sc.shift() }),
     log: () => {},
   });
