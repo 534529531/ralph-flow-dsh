@@ -2803,7 +2803,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       if (destroyed.instanceDirRemoved) {
         notify(
           state,
-          `✅ 工作流 \`${wf.name}\` 完成，报告已归档到 \`${rel}\`。\n\n实例目录已销毁、产出目录保留；历史运行可在 \`/ralphflow-list\` 的「历史运行」节里找到。`,
+          `✅ 工作流 \`${wf.name}\` 完成，报告已归档到 \`${rel}\`。\n\n实例目录已销毁、产出目录保留；报告与产出是永久的，需要时按上面这个路径翻。`,
           `✅ 工作流 ${wf.name} 完成（报告 ${rel}）`,
         );
       } else {
@@ -3947,7 +3947,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       if (mine) return { ok: true, text: renderInstance(mine, sessionId) };
       const all = listInstances();
       if (all.length > 0) return { ok: true, text: renderActiveOverview(all, sessionId) };
-      return { ok: true, text: "当前没有活跃实例。用 `/ralphflow-start <工作流> <任务>` 启动；已结束的运行见 `/ralphflow-list` 的「历史运行」节。" };
+      return { ok: true, text: `当前没有活跃实例。用 \`/ralphflow-start <工作流> <任务>\` 启动；已结束的运行：报告在 \`${RALPH_FLOW_DIR}/reports/\`。` };
     }
     const info = listInstances().find((i) => i.id === instanceRef || i.id.startsWith(instanceRef));
     if (info) return { ok: true, text: renderInstance(info, sessionId) };
@@ -3970,7 +3970,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           ].filter(Boolean).join("\n"),
         };
       }
-      return { ok: true, text: `找不到活跃实例 \`${instanceRef}\`，也没有与它匹配的历史报告。用 \`/ralphflow-list\` 查看活跃实例与「历史运行」。` };
+      return { ok: true, text: `找不到活跃实例 \`${instanceRef}\`，也没有与它匹配的历史报告。用 \`/ralphflow-list\` 查看活跃实例，或直接看 \`${RALPH_FLOW_DIR}/reports/\`。` };
     }
   }
 
@@ -4113,7 +4113,6 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
 
   function listAll(): ToolResult {
     const all = listInstances();
-    const history = listHistory();
     const wfs = listWorkflows();
     const head: string[] = ["## 可用工作流", ""];
     if (wfs.length === 0) head.push("没有找到工作流。");
@@ -4143,24 +4142,13 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
     body.push("接管无属主实例：`/ralphflow-continue <实例ID>`。");
 
-    // 「历史运行」节：从 reports/ 现读现解析（不新增派生索引）。报告只写不读会让
-    // 完成消息一丢就再也找不回来——这里就是找回来的入口。
-    body.push("", `## 历史运行（已归档）（${history.length} 个）`, "");
-    if (history.length === 0) {
-      body.push("（暂无归档报告）");
-    } else {
-      for (const h of history) {
-        body.push(`### \`${h.id}\``);
-        body.push(`- **状态**: ${h.statusLabel}`);
-        if (h.workflow) body.push(`- **工作流**: ${h.workflow}`);
-        if (h.task) body.push(`- **任务**: ${h.task.replace(/\s+/g, " ").slice(0, 60)}${h.task.length > 60 ? "…" : ""}`);
-        if (h.endedAt) body.push(`- **结束**: ${h.endedAt}`);
-        body.push(`- **报告**: \`${h.relPath}\``);
-        if (!h.parsed) body.push("- ⚠️ 无法解析报告头部字段");
-        body.push("");
-      }
-    }
-    body.push(`历史报告目录：\`${RALPH_FLOW_DIR}/reports/\`（报告与产出永久保留，只能由你显式删除）。`);
+    // 已结束的运行**不在这里逐个列出**：`/ralphflow-list` 回答的是「现在有什么在跑」，
+    // 一屏历史会把这个问题埋掉（作者实测的别扭）。归档是永久的、报告自带头部字段，
+    // 需要时按目录翻即可；完成消息与 `/ralphflow-status` 也各自给过精确报告路径。
+    //
+    // **数据面 `listHistory()` 仍然保留**：doctor 的孤儿产出体检与 status 的历史报告查找
+    // 都靠它 —— 去掉的是「列表里这一节」，不是「读历史的能力」。
+    body.push("", `已结束的运行：报告在 \`${RALPH_FLOW_DIR}/reports/\`（不在此逐个列出；报告与产出永久保留，只能由你显式删除）。`);
     return { ok: true, text: head.concat(body).join("\n") };
   }
 

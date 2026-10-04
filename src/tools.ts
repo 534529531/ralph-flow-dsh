@@ -181,7 +181,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: "ralphflow_list",
-      description: "列出可用工作流、活跃实例与已归档的历史运行。",
+      description: "列出可用工作流与活跃实例（已结束的运行只给报告目录，不逐个列出）。",
       params: {},
       handler: listHandler,
     },
@@ -321,10 +321,10 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
     },
     {
       name: "ralphflow-list",
-      description: "列出可用工作流、活跃实例与历史运行。示例：/ralphflow-list",
+      description: "列出可用工作流与活跃实例。示例：/ralphflow-list",
       shim: () => ({
         kind: "directive",
-        text: "用户执行了 /ralphflow-list。请调用 `ralphflow_list` 工具获取数据，然后把「可用工作流」整理成**表格**（列：工作流 | 用途描述），把「活跃实例」按工具返回的字段简要列给用户（实例 id、工作流、任务、步骤、状态、属主），把「历史运行（已归档）」按工具返回的字段列出（实例 id、状态、任务、结束时间、报告路径），并告诉用户历史报告目录的路径。数据以工具返回为准，不要编造；没有就直说。工作流解析顺序：工作区自定义 `.dsh/ralph-flow/workflows/` > 全局 `~/.dsh/ralph-flow/workflows/` > 插件内置。",
+        text: "用户执行了 /ralphflow-list。请调用 `ralphflow_list` 工具获取数据，然后把「可用工作流」整理成**表格**（列：工作流 | 用途描述），把「活跃实例」按工具返回的字段简要列给用户（实例 id、工作流、任务、步骤、状态、属主），并转达工具给的「已结束的运行」报告目录。数据以工具返回为准，不要编造；没有就直说。工作流解析顺序：工作区自定义 `.dsh/ralph-flow/workflows/` > 全局 `~/.dsh/ralph-flow/workflows/` > 插件内置。",
       }),
     },
     {

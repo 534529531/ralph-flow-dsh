@@ -140,8 +140,9 @@ console.log("\nL3 空产出目录随实例销毁一并消失（验收 3）");
   forget(ws);
 }
 
-// ── 4) 列表语义：listInstances 只活跃；listHistory / listAll 有历史入口（验收 5）─
-console.log("\nL4 列表语义与历史入口（验收 5）");
+// ── 4) 列表语义：listInstances 只活跃；listAll **不列历史**（只给报告目录指路）；
+//        listHistory 数据面仍在（doctor 孤儿体检 + status 找历史报告都靠它）─────────
+console.log("\nL4 列表语义（只答「现在有什么在跑」）");
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-lc4-"));
   const engine = mkEngine(ws, [{ status: "passed", reason: "ok" }]);
@@ -166,11 +167,12 @@ console.log("\nL4 列表语义与历史入口（验收 5）");
   check("解析失败的报告仍被列出且标注无法解析", !!broken && !broken.parsed && broken.statusLabel === "无法解析");
 
   const text = engine.listAll().text;
-  const [activePart, historyPart] = text.split("## 历史运行（已归档）");
-  check("listAll 分「活跃实例」与「历史运行（已归档）」两节", text.includes("## 活跃实例") && !!historyPart);
+  const activePart = text.split("已结束的运行：")[0];
+  check("listAll 有「活跃实例」节", text.includes("## 活跃实例"), text.slice(0, 200));
   check("已结束实例不在活跃节", !activePart.includes(`### \`${id}\``), activePart.slice(0, 200));
-  check("历史节列出该实例（含报告路径）", historyPart.includes(`### \`${id}\``) && historyPart.includes(`${RF}/reports/${id}.md`));
-  check("历史节末尾给出 reports/ 相对路径", historyPart.includes(`${RF}/reports/`));
+  check("**不再逐个列出历史运行**（作者定案：列表只答「现在有什么在跑」）",
+    !text.includes("## 历史运行") && !text.includes(`### \`${id}\``), text.slice(-300));
+  check("但给出一行报告目录指路", text.includes(`${RF}/reports/`));
   forget(ws);
 }
 
@@ -262,8 +264,7 @@ console.log("\nL7 幽灵防护：注入 rmSync 失败 → state.json 已不在�
     check("递归删除失败：listInstances() 不含鬼影", !engine.listInstances().some((i) => i.id === id));
     check("递归删除失败：告警可诊断", logs.some((l) => l.ev === "instance_dir_remove_failed"), JSON.stringify(logs.map((l) => l.ev)));
     const text = engine.listAll().text;
-    const activePart = text.split("## 历史运行（已归档）")[0];
-    check("递归删除失败：活跃节不含该实例", !activePart.includes(`### \`${id}\``));
+    check("递归删除失败：活跃节不含该实例", !text.includes(`### \`${id}\``));
     check("递归删除失败：报告已归档（历史仍在）", fs.existsSync(reportPathOf(ws, id)));
   } finally {
     try { fs.rmSync(engine.instanceDir(id), { recursive: true, force: true }); } catch {}

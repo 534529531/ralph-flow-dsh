@@ -106,7 +106,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   check("通过后报告归档", fs.existsSync(path.join(engine.reportsDir, `${id}.md`)));
   check("实例目录物理消失", !fs.existsSync(engine.instanceDir(id)));
   check("listInstances 不再含已结束实例", !engine.listInstances().some((i) => i.id === id));
-  check("「历史运行」能列出它（从报告解析）", engine.listHistory().some((h) => h.id === id && h.parsed));
+  check("归档报告可被 listHistory() 解析回来（doctor 孤儿体检与 status 找报告的数据面）", engine.listHistory().some((h) => h.id === id && h.parsed));
 }
 
 // ── 2) 失败 → 返工 ───────────────────────────────────────────────────────────
