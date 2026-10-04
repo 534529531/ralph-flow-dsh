@@ -262,7 +262,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       | { kind: "directive"; text: string }
       | { kind: "card"; text: string };
     /**
-     * **机械命令**（目前只有 `/ralphflow-reset`）：命令处理器直接驱动引擎做事、
+     * **机械命令**（`/ralphflow-reset`、`/ralphflow-rewind`）：命令处理器直接驱动引擎做事、
      * 再把结果交回模型自然语言回复 —— 不经过「模型记得去调同名工具」这一步。
      * 与 `shim` 二选一（`run` 优先）。
      */
