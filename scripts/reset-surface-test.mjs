@@ -21,7 +21,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Context } from "@deepseek-ai/cordis";
-import { Session } from "@deepseek-ai/dsh-session";
+import { Session, SESSION_FORMAT_VERSION } from "@deepseek-ai/dsh-session";
+import { RALPHFLOW_SOURCE_KIND } from "../lib/message-source.js";
 import {
   createAssistantMessage,
   createSystemMessage,
@@ -248,7 +249,7 @@ function setup(workflows, wfName) {
   const ctx = new Context();
   const registered = { tools: [], commands: [] };
   const agents = new Map();
-  const session = Session.create(sid, [], { version: 3, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
+  const session = Session.create(sid, [], { version: SESSION_FORMAT_VERSION, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
 
   // 相位：'idle' | 'turn' | 'maintenance'。runMaintenance 在非 idle 时**同步抛错** ——
   // 这正是宿主 dsh-agent-loop 的契约（`agent "${id}" already has active work`），
@@ -485,8 +486,8 @@ console.log("\n1) 真实跑一次（reset: true 的第二步）");
   const rep = reps[0];
   // 本次替换自带的可见告知 = 被它遮蔽的最后一个节点（endSeq 就是它）
   const noticeEvent = allEvents(H.session).find((e) => e.seq === rep.surfaceOp.endSeq);
-  check("替换节点用自有 plugin source（{kind:'plugin', plugin:'ralphflow'}），不冒用 compact（硬约束 1.4）",
-    rep?.data?.source?.kind === "plugin" && rep.data.source.plugin === "ralphflow" && rep.data.source.form === undefined,
+  check("替换节点用自有 source kind（不冒用 compact；不带 form = 不进用户可见面）（硬约束 1.4）",
+    rep?.data?.source?.kind === RALPHFLOW_SOURCE_KIND && rep.data.source.form === undefined,
     JSON.stringify(rep?.data?.source));
   check("日志里没有任何 compaction/* 事件（不伪造压缩事务，硬约束 1.4）",
     !allEvents(H.session).some((e) => String(e.type).startsWith("compaction/")));

@@ -13,7 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Context } from "@deepseek-ai/cordis";
-import { Session } from "@deepseek-ai/dsh-session";
+import { Session, SESSION_FORMAT_VERSION } from "@deepseek-ai/dsh-session";
 
 /**
  * 造一个「会话 + 插件宿主」。
@@ -29,7 +29,7 @@ export function mkEnv(ws, sid, opts = {}) {
   const registered = { tools: [], commands: [] };
   const sent = [];
   const agents = new Map();
-  const session = Session.create(sid, [], { version: 3, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
+  const session = Session.create(sid, [], { version: SESSION_FORMAT_VERSION, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
   agents.set(sid, { id: sid, session, steer: (m) => sent.push(m), followup: (m) => sent.push(m) });
 
   ctx.provide("tools", {

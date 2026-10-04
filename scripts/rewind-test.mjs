@@ -16,7 +16,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Context } from "@deepseek-ai/cordis";
-import { Session } from "@deepseek-ai/dsh-session";
+import { Session, SESSION_FORMAT_VERSION } from "@deepseek-ai/dsh-session";
+import { RALPHFLOW_SOURCE_KIND } from "../lib/message-source.js";
 import {
   createAssistantMessage,
   createSystemMessage,
@@ -434,7 +435,7 @@ function mkRealEnv(workflows, wfName) {
   const ctx = new Context();
   const registered = { tools: [], commands: [] };
   const agents = new Map();
-  const session = Session.create(sid, [], { version: 3, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
+  const session = Session.create(sid, [], { version: SESSION_FORMAT_VERSION, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
   let phase = "idle";
   const inbox = [];
   const idleWaiters = [];
@@ -617,8 +618,8 @@ function seedPrior(session) {
   check("B6 日志里恰有 1 次整段替换", reps.length === 1, `count=${reps.length}`);
   const rep = reps[0];
   const notice = events.find((e) => e.seq === rep.surfaceOp.endSeq);
-  check("B6 替换节点用自有 plugin source（不冒用 compact）",
-    rep?.data?.source?.kind === "plugin" && rep.data.source.plugin === "ralphflow" && rep.data.source.form === undefined,
+  check("B6 替换节点用自有 source kind（不冒用 compact；不带 form = 不进用户可见面）",
+    rep?.data?.source?.kind === RALPHFLOW_SOURCE_KIND && rep.data.source.form === undefined,
     JSON.stringify(rep?.data?.source));
   check("B6 可见告知（被同一次替换遮蔽）说的是「用户执行了 /ralphflow-rewind」且已被移出可见面",
     notice?.data?.source?.form === "notice"

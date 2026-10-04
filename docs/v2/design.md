@@ -45,7 +45,7 @@
 | 引擎 = MCP server（常驻） | 插件内 Service，进程内持有全部状态 |
 | 驱动器 = hooks（一次性进程） | Service 内部监听 `session/event` + `agent/turn-stopping` |
 | Stop hook 见 `<promise>done</promise>` | **模型调用 `ralphflow_submit` 工具**（工具调用是事实；工具结果带 `concludesTurn` 由机器结束回合）。不再对模型自由文本做正则匹配 |
-| 「去验证」宣告（hook 注入） | `agent.steer(userMessage)`（source `{kind:"plugin"}`；v1 `agent.followup` 已实测可用） |
+| 「去验证」宣告（hook 注入） | `agent.steer(userMessage)`（source `{kind:"ralphflow"}`）。kind 由插件在 `src/message-source.ts` 里**自己声明**：dsh 0.2 起 `MessageSourceMap` 是 merge-extensible 的，内置的 `plugin` kind 已删除。**用户可见性与 kind 无关** —— 客户端按 `form:"notice"` + 非空 `summary` 渲染折叠行 |
 | `SubagentStop` 记录判定 | **`await subagents.start(...).result`（权威）** + `subagent/end` 事件（审计） |
 | `ralph-check` agent 定义 | **内部固定 persona**（`VERIFIER_PERSONA`，经 `subagents.start` 的 `persona` 传） + 按能力选出的全新上下文后端 + `toolFilter` + `outputSchema`（程序级强制） |
 | `ralphflow_*` MCP 工具 | `ctx.tools.register` + `ctx.commands.register` |

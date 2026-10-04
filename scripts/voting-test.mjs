@@ -555,7 +555,7 @@ console.log("== M. fail-closed：票数不齐绝不能放行 + 投票步的孤�
 console.log("== N. 插件级端到端：真实链路（工具 → 引擎 → verify.ts → N 个子代理）==");
 {
   const { Context } = await import("@deepseek-ai/cordis");
-  const { Session } = await import("@deepseek-ai/dsh-session");
+  const { Session, SESSION_FORMAT_VERSION } = await import("@deepseek-ai/dsh-session");
   const { pathToFileURL } = await import("node:url");
   const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-voting-plugin-"));
@@ -565,7 +565,7 @@ console.log("== N. 插件级端到端：真实链路（工具 → 引擎 → ver
   const sent = [];
   const ctx = new Context();
   const registered = { tools: [], commands: [] };
-  const session = Session.create(sid, [], { version: 3, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
+  const session = Session.create(sid, [], { version: SESSION_FORMAT_VERSION, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
   ctx.provide("tools", { register: (d) => registered.tools.push(d), schemas: () => [{ name: "read" }, { name: "grep" }, { name: "glob" }, { name: "bash" }] });
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
   ctx.provide("subagents", {

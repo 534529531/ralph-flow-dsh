@@ -6,6 +6,7 @@
  */
 import type { Context } from "@deepseek-ai/cordis";
 import { createUserMessage, boundContextSummary } from "@deepseek-ai/dsh-llm";
+import { RALPHFLOW_SOURCE_KIND } from "./message-source.js";
 import { createEngine, listWorkflowsIn, type Engine, type VerifyRequest } from "./engine.js";
 import { createResetSurface } from "./reset.js";
 import { runVerifier } from "./verify.js";
@@ -83,7 +84,7 @@ export function apply(ctx: Context): void {
    */
   const deliver = (sessionId: string, text: string, summary?: string, opts?: { dedupe?: boolean }): boolean => {
     try {
-      const agent = agentOf(sessionId) as { steer?: (m: unknown) => unknown; followup?: (m: unknown) => unknown } | undefined;
+      const agent = agentOf(sessionId) as { steer: (m: unknown) => unknown } | undefined;
       if (!agent) return false;
       // 去重：同会话 + 同文本，5 秒内只投一次（避免用户连按命令造成指令堆叠）。
       // 引擎驱动的投递传 `{dedupe:false}` 跳过（见函数注释：否则会吞掉真实迁移）。
@@ -101,14 +102,14 @@ export function apply(ctx: Context): void {
       }
       const brief = typeof summary === "string" ? summary.trim() : "";
       const source = brief
-        ? { kind: "plugin" as const, plugin: "ralphflow", form: "notice" as const, summary: boundContextSummary(brief) }
-        : { kind: "plugin" as const, plugin: "ralphflow" };
+        ? { kind: RALPHFLOW_SOURCE_KIND, form: "notice" as const, summary: boundContextSummary(brief) }
+        : { kind: RALPHFLOW_SOURCE_KIND };
       const msg = createUserMessage({ content: [{ type: "text", text }], source });
-      // steer：提交给最近一步，空闲驱动器会开新一轮（0.1.x 官方机制）；
-      // followup：旧版本兼容兜底。
-      if (typeof agent.steer === "function") { agent.steer(msg); return true; }
-      if (typeof agent.followup === "function") { agent.followup(msg); return true; }
-      return false;
+      // steer：把消息提交给**最近一步**——空闲驱动器就此开新一轮，运行中的驱动器在下一个
+      // 步骤边界取走。这正是「一行一回合」的官方机制（不是 followup 那种「自己独占一个回合」，
+      // 后者会把 DO 提示词排成独立回合、与步骤边界错开）。
+      agent.steer(msg);
+      return true;
     } catch (e) {
       log("warn", "deliver_failed", { sessionId, error: e instanceof Error ? e.message : String(e) });
       return false;

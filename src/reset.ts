@@ -32,9 +32,7 @@ import { toolPairingBalancedAfter } from "@deepseek-ai/dsh-compaction";
 import { boundContextSummary, createUserMessage } from "@deepseek-ai/dsh-llm";
 import type { SessionSeq } from "@deepseek-ai/dsh-session";
 import type { ResetOutcome, ResetRequest } from "./engine.js";
-
-/** 自有 plugin id：消费者按它给轨迹行打标签；绝不冒用 `compact`。 */
-export const RESET_PLUGIN_ID = "ralphflow";
+import { RALPHFLOW_SOURCE_KIND } from "./message-source.js";
 
 /** 诊断日志端口（与引擎的 ports.log 同形；缺省静默，绝不因为日志失败影响替换）。 */
 export type ResetLog = (level: "info" | "warn" | "error", event: string, data?: unknown) => void;
@@ -160,7 +158,7 @@ export function createResetSurface(ctx: Context, log?: ResetLog) {
         //    只能先让它成为 append 来源的节点、再让同一次替换把它遮蔽掉。
         const notice = createUserMessage({
           content: [{ type: "text", text: req.notice.text }],
-          source: { kind: "plugin", plugin: RESET_PLUGIN_ID, form: "notice", summary: boundContextSummary(req.notice.summary) },
+          source: { kind: RALPHFLOW_SOURCE_KIND, form: "notice", summary: boundContextSummary(req.notice.summary) },
         });
         const noticeSeq = session.append("user/message", notice, { surfaceOp: "append" }).seq;
 
@@ -170,7 +168,7 @@ export function createResetSurface(ctx: Context, log?: ResetLog) {
         const shadowed = [...nodes.slice(1), noticeSeq];
         const handoff = createUserMessage({
           content: [{ type: "text", text: req.handoff }],
-          source: { kind: "plugin", plugin: RESET_PLUGIN_ID },
+          source: { kind: RALPHFLOW_SOURCE_KIND },
         });
         const handoffSeq = session.append("user/message", handoff, {
           surfaceOp: { op: "replace", startSeq, endSeq: noticeSeq },

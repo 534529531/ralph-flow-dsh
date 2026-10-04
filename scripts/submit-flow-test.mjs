@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Context } from "@deepseek-ai/cordis";
-import { Session } from "@deepseek-ai/dsh-session";
+import { Session, SESSION_FORMAT_VERSION } from "@deepseek-ai/dsh-session";
 import * as plugin from "../lib/index.js";
 
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
@@ -30,7 +30,7 @@ function mkEnv(ws) {
   const agents = new Map();
   const listeners = new Map();
   const pid = "sess-submit-flow";
-  const session = Session.create(pid, [], { version: 3, id: pid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
+  const session = Session.create(pid, [], { version: SESSION_FORMAT_VERSION, id: pid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
   agents.set(pid, { id: pid, session, steer: (m) => delivered.push(m), followup: (m) => delivered.push(m) });
 
   ctx.provide("tools", { register: (d) => registered.tools.push(d), schemas: () => [] });
