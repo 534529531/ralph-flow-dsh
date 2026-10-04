@@ -1,6 +1,6 @@
 {
   "name": "ralphflow-dsh",
-  "version": "0.2.0",
+  "version": "2.0.0",
   "description": "Ralph Flow for DeepSeek Harness — 执行者/验证者模式的具象化：主会话执行，独立验证者对抗检查，推进权在机械程序（v2 原生重做）",
   "type": "module",
   "main": "lib/index.js",
@@ -45,6 +45,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "verify": "node scripts/verify-all.mjs",
+    "prepublishOnly": "npm run build && npm run typecheck && npm run verify"
   }
 }
