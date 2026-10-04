@@ -15,8 +15,14 @@
   "files": [
     "lib",
     "workflows",
+    "cordis.patch.yml",
     "README.md"
   ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "license": "MIT",
   "repository": {
     "type": "git",

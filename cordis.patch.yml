@@ -1,0 +1,11 @@
+# ralphflow-dsh bundle patch：把插件按**包名**挂上（经 profile 的 node_modules 解析）。
+#
+# 为什么需要它：dsh 的 Plugins 页与插件库存是**围绕 bundle 组织的** —— 一个包只有在
+# package.json 里自报 `"dsh": {"bundle": {"patch": …}}` 才算 bundle，`dsh plugin add`
+# 才会顺带激活它声明的 row。没有这份 patch 的包，插件管理器会把它报成 `not-bundle`
+# 问题：依赖装上了，但**不贡献任何 row** —— UI 里看不见，也不能开关或卸载。
+#
+# 形状照 dsh-opencode-session-header（一个已安装的第三方 bundle）与 dsh-base。
+- insert:
+    - id: ralphflow
+      name: ralphflow-dsh
