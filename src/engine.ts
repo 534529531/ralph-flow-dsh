@@ -11,6 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 import {
   MAX_VOTERS,
@@ -1173,9 +1174,19 @@ export function makeArtifactsDirName(task: string, instId: string): string {
   return slug ? `${slug}-${suffix}` : String(instId);
 }
 
-/** 内置工作流文件（不落盘，只存在于插件目录；lib/engine.js → ../workflows/<name>.yaml） */
+/**
+ * 内置工作流文件（不落盘，只存在于插件目录；lib/engine.js → ../workflows/<name>.yaml）。
+ *
+ * 取模块目录**必须**用 `fileURLToPath`：`new URL(import.meta.url).pathname` 不做百分号解码，
+ * Windows 上还给出 `/C:/…`（盘符前多一个 `/`，`path.resolve` 之后盘符变成一个**字面目录名**）。
+ * 两者都让 `statSync` 必然失败 → 内置工作流回落不到 → 全新安装时一个可用工作流都没有
+ * （`listWorkflows` 无条件列出 `loop`/`spec`，于是表现为「(无描述)（定义无效）」）。
+ *
+ * 这条路径在纯 ASCII 的 Linux/macOS 上**静默正常**，所以只有 Windows、或安装路径带空格/非
+ * ASCII 字符时才会暴露 —— 回归见 `scripts/builtin-workflow-path-test.mjs`。
+ */
 export function builtinWorkflowPath(name: string): string | undefined {
-  const here = path.dirname(new URL(import.meta.url).pathname);
+  const here = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
     path.resolve(here, "..", "workflows", `${name}.yaml`),
     path.resolve(here, "..", "..", "workflows", `${name}.yaml`),

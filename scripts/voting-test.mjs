@@ -558,8 +558,8 @@ console.log("== N. 插件级端到端：真实链路（工具 → 引擎 → ver
 {
   const { Context } = await import("@deepseek-ai/cordis");
   const { Session, SESSION_FORMAT_VERSION } = await import("@deepseek-ai/dsh-session");
-  const { pathToFileURL } = await import("node:url");
-  const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+  const { pathToFileURL, fileURLToPath } = await import("node:url");
+  const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-voting-plugin-"));
   process.env.RALPHFLOW_WORKSPACE = ws;
   const sid = `voting-plugin-${Date.now().toString(36)}`;

@@ -15,9 +15,10 @@
 import pw from "/home/yj/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/index.js";
 const { chromium } = pw;
 import * as fs from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const BASE = process.env.DSH_WEB_BASE || "http://127.0.0.1:3080";
-const outDir = new URL(".", import.meta.url).pathname;
+const outDir = fileURLToPath(new URL(".", import.meta.url));
 
 const browser = await chromium.launch({ executablePath: "/home/yj/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome" });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });

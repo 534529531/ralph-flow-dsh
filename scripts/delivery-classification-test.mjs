@@ -18,8 +18,9 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 let pass = 0, fail = 0;
 const check = (n, c, e = "") => { if (c) { pass++; console.log(`  ✓ ${n}`); } else { fail++; console.error(`  ✗ ${n} ${e}`); } };
