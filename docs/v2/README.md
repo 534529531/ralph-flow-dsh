@@ -24,6 +24,7 @@
 | [notice-wake-brief.md](notice-wake-brief.md) | 「播报唤醒会话」缺陷修复：播报不再叫醒驱动器（指令仍走 `steer`） | 已实现（验收 7 的真实运行复核已在 RA2 实例上现场走通） |
 | [shortcut-skills-brief.md](shortcut-skills-brief.md) | 启动类快捷从命令改成技能（修掉新会话未命名 + 技能描述成为自然语言触发词） | 已实现 |
 | [workspace-anchoring-brief.md](workspace-anchoring-brief.md) | 发现面锚定修复 | ⛔ **已作废**——思路被"引擎按工作区实例化"取代 |
+| [ui-notice-brief.md](ui-notice-brief.md) | 播报对人类可见（客户端半边）：通过 / 失败 / 暂停 / 审查门 / 完成在 Chat 时间线上看得见，且不唤醒驱动器 | 📋 **待实现** |
 | [brief-style.md](brief-style.md) | 任务书写作规范（给作者） | 规范 |
 
 ## 调研与预研
@@ -33,6 +34,7 @@
 | [reset-feasibility.md](reset-feasibility.md) | reset 在 dsh 上的载体：全范围替换会话可见面（五路源码取证 + 五条硬约束） |
 | [subworkflow-nesting-research.md](subworkflow-nesting-research.md) | 子工作流 / 可复用子流程的业界六系统横向调研 |
 | [sync-verification-research.md](sync-verification-research.md) | 验证同步化调研（dsh / opencode / claude 三端各能做到什么） |
+| [ui-notice-research.md](ui-notice-research.md) | 播报可见性调研：Chat 时间线的可见性规则、为什么 dsh 没有 `noReply`、可行与已否决的载体（逐条 文件:行 证据） |
 
 ## 验收证据
 
