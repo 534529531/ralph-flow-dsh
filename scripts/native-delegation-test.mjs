@@ -69,7 +69,13 @@ console.log("D1 委派请求只带 dsh 契约字段，不注入自造超时");
 
   const prompt = captured?.prompt?.[0]?.text ?? "";
   check("CHECK 提示词含本步上下文与产出目录行", prompt.includes("## 本步上下文") && prompt.includes("**产出目录**"));
-  check("CHECK 提示词含交付物（DO 的 output 承诺）", prompt.includes("交付物") && prompt.includes("summary.md"), prompt.slice(0, 400));
+  check("CHECK 提示词含交付物（DO 的 output 承诺）", prompt.includes("交付物") && prompt.includes("实现的代码/文件"), prompt.slice(0, 400));
+  // 回归：验证者曾被副本带偏（RA2 取证原文把「产出目录 summary.md 与仓库 summary.md 逐字节相同」
+  // 判成了正确）。CHECK 必须写明落点边界，并明说工作目录里的副本是落点错误、不算满足。
+  check("CHECK 提示词写明过程文档/产物落点边界",
+    prompt.includes("过程文档") && prompt.includes("工作目录只放本步的**产物**") && prompt.includes("明确路径"), prompt.slice(0, 600));
+  check("CHECK 提示词明说工作目录里的副本是落点错误、不算满足",
+    prompt.includes("落点错误") && prompt.includes("不要把副本判成满足"), prompt.slice(0, 600));
   const rel = prompt.match(relRe)?.[0];
   check("CHECK 提示词含工作区相对产出路径", !!rel, prompt.slice(0, 300));
   check("DO/CHECK 指向同一个产出目录", !!rel && rel === relFromDo, JSON.stringify({ rel, relFromDo }));

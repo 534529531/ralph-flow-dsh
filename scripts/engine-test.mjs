@@ -333,6 +333,21 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     r.text.includes("## 产出目录") && r.text.includes(`.dsh/ralph-flow/artifacts/${artName}/`),
     r.text.slice(-260),
   );
+  // 回归：光有「## 产出目录」这一节**不算守住边界**（上一轮就是这么漏过去的）——
+  // 必须断言这一节真的写明了「过程文档 vs 产物」的落点，且拼装后不与其它节打架。
+  // 更细的整篇分节自洽断言在 scripts/artifact-placement-test.mjs。
+  check(
+    "DO 产出目录一节写明过程文档/产物落点边界（不只断言有这一节）",
+    r.text.includes("过程文档") && r.text.includes("工作目录只放本步的**产物**")
+      && r.text.includes("同一份过程文档只写一处") && r.text.includes("明确路径"),
+    r.text.slice(-420),
+  );
+  const delivSection = r.text.includes("## 交付物") ? r.text.split("## 交付物")[1].split("\n## ")[0] : "";
+  check(
+    "DO 交付物一节不含过程文档 summary.md（拼装后与产出目录自洽）",
+    delivSection.trim().length > 0 && !delivSection.includes("summary.md"),
+    delivSection,
+  );
   fs.writeFileSync(path.join(artDir, "summary.md"), "keep-me\n", "utf-8");
   e.onSubmit(s, "布局完成。");
   await settle();

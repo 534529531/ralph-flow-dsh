@@ -143,13 +143,17 @@ export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): s
   const rel = req.artifactsRelDir;
   // §1.3：CHECK 必须拿到与 DO 同等的承诺上下文（desc + 交付物 + 产出目录），
   // 否则验证者不知道本步承诺交付什么，只能泛泛核对。
+  //
+  // 「交付物」与「产出目录」**拼装后必须自洽**：`output` 说的是产出**什么**，落点由下一行
+  // 「产出目录」决定。不点明时，验证者会把 `output` 里的过程文档名当成工作目录交付物 ——
+  // RA2 有一轮就把「产出目录 `summary.md` 与仓库 `summary.md` 逐字节相同」的副本判成了正确。
   const stepFacts = [
     `**步骤**：\`${req.step.id}\``,
     ...(req.step.desc ? [`**描述**：${req.step.desc}`] : []),
     `**本步任务**：${(req.step.do ?? "").trim() || "（未声明）"}`,
     ...(req.step.input ? [`**输入**：${String(req.step.input).trim()}`] : []),
-    ...(req.step.output ? [`**交付物（本步承诺的产出）**：${String(req.step.output).trim()}`] : []),
-    `**产出目录**：\`${rel}/\` —— 检查依据里没写路径的文件名（如 \`summary.md\`）即指此目录下的文件。`,
+    ...(req.step.output ? [`**交付物（本步承诺的产出）**：${String(req.step.output).trim()}（这一项只说产出**什么**；落在**哪里**看下一行「产出目录」）`] : []),
+    `**产出目录**：\`${rel}/\` —— 本步的**过程文档**（清单、方案、报告、摘要、草稿等）只应落这里：检查依据里写**裸文件名**的（如 \`summary.md\`）即指这个目录下的文件；写了**明确路径**的按那个路径。工作目录只放本步的**产物**（代码、资源、可执行文件）。**工作目录里出现同一份过程文档的副本（如根目录的 \`summary.md\` 与产出目录那份内容相同）不是落点正确、而是落点错误：不要把副本判成满足。**`,
   ];
   // 投票变体（对齐 opencode `buildVotingCheckPrompt`）：共享上下文 + **该票专属**检查依据 +
   // 「你是 N 个之一，只查自己这一条」约束。目的：防止各票趋同成同一份泛泛检查。

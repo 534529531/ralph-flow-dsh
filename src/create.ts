@@ -64,8 +64,8 @@ steps:                  # 必填，非空；从第一个元素开始执行
     #   - check: 实现的行为符合预期，真实可用
     #     model: deepseek/deepseek-chat   # 可选：该票专用模型（不填继承全局 adversarial_check.model）
     input: proposal.md  # 必填：输入说明（**只进 CHECK 提示词**；DO 提示词不注入 input）
-    output: |           # 必填：交付物说明（进 DO 的「交付物」与 CHECK；裸文件名即落在产出目录）
-      实现的代码 + summary.md
+    output: |           # 必填：交付物说明（只说**产出什么**；落在哪里见「产出目录」一节）
+      实现的代码/文件
     on_pass: next-id    # 必填：下个步骤 id，或 "done"（末步）；不再有「缺省 = 顺序下一步」
     on_fail: step-id    # 必填：失败重试目标（步骤 id，**不允许 "done"**）；不再有「缺省 = 自身」
     max_fail_count: 3   # 必填：≥1 的整数失败预算；不再有「缺省 3」
@@ -119,7 +119,7 @@ steps:                  # 必填，非空；从第一个元素开始执行
 
 **doctor 告警**（能启动，但会出问题）：不可达步骤（从第一个步骤沿 on_pass/on_fail 走不到）；没有任何可达步骤的 \`on_pass: done\`（工作流永远无法完成）；\`{{...}}\` 模板记号（本版本**不解析任何**模板变量）；**不在顶层 manual_step 列表里且既无 \`check\` 也无 \`check_voting\`** 的步骤（该步不会被独立验证，DO 完成后直接进入下一步——在 manual_step 列表里的这类步骤是纯人工审查，**不告警**）；\`check_voting\` 只有 1 票且没配 \`model\`（等同单验证者，建议直接用 \`check\` 或配多视角/多模型）；\`auto_reset: true\` 而所有步骤的 \`on_fail\` 都指向自身（纯线性流——每次失败重试也会重置上下文，token 成本较高）；\`model\`/\`check_model\`/投票条目的 \`model\` 解析不出 provider（裸模型名，或对象缺 providerID/modelID）——此时该配置被忽略并回退，**不会静默生效**；\`adversarial_check\` 不是对象、或写了 \`model\` 以外的字段、投票条目里写了 \`check\`/\`model\` 以外的字段——这些字段被忽略（不生效），错误照旧在加载期就报出来，不拖到验证阶段；**子工作流调用点上除 id/desc/do/input/output/workflow/on_pass/on_fail/max_fail_count/reset 以外的每一个键**（逐键告警 + 指路：告诉作者该写到子工作流内部的哪一层；\`inputs\` 会指路到调用点的 \`do\`）。
 
-**产出目录**：每个实例有隔离的产出目录 \`<workspace>/.dsh/ralph-flow/artifacts/<实例ID 摘要>/\`（目录名 = 任务摘要 slug + 实例 id 尾段），实例启动时自动建好。DO 与 CHECK 提示词都会自动带上「产出目录」一行，所以在 \`do\`/\`output\` 里**写裸文件名**即可（例如 \`summary.md\`），不用写路径、也不需要任何模板记号。
+**产出目录**：每个实例有隔离的产出目录 \`<workspace>/.dsh/ralph-flow/artifacts/<实例ID 摘要>/\`（目录名 = 任务摘要 slug + 实例 id 尾段），实例启动时自动建好。它是**过程文档**（清单、方案、报告、摘要、草稿等）的唯一默认落点：\`do\`/\`output\` 里写**裸文件名**即可（例如 \`summary.md\`），不用写路径、也不需要任何模板记号；写了**明确路径**的按写的路径来。工作目录只放本步的**产物**（代码、资源、可执行文件）；同一份过程文档只写一处、不要在工作目录里再留副本。DO 与 CHECK 提示词都会自动带上这条落点边界（CHECK 还会点明「工作目录里的副本是落点错误、不算满足」）。
 
 **实例生命周期**：工作流完成或取消时，实例目录与 \`state.json\` 会被**销毁**，最终报告归档到 \`<workspace>/.dsh/ralph-flow/reports/<实例ID>.md\`（报告与产出是永久的，插件永不自动删除；只有**空的**产出目录会被删掉）。要回看已结束的运行，用 \`/ralphflow-list\` 的「历史运行」节或直接读报告文件。
 
