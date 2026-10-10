@@ -87,6 +87,43 @@ CI 那条路跳过 `prepublishOnly`（闸已在「闸」作业里对同一份代
 
 workflow 用 `GITHUB_TOKEN` 推 `main` 与 tag；GitHub 规定这种推送**不会**再触发其它 workflow。
 
+## 为什么 `package.json` 里有一堆 `@deepseek-ai/*` devDependencies
+
+**别删它们。** 它们不是运行期依赖（运行期由 dsh 宿主提供，见 `peerDependencies`），而是
+**为了让 CI 能复现本机的开发环境**。三件事，都是踩出来的：
+
+1. **本机的 `node_modules/@deepseek-ai` 是指向 dsh 安装目录的软链** —— 开发时借宿主的包用。
+   GitHub runner 上没有这个软链，只能从 npm 装。
+2. **我们对着开发的是 dsh 的预发布线**（`cordis@4.0.5-alpha.1` / `dsh-*@0.2.1-alpha.1`）。
+   如果只写宽松的 peer 范围（`>=0.2.0-rc.2` 这种），npm 会去挑更老的**稳定版**，然后和
+   `dsh-typert-protocol` 的 `~4.0.5-alpha.1` 撞车 —— `npm ci` 直接 ERESOLVE 失败。
+   所以 peer 范围如实收紧成 `^<宿主版本>`，同时在 devDependencies 里钉死同一个版本。
+   （semver 的预发布规则是这里最容易踩的坑：`>=4.0.4` 和 `~4.0.4` **都不匹配**
+   `4.0.5-alpha.1`，必须有同元组的预发布比较符才放行。）
+3. **`@deepseek-ai/dsh` 那一条是关键**：它一次带进 80 个 `@deepseek-ai/*` 依赖，凑齐
+   `.d.ts` 互相引用的闭包。少了它，`skipLibCheck: true` 会把缺失的引用悄悄降级成 `any`，
+   CI 的 typecheck 就**比本机弱** —— 本机精确、CI 退化成 any，等于闸变松了。
+   实测：加它之前 `src/client/definition.ts:33` 报 `implicitly has an 'any' type`；
+   加之后同一处类型与本机逐字一致（探针：本机 `string`，CI 也是 `string`）。
+
+顺带修掉的两个「本机碰巧能跑」：
+
+- **`typescript` 从来没被声明过** —— 本机 `node_modules/typescript` 是历史遗留，所以这个仓库
+  以前在干净检出上**根本装不起来也构建不了**。现在是显式 devDependency。
+- npm 12 默认**拦下安装脚本**（会警告 `esbuild@… (postinstall: node install.js)`）。
+  实测无害：esbuild 0.28 的平台二进制走 `optionalDependencies`，没有 postinstall 也能
+  `transformSync`。所以不用为它加 `allowScripts`。
+
+改动这一块之后，**必须在干净目录里复刻一次 CI** 再推：
+
+```bash
+rm -rf /tmp/cirehearse && mkdir -p /tmp/cirehearse
+git ls-files -z | tar --null -T - -cf - | (cd /tmp/cirehearse && tar xf -)
+cd /tmp/cirehearse && npm ci && npm run build && npm run typecheck && npm run verify
+```
+
+本机那条软链会把问题盖住 —— 只有这个复刻能证明「别人 clone 下来装得上」。
+
 ## 出问题怎么办
 
 | 现象 | 原因 / 处理 |
