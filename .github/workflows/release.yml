@@ -116,17 +116,35 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: v${{ needs.release.outputs.version }}
+      # 这里刻意**不**用 setup-node 的 registry-url：它会写一份引用 ${NODE_AUTH_TOKEN}
+      # 的 .npmrc，和我们下面自己写的那份打架。registry 用 npm 默认值即可。
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-          registry-url: "https://registry.npmjs.org"
       # trusted publishing 需要 npm ≥ 11.5.1；不依赖 runner 自带的那一版。
       - name: 确保 npm 支持 trusted publishing
         run: npm install -g npm@11
+      # 两条认证路径都支持，按密钥在不在自动选：
+      #   有 NPM_TOKEN → 用它（经典 / 细粒度 token 都能发）
+      #   没有        → 走 npm trusted publishing（OIDC，零长期凭据）
+      # 所以哪天把 Trusted Publisher 配好、把这个密钥删掉，这里会自动切过去。
+      - name: 配置 npm 认证
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${NPM_TOKEN:-}" ]; then
+            printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$HOME/.npmrc"
+            chmod 600 "$HOME/.npmrc"
+            echo "认证：NPM_TOKEN 密钥"
+          else
+            rm -f "$HOME/.npmrc"
+            echo "认证：trusted publishing (OIDC)"
+          fi
       - run: npm ci
       # 发布的是构建产物（lib/ 不在 git 里），所以必须在这里重新构建。
       - run: npm run build
       # 闸已在 gate 作业里对**同一份代码**跑过（定版提交只改版本号），
       # 所以跳过 prepublishOnly，不重复跑一遍几分钟的 verify。
       # 本地手动 `npm publish` 仍会走 prepublishOnly 全闸，那条路没有被削弱。
-      - run: npm publish --provenance --ignore-scripts
+      - run: npm publish --provenance --ignore-scripts --registry=https://registry.npmjs.org/
