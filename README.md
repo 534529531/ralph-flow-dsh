@@ -239,6 +239,7 @@ flowchart LR
 | 完整导航（阅读顺序、场景速查、设计档案索引） | [文档主页](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/README.md) |
 | 设计定稿与宪法（不可违反的十二条） | [设计文档](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/v2/design.md) |
 | 历史任务书与验收证据 | [docs/v2/](https://github.com/534529531/ralph-flow-dsh/tree/main/docs/v2) |
+| 怎么发版（维护者） | [发版](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/releasing.md) |
 
 ## 致谢
 

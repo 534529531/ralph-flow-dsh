@@ -1,0 +1,132 @@
+name: release
+
+run-name: release ${{ inputs.version || inputs.bump }}
+
+# 发布是一次**显式动作**，不是 push 的副作用：从 GitHub 的 Actions 页面点一下，
+# 或者 `gh workflow run release.yml -f bump=patch`。代码 push 本身不发版。
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 版本递增方式（none = 直接用 package.json 里现成的版本号）
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - none
+      version:
+        description: 显式版本号（可选；填了就忽略上面的 bump）
+        required: false
+        type: string
+
+# 同一时刻只允许一次发布；不取消进行中的那次。
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+# contents: 推送定版提交、打 tag、建 Release
+# id-token: npm trusted publishing（OIDC）——所以本仓库**不需要 NPM_TOKEN 密钥**
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  gate:
+    name: 闸（build + typecheck + verify）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm run verify
+
+  release:
+    name: 定版 + 打 tag + 建 Release
+    needs: gate
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # 闸已经绿了才走到这里，所以打 tag 之前失败不会留下半个发布。
+      - name: 定版
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          EXPLICIT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${EXPLICIT:-}" ]; then
+            npm version "$EXPLICIT" --no-git-tag-version --allow-same-version
+          elif [ "${BUMP:-none}" != "none" ]; then
+            npm version "$BUMP" --no-git-tag-version
+          fi
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::tag $TAG 已存在于远端 —— 版本号不能复用，请换一个（bump 或 version）。"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "本次发布：$TAG"
+
+      - name: 提交 + 打 tag + 推送
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          if git diff --cached --quiet; then
+            echo "版本号没变（bump=none 且 package.json 已是该版本），跳过提交。"
+          else
+            git commit -m "release $TAG"
+          fi
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "HEAD:${{ github.ref_name }}"
+          git push origin "refs/tags/$TAG"
+
+      - name: 建 GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh release create "$TAG" --title "$TAG" --generate-notes
+
+  publish:
+    name: npm publish
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.release.outputs.version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      # trusted publishing 需要 npm ≥ 11.5.1；不依赖 runner 自带的那一版。
+      - name: 确保 npm 支持 trusted publishing
+        run: npm install -g npm@11
+      - run: npm ci
+      # 发布的是构建产物（lib/ 不在 git 里），所以必须在这里重新构建。
+      - run: npm run build
+      # 闸已在 gate 作业里对**同一份代码**跑过（定版提交只改版本号），
+      # 所以跳过 prepublishOnly，不重复跑一遍几分钟的 verify。
+      # 本地手动 `npm publish` 仍会走 prepublishOnly 全闸，那条路没有被削弱。
+      - run: npm publish --provenance --ignore-scripts

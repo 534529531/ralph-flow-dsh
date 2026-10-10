@@ -24,8 +24,9 @@
 | [notice-wake-brief.md](notice-wake-brief.md) | 「播报唤醒会话」缺陷修复：播报不再叫醒驱动器（指令仍走 `steer`） | 已实现（验收 7 的真实运行复核已在 RA2 实例上现场走通） |
 | [shortcut-skills-brief.md](shortcut-skills-brief.md) | 启动类快捷从命令改成技能（修掉新会话未命名 + 技能描述成为自然语言触发词） | 已实现 |
 | [workspace-anchoring-brief.md](workspace-anchoring-brief.md) | 发现面锚定修复 | ⛔ **已作废**——思路被"引擎按工作区实例化"取代 |
-| [ui-notice-brief.md](ui-notice-brief.md) | 播报对人类可见（客户端半边）：通过 / 失败 / 暂停 / 审查门 / 完成在 Chat 时间线上看得见，且不唤醒驱动器 | 📋 **待实现** |
-| [workflow-status-ui-refine-brief.md](workflow-status-ui-refine-brief.md) | 工作流状态界面精修：一处常驻、只在该出现时出现、与 dsh 同源（上一版把 UI 组成写死，导致同一件事说三遍） | 📋 **待实现** |
+| [ui-notice-brief.md](ui-notice-brief.md) | 播报对人类可见（客户端半边）：通过 / 失败 / 暂停 / 审查门 / 完成在 Chat 时间线上看得见，且不唤醒驱动器 | 已实现（2.2.0） |
+| [workflow-status-ui-brief.md](workflow-status-ui-brief.md) | 当前会话的工作流状态：可折叠状态卡 + 页头入口 | 已实现，**UI 组成被下一份任务书取代** |
+| [workflow-status-ui-refine-brief.md](workflow-status-ui-refine-brief.md) | 工作流状态界面精修：一处常驻、只在该出现时出现、与 dsh 同源（上一版把 UI 组成写死，导致同一件事说三遍） | 已实现（2.2.0） |
 | [brief-style.md](brief-style.md) | 任务书写作规范（给作者） | 规范 |
 
 ## 调研与预研
@@ -36,6 +37,7 @@
 | [subworkflow-nesting-research.md](subworkflow-nesting-research.md) | 子工作流 / 可复用子流程的业界六系统横向调研 |
 | [sync-verification-research.md](sync-verification-research.md) | 验证同步化调研（dsh / opencode / claude 三端各能做到什么） |
 | [ui-notice-research.md](ui-notice-research.md) | 播报可见性调研：Chat 时间线的可见性规则、为什么 dsh 没有 `noReply`、可行与已否决的载体（逐条 文件:行 证据） |
+| [workflow-status-ui-research.md](workflow-status-ui-research.md) | 工作流状态面调研：只读状态流的载体选型与装配取证 |
 
 ## 验收证据
 
@@ -46,7 +48,9 @@
 | [evidence/e2e-20260923-submit-native.md](evidence/e2e-20260923-submit-native.md) | 真实宿主 E2E：DO 交卷改原生工具调用 |
 | [evidence/e2e-20260923-loop-passed.md](evidence/e2e-20260923-loop-passed.md) | 真实宿主 E2E：loop 工作流跑通 |
 | [evidence/spec-gate-20260923.md](evidence/spec-gate-20260923.md) | 真实宿主 E2E：spec 审查门 |
+| [evidence/ui-notice.md](evidence/ui-notice.md) | 真机验收：播报在 Chat 时间线里看得见（含负对照与截图） |
+| [evidence/ui-status.md](evidence/ui-status.md) | 真机验收：工作流状态面精修（恰好一处常驻 / 输入区零占位 / 终态收束 / 与原生同框；含三组负对照） |
 
 ## 代码级验收
 
-功能的行为契约由 `scripts/*.mjs` 的断言钉住（16 个套件，覆盖裁判权、加载期硬校验、生命周期、执行日志、投票、子工作流、reset、rewind、判定完整性、可见性等）。这些脚本不在 `package.json` 的 scripts 里，直接 `node scripts/<name>.mjs` 运行。
+功能的行为契约由 `scripts/*.mjs` 的断言钉住（26 个套件，覆盖裁判权、加载期硬校验、生命周期、执行日志、投票、子工作流、reset、rewind、判定完整性、可见性、状态面、客户端打包与激活等）。这些脚本不在 `package.json` 的 scripts 里，直接 `node scripts/<name>.mjs` 运行；`npm run verify` 会自动发现并跑全部。
