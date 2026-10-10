@@ -13,6 +13,8 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
+import type { WorkflowStatus } from "./status-contract.js";
+import type { WorkflowUiRef } from "./message-source.js";
 import {
   MAX_VOTERS,
   decideVotingOutcome,
@@ -985,7 +987,9 @@ export interface EnginePorts {
    * 立刻成为可见面节点（用户时间线上马上多一行），且完全不碰驱动器（空闲的保持空闲，
    * 正在收尾的回合不被续上）。要求：**必须**传 `summary`，否则客户端退化成 opaque 注入行。
    */
-  deliverNotice: (sessionId: string, text: string, summary?: string, opts?: { dedupe?: boolean }) => boolean;
+  deliverNotice: (sessionId: string, text: string, summary?: string, opts?: { dedupe?: boolean; uiRef?: WorkflowUiRef }) => boolean;
+  /** Observe committed facts only; failures of this observer never affect the engine. */
+  statusChanged?: () => void;
   /**
    * 把该会话**挂起的播报**在安全边界补齐（可见面尾部工具配对平衡时才落）。
    *
@@ -2003,6 +2007,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   function instanceDir(instId: string): string { return path.join(instancesDir, instId); }
   function statePath(instId: string): string { return path.join(instanceDir(instId), "state.json"); }
 
+  const stateIds = new WeakMap<InstanceState, string>();
+  const statusErrors = new Map<string, string>();
+  function publishStatus(): void {
+    try { ports.statusChanged?.(); } catch {}
+  }
+
   function readState(instId: string): InstanceState | null {
     try {
       const s = JSON.parse(fs.readFileSync(statePath(instId), "utf-8"));
@@ -2018,11 +2028,13 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       }
       // 派生当前步失败轮数（不落盘）
       s.fail_count = typeof s.fail_counts[s.current_step] === "number" ? s.fail_counts[s.current_step] : 0;
+      stateIds.set(s, instId);
       return s as InstanceState;
     } catch { return null; }
   }
 
   function writeState(state: InstanceState, instId: string): void {
+    stateIds.set(state, instId);
     state.updated_at = new Date().toISOString();
     // 落盘前剔除派生量 fail_count（宪法 §10.4：状态不存派生量）。
     // 每次读取都由 fail_counts[current_step] 重算，故不可能出现两个写入者不一致。
@@ -2034,9 +2046,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       const tmp = path.join(dir, `.state.${process.pid}.tmp`);
       fs.writeFileSync(tmp, JSON.stringify(persisted, null, 2), "utf-8");
       fs.renameSync(tmp, statePath(instId));
+      statusErrors.delete(instId);
     } catch (e) {
+      statusErrors.set(instId, "状态写盘失败，当前显示最后确认值。请检查工作区权限或磁盘空间。");
       log("error", "state_write_failed", { instId, error: msg(e) });
     }
+    publishStatus();
   }
 
   /** 某步当前的失败轮数（按步计数；缺省 0） */
@@ -2885,7 +2900,11 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    */
   function deliverNotice(state: InstanceState, text: string, summary: string): void {
     if (!state.owner_session) return;
-    const ok = ports.deliverNotice(state.owner_session, text, summary, { dedupe: false });
+    const instId = stateIds.get(state);
+    const ended = state.history.some((h) => h.event === "cancelled") ? "cancelled" : "done";
+    const uiRef: WorkflowUiRef | undefined = !state.active && instId && fs.existsSync(path.join(reportsDir, `${instId}.md`))
+      ? { v: 1, runId: instId, reportRef: reportRelPathOf(instId), ended } : undefined;
+    const ok = ports.deliverNotice(state.owner_session, text, summary, { dedupe: false, ...(uiRef ? { uiRef } : {}) });
     if (!ok) log("warn", "deliver_notice_failed", { instId: state.owner_session });
   }
 
@@ -3114,7 +3133,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     req.canProceed = stillLive; // 载体在 append 之前同步复查一次（关掉「等窗口期间被取消」的竞态）
     // 从这一刻起「本步 DO 还没送达」——期间 turn-stopping 的「忘了交卷」提醒必须闭嘴
     pendingDoDelivery.add(instId);
-    const releasePending = () => { pendingDoDelivery.delete(instId); };
+    publishStatus();
+    const releasePending = () => { pendingDoDelivery.delete(instId); publishStatus(); };
     void Promise.resolve()
       .then(() => ports.resetSurface!(sid, req))
       .then((outcome) => {
@@ -4342,13 +4362,63 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
   }
 
+  /** Read-only UI projection; never persists derived phase or advances an instance. */
+  function uiStatus(sessionId: string): { status: WorkflowStatus | null; error: string | null } {
+    let info = listInstances().find((i) => i.state.owner_session === sessionId);
+    if (!info) {
+      // An archive failure retains an inactive state; keep that failure visible to its owner.
+      try {
+        for (const entry of fs.readdirSync(instancesDir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          const state = readState(entry.name);
+          if (state && !state.active && state.owner_session === sessionId && (!info || state.started_at > info.state.started_at)) {
+            info = { id: entry.name, state };
+          }
+        }
+      } catch {}
+    }
+    if (!info) return { status: null, error: null };
+    const { id, state } = info;
+    const wf = loadWorkflow(state.workflow_name).def;
+    const step = wf?.steps.find((s) => s.id === state.current_step);
+    const stage = !state.active || !wf || !step ? "unavailable" : state.paused ? "paused" : pendingDoDelivery.has(id) ? "switching"
+      : state.delegations.length > 0 ? "verifying"
+      : state.do_submitted && step && wf && atOpenGate(wf, state, step) ? "gate"
+      : state.do_submitted ? "switching" : "executing";
+    const total = step ? Math.max(voterCountOf(step), stepHasVerification(step) ? 1 : 0) : 0;
+    const votes: WorkflowStatus["votes"] = state.do_submitted ? Array.from({ length: total }, (_, index) => {
+      const verdict = state.verdicts.find((v) => verdictBelongsToStep(v, state.current_step) && (total === 1 || v.check_index === index));
+      const running = state.delegations.some((d) => total === 1 || d.check_index === index);
+      return { index: index + 1, status: verdict?.status ?? (running ? "running" : "pending"), reason: verdict?.reason.slice(0, 500) ?? "" };
+    }) : [];
+    const hint = stage === "unavailable" ? "状态或报告不可用，请用 /ralphflow-doctor 检查。" : stage === "switching" ? "正在切换步骤或准备本步上下文。" : stage === "executing" ? "执行阶段，等待本步交卷。"
+      : (nextActionHint(state, id, step) ?? "").replace(/\*\*/g, "");
+    return { status: { id, workflow: state.workflow_name, task: state.user_task.slice(0, 2000), step: state.current_step,
+      stage, hint, failures: state.fail_count, maxFailures: step?.max_fail_count ?? 0, updatedAt: state.updated_at, report: null,
+      steps: (wf?.steps ?? []).map((s) => ({ id: s.id, description: s.desc ?? "", current: s.id === state.current_step, failures: failCountOf(state, s.id) })),
+      votes, recent: state.history.slice(-5).map((h) => ({ step: h.step ?? "", event: h.event, detail: h.detail ?? "" })),
+    }, error: statusErrors.get(id) ?? (!wf ? "工作流定义暂不可读取。" : !step ? "当前步骤已不在工作流定义中。" : null) };
+  }
+
+  /** Resolve only an exact trusted report id, never a browser-supplied filesystem path. */
+  function uiReport(ref: WorkflowUiRef): WorkflowStatus | null {
+    if (!/^[a-zA-Z0-9_-]+$/.test(ref.runId) || ref.reportRef !== reportRelPathOf(ref.runId)) return null;
+    let report: HistoryInfo;
+    try { report = parseReportHeader(ref.reportRef, ref.runId, fs.readFileSync(path.join(reportsDir, `${ref.runId}.md`), "utf-8")); }
+    catch { return null; }
+    if (!report.parsed || report.id !== ref.runId || report.statusLabel !== (ref.ended === "done" ? "完成" : "取消")) return null;
+    return { id: ref.runId, workflow: report.workflow ?? "Ralph Flow", task: report.task ?? "", step: "",
+      stage: ref.ended, hint: "运行已结束，报告与产出已归档。", failures: 0, maxFailures: 0,
+      updatedAt: report.endedAt ?? "", report: report.relPath, steps: [], votes: [], recent: [] };
+  }
+
   return {
     root, instancesDir, workflowsDir, reportsDir, projectDir,
     ensureLayout, listWorkflows, loadWorkflow,
     readState, listInstances, listHistory, instanceDir,
     artifactsDirOf, artifactsRelDirOf, reportRelPathOf, destroyInstance,
     start, onSubmit, noteAssistantText, remindToSubmit, continueInstance, resetCurrent, rewindTo, cancelInstance, statusOf, listAll, restore, diagnose,
-    activeInstanceOfSession,
+    activeInstanceOfSession, uiStatus, uiReport,
   };
 }
 

@@ -9,6 +9,10 @@ import type { Context } from "@deepseek-ai/cordis";
 import { toolPairingBalancedAfter } from "@deepseek-ai/dsh-compaction";
 import type { SessionSeq } from "@deepseek-ai/dsh-session";
 import { createUserMessage, boundContextSummary } from "@deepseek-ai/dsh-llm";
+import type { WorkflowUiRef } from "./message-source.js";
+import type { Session } from "@deepseek-ai/dsh-session";
+import type {} from "@deepseek-ai/dsh-session-query";
+import { WorkflowStatusService } from "./status-service.js";
 import { RALPHFLOW_SOURCE_KIND } from "./message-source.js";
 import { createEngine, listWorkflowsIn, type Engine, type VerifyRequest } from "./engine.js";
 import { createResetSurface } from "./reset.js";
@@ -124,22 +128,18 @@ export function apply(ctx: Context): void {
    *   · {@link deliverDirective} **指令** = 要模型干活（DO / 命令转达 / 交卷提醒）→ `agent.steer`；
    *   · {@link deliverNotice} **播报** = 给人看的记录（验证进度、判定、暂停/完成）→ 直接 append。
    *
-   * 两类都必须注意 dsh 客户端的渲染契约：客户端按 `source.form` 决定怎么渲染 plugin 注入的
-   * user 消息（`dsh-client-ui-chat` 的 `contextBody`/`contextForm`）：
-   *   · 带 `form:"notice"` + `summary` → 渲染为 **notice 行**（summary 不展开就能读，用户看得见）；
-   *   · **没有 form** → `case null: return opaque` → 退化成 `OpaqueBody`（不显眼的上下文注入行）。
-   * 这正是 dsh 自己的做法：`dsh-agent` 的 modelSwitchNotice 就用
-   * `{kind:"plugin", plugin:"model-selection", form:"notice", summary: boundContextSummary(...)}`。
-   *
-   * 所以：**凡是要让用户看见的播报，都必须带 summary**；不带 summary 的只适合纯内部管道。
+   * `source.form` 决定 context 内容的展开方式，不决定 Chat 是否收录这一行：
+   * 非 user 来源的普通 context 会整行过滤。本包客户端把带 notice + summary 的 append
+   * 日志另投影为会话级 `ralphflow-notice` 节点，才让人类看到记录。
+   * summary 是默认可读的摘要；没有 summary 的内部指令不匹配该客户端 Definition。
    * {@link buildMessage} 就是这个 source 的唯一构造点。
    */
-  const buildMessage = (text: string, summary?: string): ReturnType<typeof createUserMessage> => {
+  const buildMessage = (text: string, summary?: string, uiRef?: WorkflowUiRef): ReturnType<typeof createUserMessage> => {
     const brief = typeof summary === "string" ? summary.trim() : "";
     const source = brief
       ? { kind: RALPHFLOW_SOURCE_KIND, form: "notice" as const, summary: boundContextSummary(brief) }
       : { kind: RALPHFLOW_SOURCE_KIND };
-    return createUserMessage({ content: [{ type: "text", text }], source });
+    return createUserMessage({ content: [{ type: "text", text }], source: { ...source, ...(uiRef ? { uiRef } : {}) } });
   };
 
   /**
@@ -243,17 +243,17 @@ export function apply(ctx: Context): void {
    *     `dsh-agent-loop` 的回合循环在 `turnEnds && inbox.nextStep.length > 0` 时**继续跑下一步**，
    *     所以它照样把正在收尾的回合续上 —— 而且收件箱里的东西在**被 claim 之前不进可见面**
    *     （客户端 `inbox-definition` 的 `publication: () => "none"`），用户时间线上不会立刻多一行。
-   *   · 直接 append 则两件事同时成立：立刻成为可见面节点（客户端按 `form:"notice"` 渲染成
-   *     notice 行），且**完全不碰驱动器**（不唤醒、不续回合）。它还天然满足「模型在下一回合
+   *   · 直接 append 则两件事同时成立：立刻成为模型可见面节点（本包客户端另外投影为
+   *     用户可见的私有 Chat 节点），且**完全不碰驱动器**（不唤醒、不续回合）。它还天然满足「模型在下一回合
    *     能看到它」与「仍被 reset 整段遮蔽」（reset 的 `sourceEventSeqs` 取的是可见面全部节点）。
    */
-  const deliverNotice = (sessionId: string, text: string, summary?: string, opts?: { dedupe?: boolean }): boolean => {
+  const deliverNotice = (sessionId: string, text: string, summary?: string, opts?: { dedupe?: boolean; uiRef?: WorkflowUiRef }): boolean => {
     try {
       const agent = agentOf(sessionId);
       if (!agent) return false;
       if (deduped(sessionId, text, opts)) return true;
       const session = sessionOf(sessionId, agent);
-      const msg = buildMessage(text, summary);
+      const msg = buildMessage(text, summary, opts?.uiRef);
       if (canAppendNoticeNow(session)) {
         // 先落挂起的历史播报，再落这一条 —— 保持时间线顺序
         flushNotices(sessionId);
@@ -290,12 +290,23 @@ export function apply(ctx: Context): void {
    * 不到 / 历史列表永远空 / doctor 看不见残留」的同一个根因。
    */
   const engines = new Map<string, Engine>();
+  const statusListeners = new Set<() => void>();
+  let statusQueued = false;
+  const statusChanged = () => {
+    if (statusQueued) return;
+    statusQueued = true;
+    queueMicrotask(() => {
+      statusQueued = false;
+      for (const listener of statusListeners) { try { listener(); } catch {} }
+    });
+  };
   const ports = {
     // 投递分两类（判据 1）：指令 = 唤醒（DO / 命令转达 / 交卷提醒），播报 = 只记录不唤醒。
     // 每个调用点都必须显式选一个 —— 端口名就是分类，代码里一眼看得出（见 docs/v2/delivery-classification.md
     // 与 scripts/delivery-classification-test.mjs 的静态审计）。
     deliverDirective,
     deliverNotice,
+    statusChanged,
     /** 把挂起的播报在**安全边界**补齐（reset 门在整段替换前先调一次：让替换把它们一并遮蔽） */
     flushNotices,
     verify: (req: VerifyRequest) => runVerifier({ ctx }, req),
@@ -338,6 +349,43 @@ export function apply(ctx: Context): void {
     return e;
   };
 
+  // Optional outside web: headless/test compositions keep the same workflow behavior.
+  ctx.inject(["typert"], (remoteCtx) => {
+    const terminalRefs = new WeakMap<Session, { seq: number; ref: WorkflowUiRef | undefined }>();
+    new WorkflowStatusService(remoteCtx, {
+      subscribe(listener) { statusListeners.add(listener); return () => statusListeners.delete(listener); },
+      async read(session) {
+        // Viewing status never runs restore or registers skills / sends a notice.
+        const key = session.header.cwd || workspace;
+        const engine = engines.get(key) ?? createEngine(key, ports);
+        const active = engine.uiStatus(session.id);
+        if (active.status && engine.readState(active.status.id)?.active) return active;
+        let cached = terminalRefs.get(session);
+        if (!cached || cached.seq !== session.seq) {
+          const query = ctx.get("sessionQuery");
+          if (!query) return active;
+          const observedSeq = session.seq;
+          const log = await query.readSession(session.id);
+          let ref: WorkflowUiRef | undefined;
+          for (const event of log.events) {
+            if (event.seq < log.inheritedEventCount || event.type !== "user/message" || event.surfaceOp !== "append"
+              || event.data.source.kind !== RALPHFLOW_SOURCE_KIND) continue;
+            const candidate = event.data.source.uiRef;
+            if (candidate?.v === 1 && (candidate.ended === "done" || candidate.ended === "cancelled")) ref = candidate;
+          }
+          cached = { seq: observedSeq, ref }; terminalRefs.set(session, cached);
+        }
+        // A new active run may have landed while the cold read awaited persistence.
+        const current = engine.uiStatus(session.id);
+        const terminal = cached.ref ? engine.uiReport(cached.ref) : null;
+        // A residual from an older archive failure must not cover a newer completed run.
+        if (current.status && (engine.readState(current.status.id)?.active || !terminal
+          || Date.parse(current.status.updatedAt) >= Date.parse(terminal.updatedAt))) return current;
+        return { status: terminal, error: current.error ?? (cached.ref && !terminal ? "本次运行的报告暂不可读取，请检查报告文件。" : null) };
+      },
+    });
+  });
+
   /**
    * 只查**已存在**的引擎：会话事件是高频路径，不能为了它给每个会话凭空建引擎
    * （没有引擎 = 该工作区没有活跃实例，也就没有需要提醒/捕获的东西）。
@@ -358,6 +406,7 @@ export function apply(ctx: Context): void {
       on("session/event", (s?: unknown, e?: unknown) => {
         const sid = (s as { id?: string } | undefined)?.id;
         if (!sid || !e || typeof e !== "object") return;
+        if ((e as { type?: string }).type === "user/message" && (e as { data?: { source?: { uiRef?: unknown } } }).data?.source?.uiRef) statusChanged();
         if (deferredNotices.has(sid)) queueMicrotask(() => { try { flushNotices(sid); } catch {} });
         const ev = e as { type?: unknown; data?: unknown };
         if (ev.type !== "assistant/message") return;
@@ -390,7 +439,7 @@ export function apply(ctx: Context): void {
           log("warn", "turn_stopping_failed", { sessionId: sid, error: e instanceof Error ? e.message : String(e) });
           return;
         }
-        // 带 summary 才会渲染成用户可见的 notice 行（否则是 opaque 注入行，用户看不到）
+        // 本包客户端以 notice + summary 匹配播报，再由私有节点绕过普通 context 的过滤
         if (!verdict.message) return;
         if (!verdict.remind) {
           // 「已暂停等你处理」是**给人看的结果**：模型不需要再干活（该用户动手），

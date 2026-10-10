@@ -19,6 +19,7 @@
  *   R3【负对照】把「播报走 append」还原成修复前的「播报走 steer」→ **同一条判据必然失败**
  *      （窗口里凭空多出回合）。用仓库自己的 tsc 编一份还原构建，跑同一段用例。
  */
+import { loadNoticeClient } from "./helpers/notice-client.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -250,6 +251,12 @@ const fixed = await runScenario(new URL("../lib/index.js", import.meta.url).href
   check("R2d 返工 DO（带失败理由）在 replace **之后**送达", a.reworkDelivered && a.reworkAfterReplace, JSON.stringify(a));
   check("R2e pre-reset 的播报节点在 replace **之前**（被整段遮蔽）", a.preResetShadowed, JSON.stringify(a));
   check("R2f 验证者落地后整轮只多出一次唤醒 = 返工 DO 那一次（turns 恰好 2）", a.turns === 2, `turns=${a.turns}`);
+  const transcript = fixed.agent.session.snapshotEvents();
+  const human = loadNoticeClient();
+  const preReset = transcript.filter((e) => e.type === "user/message" && e.seq < a.replaceSeq && e.data.source?.form === "notice");
+  check("R2g reset 后原 append 播报仍有可见 Chat 节点", preReset.length > 0 && preReset.every((e) => human.visible(e)));
+  const modelSeqs = new Set(fixed.agent.session.surface.nodes);
+  check("R2h 同一批旧播报在模型 surface 已全部遮蔽", preReset.every((e) => !modelSeqs.has(e.seq)));
   evidence.runs.fixed = { window: fixed.window, after: fixed.after, trace: fixed.trace };
   fixed.cleanup();
 }

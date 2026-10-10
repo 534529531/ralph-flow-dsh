@@ -39,7 +39,8 @@ const SKIP_DIRS = new Set(["node_modules", ".git", "lib", ".dsh", ".opencode", "
 /** 注入会话的**调用**形态：命中即算一个投递点（消息构造不算投递，见 S1c） */
 const INJECTION_PATTERNS = [
   { id: "steer", re: /\.steer\s*\(/ },
-  { id: "inject", re: /\.inject\s*\(/ },
+  // Slots.inject registers UI renderers; it is not Agent.inject (no inbox or message).
+  { id: "inject", re: /(?<!\.slots)\.inject\s*\(/ },
   { id: "send-next", re: /\.send\s*\(\s*[^)]*,\s*["']next-(step|turn)["']/ },
   { id: "followup", re: /\.followup\s*\(/ },
   { id: "append-user-message", re: /\.append!?\(\s*["']user\/message["']/ },
@@ -71,6 +72,8 @@ function scanFile(file, patterns = INJECTION_PATTERNS) {
     if (isComment(line)) continue;
     for (const { id, re } of patterns) {
       if (!re.test(line)) continue;
+      // Cordis Context dependency injection has a literal service array, not an Agent inbox.
+      if (id === "inject" && /\bctx\.inject\s*\(\s*\[/.test(line)) continue;
       const marker = /@delivery\s+(directive|notice)/.exec(line) ?? /@delivery\s+(directive|notice)/.exec(lines[i - 1] ?? "");
       hits.push({ line: i + 1, pattern: id, text: line.trim().slice(0, 100), marker: marker?.[1] ?? null });
     }
@@ -195,6 +198,10 @@ console.log("\nS3 运行期投递调用点清单（改了清单就必须来改�
     };
   }
   const expected = {
+    "src/client/definition.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
+    "src/client/index.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
+    "src/client/status-source.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
+    "src/client/status.tsx": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
     "src/create.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
     "src/engine.ts": { deliverDirective: 6, deliverNotice: 2, notify: 17 },
     "src/index.ts": { deliverDirective: 1, deliverNotice: 1, notify: 0 },
@@ -202,7 +209,10 @@ console.log("\nS3 运行期投递调用点清单（改了清单就必须来改�
     "src/reset.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
     // 技能注册面：名字不合语法的工作流要**当场把原因说清给人听**（播报，不唤醒）—— 唯一的投递点。
     "src/skills.ts": { deliverDirective: 0, deliverNotice: 1, notify: 0 },
+    "src/status-contract.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
+    "src/status-service.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
     "src/tools.ts": { deliverDirective: 4, deliverNotice: 0, notify: 0 },
+    "src/typert.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
     "src/verify.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
     "src/voting.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
   };

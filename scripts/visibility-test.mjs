@@ -1,15 +1,10 @@
 /**
- * 用户可见性回归（作者指正的核心缺陷）。
- *
- * 缺陷：插件播报用 `source: {kind:"plugin", plugin:"ralphflow"}`（**不带 form**）投递。
- * dsh 客户端按 `source.form` 渲染（`dsh-client-ui-chat` 的 `contextBody`/`contextForm`）：
- *   · `form:"notice"` + `summary` → notice 行（summary 不展开就能读，用户看得见）
- *   · 无 form → `case null: return opaque` → OpaqueBody 上下文注入行（用户基本看不到）
- * 即：过去所有 ralphflow 播报对用户等于不可见 —— 与作者诉求「告知用户 + 提示该干啥」相反。
- *
- * 本文件断言：**凡用户应当知道的播报，投递出的消息 source 必须带 form:"notice" + 非空 summary**。
- * 并校验 summary 走 `boundContextSummary` 的 120 字符约定。
+ * 用户可见性：加载发布的客户端 factory，检查真实 Definition 产出节点通过宿主 Chat
+ * 过滤且有 summary 渲染器。字段正确但渲染半边缺失时，同一断言必须失败。
+ * 真 dsh web 的 DOM / 刷新 / reset 证据见 ui-notice-web.mjs 与 evidence/ui-notice.md。
  */
+import assert from "node:assert/strict";
+import { loadNoticeClient, isVisibleChatNode } from "./helpers/notice-client.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -56,15 +51,21 @@ function mkEnv(ws, sid) {
   return { ctx, registered, sent, sid };
 }
 const textOf = (m) => (m?.content ?? []).filter((b) => b?.type === "text").map((b) => b.text).join("");
-const visible = (m) => m?.source?.kind === RALPHFLOW_SOURCE_KIND && m.source.form === "notice" && typeof m.source.summary === "string" && m.source.summary.trim() !== "";
+const client = loadNoticeClient();
+const withoutClient = loadNoticeClient({ disabled: true });
+const eventOf = (m, seq = 1) => ({ type: "user/message", seq, time: 0, surfaceOp: "append", data: m });
+const visible = (m) => client.visible(eventOf(m));
+function assertVisible(rendering, message) {
+  assert(rendering.visible(eventOf(message)), "Chat must contain a visible node with a summary renderer");
+}
 const cleanup = (ws) => {
   // 引擎已按工作区单根：实例资产都在各自的隔离工作区里，没有全局索引要清理
   try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
 };
-/** 断言「所有投递都是用户可见的 notice」 */
+/** 断言「所有播报有通过 Chat 过滤且注册渲染器的节点」 */
 function assertAllVisible(label, sent, allowOpaque = 0) {
   const opaque = sent.filter((m) => !visible(m));
-  check(`${label}：投递全部为可见 notice（opaque ${opaque.length} ≤ ${allowOpaque}）`, opaque.length <= allowOpaque,
+  check(`${label}：投递全部有可见 Chat 节点（opaque ${opaque.length} ≤ ${allowOpaque}）`, opaque.length <= allowOpaque,
     opaque.map((m) => textOf(m).slice(0, 40)).join(" | "));
   const badSummary = sent.filter((m) => visible(m) && m.source.summary.length > SUMMARY_MAX);
   check(`${label}：summary 均 ≤ ${SUMMARY_MAX} 字符`, badSummary.length === 0, badSummary.map((m) => m.source.summary.length).join(","));
@@ -111,6 +112,17 @@ console.log("\nU2 交卷 → 验证播报 → 完成：每一步都对用户可�
   check("验证播报摘要说明是异步等待", /独立验证| 验证/.test(verifyNote?.source?.summary ?? ""), verifyNote?.source?.summary);
   const doneNote = sent.find((m) => textOf(m).includes("完成"));
   check("完成播报可见", !!doneNote && visible(doneNote), JSON.stringify(doneNote?.source));
+  // 判据 4：同一批真实播报，撤掉客户端注册后同一断言变红。
+  check("渲染半边缺失的负对照：同一 Chat 可见断言抛 AssertionError", sent.length > 0 && sent.every((m) => {
+    assertVisible(client, m);
+    try { assertVisible(withoutClient, m); return false; }
+    catch (e) { return e instanceof assert.AssertionError; }
+  }));
+  const node = client.nodes([eventOf(verifyNote)])[0];
+  check("播报显式定位会话级（进行中的回合不能折叠吞掉）", node?.location.kind === "session");
+  check("kind 改回 context 的负对照：宿主真实过滤拒绝同一记录", !isVisibleChatNode({ ...node, kind: "context", data: { content: verifyNote.content } }));
+  check("replacement 副本不重复出现在人类时间线", client.nodes([{ ...eventOf(verifyNote), surfaceOp: { op: "replace", sourceEventSeqs: [1] } }]).length === 0);
+  check("重放的节点稳定（刷新可恢复）", JSON.stringify(client.nodes(sent.map(eventOf))) === JSON.stringify(loadNoticeClient().nodes(sent.map(eventOf))));
   cleanup(ws);
 }
 
@@ -184,7 +196,7 @@ console.log("\nU5 默认可见的只有 summary（notice 行默认折叠）→ s
   await sleep();
   sent.length = 0;
 
-  // DO prompt 必须要求模型**面向用户**说明状态（模型消息是唯一显眼通道）
+  // DO prompt 必须要求模型**面向用户**说明状态（启动状态由模型说明）
   check("DO prompt 要求先向用户说明状态", /面向用户的话说明|面向用户/.test(doOut), doOut.slice(-300));
   check("DO prompt 说明「不需要用户做任何操作」", /不需要用户做任何操作/.test(doOut));
   check("DO prompt 给出期间可做什么（status/cancel）", /ralphflow-status/.test(doOut) && /ralphflow-cancel/.test(doOut));

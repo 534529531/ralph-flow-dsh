@@ -1,0 +1,40 @@
+/** Real plugin reader + real Session source metadata: newer terminal beats old residual. */
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import { TypertRegistry } from "@deepseek-ai/dsh-typert-registry";
+import * as plugin from "../lib/index.js";
+import { TYPERT } from "../lib/typert.js";
+import { mkEnv, mkTmp, cleanupTmp, toolOf, execTool, sleep } from "./helpers/plugin-harness.mjs";
+const root = mkTmp("status-owner-report");
+process.env.DSH_HOME = `${root}/isolated-home`;
+const env = mkEnv(root, "owner");
+const session = env.agents.get("owner").session;
+new TypertRegistry(env.ctx).register(TYPERT);
+env.ctx.provide("sessionQuery", { readSession: async () => ({ events: session.snapshotEvents(), inheritedEventCount: 0 }) });
+try {
+  plugin.apply(env.ctx, {}); await sleep(20);
+  const reader = env.ctx.get("ralphflowStatus").reader;
+  const read = () => reader.read(session);
+  const directory = `${root}/.dsh/ralph-flow`, workflowDir = `${directory}/workflows`, reports = `${directory}/reports`;
+  fs.mkdirSync(workflowDir, { recursive: true });
+  fs.writeFileSync(`${workflowDir}/manual.yaml`, `manual_step: [review]\nsteps:\n  - id: review\n    desc: 人工审查\n    do: 执行\n    input: 任务\n    output: 产物\n    on_pass: done\n    on_fail: review\n    max_fail_count: 3\n`);
+  const invoke = (name, args = {}) => execTool(toolOf(env.registered, name), args, env.sid);
+  await invoke("ralphflow_start", { workflow: "manual", task: "旧运行归档失败" });
+  fs.rmSync(reports, { recursive: true, force: true }); fs.writeFileSync(reports, "controlled failure");
+  await invoke("ralphflow_cancel");
+  assert.equal((await read()).status.stage, "unavailable");
+  fs.rmSync(reports); fs.mkdirSync(reports);
+  await sleep(10);
+  await invoke("ralphflow_start", { workflow: "manual", task: "新运行已完成" });
+  assert.equal((await read()).status.stage, "executing");
+  await invoke("ralphflow_submit", { summary: "交卷" });
+  assert.equal((await read()).status.stage, "gate");
+  await invoke("ralphflow_continue");
+  const seq = session.seq, terminal = (await read()).status;
+  assert.equal(terminal.stage, "done"); assert.equal(terminal.task, "新运行已完成");
+  assert.equal(session.seq, seq, "reader must not write Session events");
+  assert.equal(fs.readdirSync(`${directory}/instances`).length, 1, "the old residual remains, but must not cover the new report");
+  const last = session.snapshotEvents().filter((e) => e.type === "user/message" && e.data.source.uiRef).at(-1);
+  assert.equal(last.data.source.uiRef.runId, terminal.id);
+  console.log("status owner/report checks passed — real plugin reader, native metadata, residual visibility and newest exact terminal association");
+} finally { await env.ctx.fiber.dispose(); cleanupTmp(root); }

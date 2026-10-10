@@ -114,3 +114,5 @@ next-step 消息，正在收尾的回合就会被续上；而且收件箱里的�
 | 播报做成 notice 行（`form:"notice"` + 非空 summary） | [`scripts/visibility-test.mjs`](../../scripts/visibility-test.mjs) |
 | 真实运行复核（验证期间无新回合 / 四票齐后 replace + DO） | [`scripts/real-loop-wake-test.mjs`](../../scripts/real-loop-wake-test.mjs) R1/R2（含 R3 负对照） |
 | 分类完整性（漏一处即红） | [`scripts/delivery-classification-test.mjs`](../../scripts/delivery-classification-test.mjs) |
+
+状态 UI 的 `ctx.inject([服务名], …)` 是 Cordis 依赖装配；`ctx.slots.inject` 是 UI 槽装配，均不投递会话。新增 `src/status-service.ts`、`src/status-contract.ts`、`src/typert.ts`、`src/client/status-source.ts`、`src/client/status.tsx` 的投递计数均为零；现有 32 个指令/播报调用点不变。
