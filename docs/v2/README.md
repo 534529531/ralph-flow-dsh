@@ -25,6 +25,7 @@
 | [shortcut-skills-brief.md](shortcut-skills-brief.md) | 启动类快捷从命令改成技能（修掉新会话未命名 + 技能描述成为自然语言触发词） | 已实现 |
 | [workspace-anchoring-brief.md](workspace-anchoring-brief.md) | 发现面锚定修复 | ⛔ **已作废**——思路被"引擎按工作区实例化"取代 |
 | [ui-notice-brief.md](ui-notice-brief.md) | 播报对人类可见（客户端半边）：通过 / 失败 / 暂停 / 审查门 / 完成在 Chat 时间线上看得见，且不唤醒驱动器 | 📋 **待实现** |
+| [workflow-status-ui-refine-brief.md](workflow-status-ui-refine-brief.md) | 工作流状态界面精修：一处常驻、只在该出现时出现、与 dsh 同源（上一版把 UI 组成写死，导致同一件事说三遍） | 📋 **待实现** |
 | [brief-style.md](brief-style.md) | 任务书写作规范（给作者） | 规范 |
 
 ## 调研与预研
