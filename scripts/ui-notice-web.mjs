@@ -3,6 +3,7 @@
  * All host data and workspaces are isolated. No remote model requests are made.
  */
 import fs from "node:fs";
+import yaml from "js-yaml";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -12,6 +13,8 @@ import { Session, SESSION_FORMAT_VERSION } from "@deepseek-ai/dsh-session";
 import { fileURLToPath } from "node:url";
 
 const repo = fileURLToPath(new URL("../", import.meta.url));
+const VOTE_COUNT = yaml.load(fs.readFileSync(new URL("../workflows/loop.yaml", import.meta.url), "utf8")).steps[0].check_voting.length;
+const voterNotice = new RegExp(`验证者 \\d+/${VOTE_COUNT}`);
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "/home/yj/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs");
 const out = process.env.RALPHFLOW_UI_EVIDENCE_DIR ?? path.join(repo, "docs/v2/evidence/ui-notice");
 fs.mkdirSync(out, { recursive: true });
@@ -84,8 +87,8 @@ try {
       summaries: notices(state).map((e) => ({ seq: e.seq, summary: e.data.source.summary })) };
   }
   const { sessionId: sid } = await api("start?mode=loop");
-  await until(async () => { const s = await stateOf(sid); return s.pending.length === 4 && s.status === "idle" && s; }, "four native voters, parent idle");
-  console.log("web ready; four native loop voters; parent idle");
+  await until(async () => { const s = await stateOf(sid); return s.pending.length === VOTE_COUNT && s.status === "idle" && s; }, "native voters, parent idle");
+  console.log("web ready; native loop voters; parent idle");
   await select("loop");
   let state = await stateOf(sid); await assertChatNotices(state);
   const summary = page.locator("[data-ralphflow-notice] > summary").first();
@@ -96,11 +99,11 @@ try {
   assert.equal(state.inboxPending, false);
   await page.screenshot({ path: path.join(out, "loop-start.png") });
   const rounds = [];
-  for (let i = 1; i <= 4; i++) {
+  for (let i = 1; i <= VOTE_COUNT; i++) {
     await api("release?pass=false");
-    state = await until(async () => { const s = await stateOf(sid); return notices(s).filter((e) => /验证者 \d+\/4/.test(e.data.source.summary)).length >= i && s; }, `failed vote ${i}`);
+    state = await until(async () => { const s = await stateOf(sid); return notices(s).filter((e) => voterNotice.test(e.data.source.summary)).length >= i && s; }, `failed vote ${i}`);
     await assertChatNotices(state);
-    if (i < 4) { assert.equal(state.status, "idle"); assert.equal(state.events.filter((e) => e.type === "turn/start").length, 1); }
+    if (i < VOTE_COUNT) { assert.equal(state.status, "idle"); assert.equal(state.events.filter((e) => e.type === "turn/start").length, 1); }
     rounds.push(record(state));
     console.log(`visible vote ${i}`);
   }
@@ -127,10 +130,10 @@ try {
     nextPreStepSources: state.messages.slice(3).map((m) => m.source.kind),
     beforeResetNotices: notices(state).filter((e) => e.seq < rep.seq).map((e) => e.seq) };
   await api("rework");
-  await until(async () => { const s = await stateOf(sid); return s.pending.length === 4 && s.status === "idle"; }, "rework four voters");
-  for (let i = 1; i <= 4; i++) {
+  await until(async () => { const s = await stateOf(sid); return s.pending.length === VOTE_COUNT && s.status === "idle"; }, "rework voters");
+  for (let i = 1; i <= VOTE_COUNT; i++) {
     await api("release?pass=true");
-    state = await until(async () => { const s = await stateOf(sid); return notices(s).filter((e) => /验证者 \d+\/4/.test(e.data.source.summary)).length >= 4 + i && s; }, `pass vote ${i}`);
+    state = await until(async () => { const s = await stateOf(sid); return notices(s).filter((e) => voterNotice.test(e.data.source.summary)).length >= VOTE_COUNT + i && s; }, `pass vote ${i}`);
     await assertChatNotices(state);
     rounds.push(record(state));
     console.log(`visible vote ${i}`);

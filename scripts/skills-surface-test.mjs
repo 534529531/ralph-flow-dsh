@@ -22,6 +22,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import yaml from "js-yaml";
 import { pathToFileURL } from "node:url";
 import { Context } from "@deepseek-ai/cordis";
 import { Session, SESSION_FORMAT_VERSION } from "@deepseek-ai/dsh-session";
@@ -160,7 +161,7 @@ console.log("T1 真 SkillRegistry：注册了什么、哪一面看得见（判�
     ralphflowSkills.every((s) => isSkillName(s.name)), ralphflowSkills.map((s) => s.name).join(","));
 
   check("ralphflow-<工作流> 的描述直接用工作流 YAML 的 description（loop 那句）",
-    ralphflowSkills.find((s) => s.name === "ralphflow-loop")?.description === "单步对抗验证循环：实现与验证在同一环节内迭代，直到通过",
+    ralphflowSkills.find((s) => s.name === "ralphflow-loop")?.description === yaml.load(fs.readFileSync(path.join(REPO, "workflows/loop.yaml"), "utf8")).description,
     JSON.stringify(ralphflowSkills.find((s) => s.name === "ralphflow-loop")?.description));
 
   const startDef = await fixed.ctx.skills.get("ralphflow-start", { cwd: fixed.ws });

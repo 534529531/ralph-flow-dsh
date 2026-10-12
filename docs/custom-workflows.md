@@ -269,6 +269,8 @@ steps:
 | `model` | ❌ | 该票专用模型；不填继承全局 `adversarial_check.model`（含子工作流继承链），再往后是发起会话当前模型 |
 | `timeout_ms` / `system_prompt` | — | **加载期告警 + 忽略**（与 `adversarial_check` 下同名键同一口径） |
 
+普通 `check` 与 `check_voting` 的基础设施恢复规则一致：自动重新验证一次，仍故障则暂停且不计工作失败；`/ralphflow-continue` 恢复后重新获得一次自动重试机会。工作成果被判不通过仍按 `on_fail` 返工，达到 `max_fail_count` 才暂停。
+
 **行为要点：**
 
 - **全过才放行**：任一票不通过 → 整体失败，聚合所有失败者的 reason（含各票检查依据原文）反馈 DO 返工。

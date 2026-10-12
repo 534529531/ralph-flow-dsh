@@ -718,7 +718,7 @@ export interface Delegation {
    *
    * 这是**原始事实**（这一笔委派到底是第几次跑），不是派生量：聚合时要靠它区分
    * 「首轮 infra → 自动重试一次」与「重试仍 infra → 暂停」（照抄 opencode 的重试预算，
-   * 见 `check-voting.ts` §4.4）。单 `check` 步骤不写该字段（省略 = 首轮）。
+   * 见 `check-voting.ts` §4.4）。单 `check` 与投票均写该字段；兼容旧状态（省略 = 首轮）。
    */
   attempt?: number;
   ts: string;
@@ -2425,8 +2425,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return false;
   }
 
-  /** 发起本步的验证：投票步走 {@link launchVotingRound}（N 票并发），单 check 步走原路径 */
-  async function launchVerification(instId: string, state: InstanceState, wf: WorkflowDef, step: StepDef): Promise<void> {
+  /** 发起本步的验证；单 check 与投票均只允许一次基础设施自动重试。 */
+  async function launchVerification(instId: string, state: InstanceState, wf: WorkflowDef, step: StepDef, attempt = 1): Promise<void> {
     if (voterCountOf(step) > 0) {
       // 全新一轮（DO 重新交卷 / 孤儿恢复后重投）⇒ 上一轮的票一律作废、N 票**全部**重投
       //（跨轮语义：工作已经变了，上一轮通过的票也不再复用 —— 见 opencode §4.7）。
@@ -2441,22 +2441,25 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     /** 验证耗时（§3.2：判定事件必须带耗时）——起算点是委派发起，不是判定落账 */
     const startedAt = Date.now();
     state.delegations.push({
-      run_id: runId, check_index: checkIndex, ts: new Date().toISOString(),
+      run_id: runId, check_index: checkIndex, attempt, ts: new Date().toISOString(),
       // 属主运行时（诊断）+ 心跳起点（判活的唯一依据）：心跳只要还在刷新，别的会话 /
       // 别的沙箱进程 / 重载后的新实例就不得把这笔在飞委派当孤儿清掉。
       owner_runtime: runtimeId(), heartbeat_at: Date.now(),
     });
-    pushHistory(state, "verify_start", `check_index=${checkIndex}`, step.id);
+    pushHistory(state, "verify_start", `check_index=${checkIndex},attempt=${attempt}`, step.id);
     writeState(state, instId);
     startHeartbeat(instId, runId);
-    log("info", "verify_start", { instId, step: step.id, checkIndex });
+    log("info", "verify_start", { instId, step: step.id, checkIndex, attempt });
     // 阶段播报：验证是**异步**的（委派独立子代理，不阻塞主会话回合）。
     // 这段静默窗口必须讲清三件事：正在发生什么 / 要不要你操作 / 去哪看进度。
     //
     // **绝不给时长预估**：实测 3m53s / 7m29s / 8m34s，而且委派**没有超时上界**
     // （见 verify.ts：生命周期跟随宿主原生能力）—— 猜一个「通常 1–5 分钟」就是编。
     // 能诚实说的只有「它在读文件、跑命令取证，你（用户）看得到」。
-    notify(state, [
+    notify(state, attempt > 1 ? [
+      `🔍 步骤 \`${step.id}\` 验证发生基础设施故障，正在**自动重新验证一次**（不计失败次数）。`,
+      "无需操作；重试仍故障会暂停，等你修复后继续。",
+    ].join("\n") : [
       `🔍 步骤 \`${step.id}\` 已交卷，独立验证者（独立会话，看不到本对话）正在取证判定。`,
       "",
       `**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它现在正在读文件、跑命令取证，你在会话里看得到它在做什么。`,
@@ -2465,7 +2468,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       `- 直接在此会话补充信息或纠正方向（会被模型看到）`,
       `- 用 \`/ralphflow-status\` 随时查看进度与最近轨迹`,
       `- 想中止就 \`/ralphflow-cancel\``,
-    ].join("\n"), `🔍 步骤 ${step.id} 已交卷，独立验证者正在取证（无需操作）`);
+    ].join("\n"), attempt > 1
+      ? `🔍 步骤 ${step.id} 基础设施故障，自动重试中（不计失败）`
+      : `🔍 步骤 ${step.id} 已交卷，独立验证者正在取证（无需操作）`);
 
     let verdict: Verdict;
     try {
@@ -2515,11 +2520,20 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     fresh.delegations = fresh.delegations.filter((d) => d.run_id !== runId);
     fresh.verdicts.push(verdict);
     dropAbort(instId, controller);
-    pushHistory(fresh, `verdict_${verdict.status}`, verdict.reason.slice(0, 300), step.id);
+    const retryInfra = verdict.status === "infra" && attempt < 2;
+    pushHistory(fresh, retryInfra ? "verify_infra_retry" : `verdict_${verdict.status}`, verdict.reason.slice(0, 300), step.id);
     // 判定入执行日志：`reason` **全文不截断**（§3.2），并带耗时；与报告里的判定字符串同源同值。
     log("info", "verdict", { instId, step: step.id, checkIndex, status: verdict.status, reason: verdict.reason, ms: Date.now() - startedAt });
+    if (retryInfra) {
+      // 与投票恢复一致：故障不烧工作失败预算，只自动重跑一次。
+      // 移除这次故障判定，让只读状态显示新委派正在运行，而非已经返回故障。
+      fresh.verdicts = fresh.verdicts.filter((v) => v !== verdict);
+      writeState(fresh, instId);
+      void launchVerification(instId, fresh, wf, step, attempt + 1);
+      return;
+    }
     // 单 check 就是「一轮一票」：整体结论 = 这张票的判定，直接套用共享的结论应用段
-    //（暂停 / 返工 / 审查门 / 推进的规则与多验证者投票同一条路径，行为逐字未变）。
+    //（自动重试耗尽后，暂停 / 返工 / 审查门 / 推进走同一条路径）。
     applyRoundOutcome(instId, fresh, wf, step, { kind: verdict.status, reason: verdict.reason }, startedAt);
   }
 

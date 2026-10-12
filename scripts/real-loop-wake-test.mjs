@@ -1,7 +1,7 @@
 /**
  * 判据 7：**真实运行复核**（真实 dsh `AgentLoop` + 真实 `Session` + 真实插件装配）。
  *
- * 任务书要的是「在一个真实 `loop` 实例里观察到：验证期间该会话**没有**新回合；四票齐后会话里
+ * 任务书要的是「在一个真实 `loop` 实例里观察到：验证期间该会话**没有**新回合；全部票齐后会话里
  * 出现 replace 事件（上下文确实被替换）且 DO 送达」。本文件就是这么做的，而且**可重复**：
  *
  *   真实的部分：dsh 的 `AgentLoop`（就是 `steer` 在空闲驱动器上开新回合的那个组件）、
@@ -11,9 +11,9 @@
  *   不决定「投递怎么落到会话上」，而后者正是本判据要验的东西。
  *
  * 三个观察点：
- *   R1 四张票全部在飞、回合已收尾的那段窗口里：`turn/start` **仍是 1**（没有新回合）、
+ *   R1 全部票全部在飞、回合已收尾的那段窗口里：`turn/start` **仍是 1**（没有新回合）、
  *      收件箱**空**（没有待办把它续上），而**验证进度播报已经在可见面上**（立刻可见、没唤醒）。
- *   R2 四票齐（全判失败）→ 会话日志里出现 `surfaceOp.op === "replace"` 事件；替换后可见面 =
+ *   R2 全部票齐（全判失败）→ 会话日志里出现 `surfaceOp.op === "replace"` 事件；替换后可见面 =
  *      系统提示 + 交接稿 + DO，返工 DO（带失败理由）在 replace **之后**落地，pre-reset 的
  *      节点在 replace **之前**（被遮蔽）。
  *   R3【负对照】把「播报走 append」还原成修复前的「播报走 steer」→ **同一条判据必然失败**
@@ -21,6 +21,7 @@
  */
 import { loadNoticeClient } from "./helpers/notice-client.mjs";
 import fs from "node:fs";
+import yaml from "js-yaml";
 import os from "node:os";
 import path from "node:path";
 import { Context } from "@deepseek-ai/cordis";
@@ -49,11 +50,11 @@ const waitFor = async (pred, ms = 6000) => {
 };
 const RUN = Math.random().toString(36).slice(2, 8);
 const DO_MARK = "本步要做什么";
-const VOTE_COUNT = 4;
+const VOTE_COUNT = yaml.load(fs.readFileSync(new URL("../workflows/loop.yaml", import.meta.url), "utf8")).steps[0].check_voting.length;
 
 /**
- * 用**内置 `loop` 工作流**（真·真实 loop 实例）：单步、`reset: true`、四票 `check_voting`、
- * `on_fail: loop`（返工重来）。第一轮四票全判失败 → 走返工路径（替换上下文 + 带理由重投 DO）。
+ * 用**内置 `loop` 工作流**（真·真实 loop 实例）：单步、`reset: true`、全部票 `check_voting`、
+ * `on_fail: loop`（返工重来）。第一轮全部票全判失败 → 走返工路径（替换上下文 + 带理由重投 DO）。
  */
 const WORKFLOW_NAME = "loop";
 /**
@@ -122,7 +123,7 @@ async function runScenario(entryUrl, label) {
 
   ctx.llm.registerAdapter(["stub"], mkStubAdapter());
 
-  /** 四张票的悬挂 resolver（判据要的是「四票都在飞」的那段窗口） */
+  /** 全部票的悬挂 resolver（判据要的是「全部票都在飞」的那段窗口） */
   const votes = [];
   ctx.provide("subagents", {
     list: () => ["spawn"],
@@ -153,7 +154,7 @@ async function runScenario(entryUrl, label) {
     return evs().filter((e) => e.type === "user/message" && onSurface.has(e.seq) && e.data?.source?.kind === RALPHFLOW_SOURCE_KIND);
   };
 
-  // ① 等四票全部飞起来、且那个回合已经收尾
+  // ① 等全部票全部飞起来、且那个回合已经收尾
   const delegated = await waitFor(() => votes.length === VOTE_COUNT, 8000);
   await waitFor(() => agent.status === "idle", 4000);
   await sleep(500); // 给「会唤醒的写法」足够机会去唤醒（负对照要靠这段窗口鉴别）
@@ -168,7 +169,7 @@ async function runScenario(entryUrl, label) {
     hasVerifyNotice: notices().some((e) => textOf(e.data).includes("独立验证者")),
   };
 
-  // ② 四票齐 → 全判失败 → 返工（replace + 带理由的 DO）
+  // ② 全部票齐 → 全判失败 → 返工（replace + 带理由的 DO）
   for (const d of votes.splice(0)) {
     d.resolve({ structured: { passed: false, reason: "第一轮没做到位" }, output: [], stopReason: "completed" });
     await sleep(30);
@@ -231,20 +232,20 @@ const noWakeDuringVerification = (o) =>
   o.after.turns === 2;
 
 /** 供 `RALPHFLOW_EVIDENCE_OUT` 落盘的证据包 */
-const evidence = { workflow: "loop（内置单步四票投票步，reset: true）", runs: {} };
+const evidence = { workflow: "loop（内置单步三票投票步，reset: true）", runs: {} };
 
 console.log("R1/R2 真实运行：真实 AgentLoop + 真实 Session + 真实插件装配");
 const fixed = await runScenario(new URL("../lib/index.js", import.meta.url).href, "fixed");
 {
   const w = fixed.window;
-  check(`R1a 四票都在飞（委派 ${w.votes}/${VOTE_COUNT} 笔）`, w.delegated && w.votes === VOTE_COUNT, JSON.stringify(w));
+  check(`R1a 全部票都在飞（委派 ${w.votes}/${VOTE_COUNT} 笔）`, w.delegated && w.votes === VOTE_COUNT, JSON.stringify(w));
   check("R1b 验证期间该会话**没有新回合**（turn/start 仍是 1）", w.turns === 1, `turns=${w.turns}`);
   check("R1c 收尾的回合没有被续上（step 仍是 start + submit 两步）", w.steps === 2, `steps=${w.steps}`);
   check("R1d 收件箱空：没有 next-step 待办在把它续上", w.inboxPending === false, `hasPending=${w.inboxPending}`);
   check("R1e 同一段窗口里播报**已经**在可见面上（立刻可见，不靠唤醒才出现）", w.hasVerifyNotice && w.noticeCount > 0, JSON.stringify(w));
 
   const a = fixed.after;
-  check("R2a 四票齐后会话里出现 replace 事件（上下文确实被替换）", a.replaced, JSON.stringify(a));
+  check("R2a 全部票齐后会话里出现 replace 事件（上下文确实被替换）", a.replaced, JSON.stringify(a));
   check("R2b 替换后第 0 条仍是系统提示", a.systemFirst);
   check("R2c 替换后第 1 条是交接稿", a.handoffSecond);
   check("R2b/c 交接稿就是那次 replace 的落点节点（同一个事件）", a.handoffIsReplaceNode, JSON.stringify(a));

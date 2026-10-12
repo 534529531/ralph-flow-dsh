@@ -3,6 +3,7 @@
  * All host data and workspaces are isolated. No remote model requests are made.
  */
 import fs from "node:fs";
+import yaml from "js-yaml";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -12,6 +13,8 @@ import { Session, SESSION_FORMAT_VERSION } from "@deepseek-ai/dsh-session";
 import { fileURLToPath } from "node:url";
 
 const repo = fileURLToPath(new URL("../", import.meta.url));
+const VOTE_COUNT = yaml.load(fs.readFileSync(new URL("../workflows/loop.yaml", import.meta.url), "utf8")).steps[0].check_voting.length;
+const voterNotice = new RegExp(`验证者 \\d+/${VOTE_COUNT}`);
 const source = fs.readFileSync(path.join(repo, "src/client/status.tsx"), "utf8");
 assert.doesNotMatch(source, /rgba?\(|#[0-9a-f]{3,8}\b|fontSize\s*:\s*\d|font-size\s*:\s*\d|borderRadius\s*:\s*\d|border-radius\s*:\s*\d|boxShadow\s*:\s*["']|box-shadow\s*:\s*(?!var\()[\d]/i,
   "colors, fonts, radii and shadows must come from native dsh tokens");
@@ -149,8 +152,8 @@ try {
       summaries: notices(state).map((e) => ({ seq: e.seq, summary: e.data.source.summary })) };
   }
   const { sessionId: sid } = await api("start?mode=loop");
-  await until(async () => { const s = await stateOf(sid); return s.pending.length === 4 && s.status === "idle" && s; }, "four native voters, parent idle");
-  console.log("web ready; four native loop voters; parent idle");
+  await until(async () => { const s = await stateOf(sid); return s.pending.length === VOTE_COUNT && s.status === "idle" && s; }, "native voters, parent idle");
+  console.log("web ready; native loop voters; parent idle");
   await select("loop");
   let state = await stateOf(sid); await assertChatNotices(state);
   // Criterion 1: exactly one persistent location, visible while the chat scrolls.
@@ -176,12 +179,12 @@ try {
   const controlBox = await page.locator("[data-ralphflow-status]").first().boundingBox();
   assert(controlBox && controlBox.height <= 40, "persistent control is a compact single line");
   // Details live in the on-demand popover, not a second persistent place.
-  await assertPopoverText(/本轮验证 · 0\/4 已返回/);
+  await assertPopoverText(new RegExp(`本轮验证 · 0/${VOTE_COUNT} 已返回`));
   await page.locator("[data-ralphflow-status]").first().click();
-  await page.getByRole("list", { name: "本轮验证 · 0/4 已返回" }).waitFor();
+  await page.getByRole("list", { name: `本轮验证 · 0/${VOTE_COUNT} 已返回` }).waitFor();
   evidence.theme = { light: { popover: await assertOpaque("[data-ralphflow-status-popover]") } };
   await page.screenshot({ path: path.join(out, "popover-votes.png") });
-  assert.equal(await page.getByRole("list", { name: "本轮验证 · 0/4 已返回" }).locator("li").count(), 4);
+  assert.equal(await page.getByRole("list", { name: `本轮验证 · 0/${VOTE_COUNT} 已返回` }).locator("li").count(), VOTE_COUNT);
   await page.keyboard.press("Escape");
   await page.locator("[data-ralphflow-status-popover]").waitFor({ state: "hidden" });
   const initialEvents = (await stateOf(sid)).events;
@@ -203,13 +206,13 @@ try {
   await page.reload(); await assertStatus("verifying");
   assert.equal((await api("status-stream?blocked=true")).subscriptions, 1, "header and dock share one stream");
   await api("release?pass=false");
-  await until(async () => notices(await stateOf(sid)).some((e) => /验证者 \d+\/4/.test(e.data.source.summary)), "negative vote committed");
-  await assert.rejects(() => assertPopoverText(/1\/4 已返回/, 1200), /timeout: popover text/);
-  await assertPopoverText(/0\/4 已返回/);
+  await until(async () => notices(await stateOf(sid)).some((e) => voterNotice.test(e.data.source.summary)), "negative vote committed");
+  await assert.rejects(() => assertPopoverText(new RegExp(`1/${VOTE_COUNT} 已返回`), 1200), /timeout: popover text/);
+  await assertPopoverText(new RegExp(`0/${VOTE_COUNT} 已返回`));
   await page.screenshot({ path: path.join(out, "negative-without-push.png") });
   evidence.pushNegative = { openingSnapshotPresent: true, actualVoteCommitted: true, sameLiveAssertionRejected: true };
   await api("status-stream?blocked=false");
-  await assertPopoverText(/1\/4 已返回/);
+  await assertPopoverText(new RegExp(`1/${VOTE_COUNT} 已返回`));
   console.log("real status control visible");
   const summary = page.locator("[data-ralphflow-notice] > summary").first();
   await summary.focus(); await page.keyboard.press("Enter");
@@ -219,28 +222,28 @@ try {
   assert.equal(state.inboxPending, false);
   await page.screenshot({ path: path.join(out, "loop-start.png") });
   const rounds = [];
-  for (let i = 1; i <= 4; i++) {
+  for (let i = 1; i <= VOTE_COUNT; i++) {
     if (i === 2) {
       blockSockets = true;
       for (const { socket, server } of sockets) { await socket.close({ code: 1001 }); await server.close({ code: 1001 }); }
       await page.locator('[data-ralphflow-status][data-connection="offline"]').waitFor();
     }
     if (i > 1) await api("release?pass=false");
-    state = await until(async () => { const s = await stateOf(sid); return notices(s).filter((e) => /验证者 \d+\/4/.test(e.data.source.summary)).length >= i && s; }, `failed vote ${i}`);
+    state = await until(async () => { const s = await stateOf(sid); return notices(s).filter((e) => voterNotice.test(e.data.source.summary)).length >= i && s; }, `failed vote ${i}`);
     if (i === 2) {
       assert.equal(await page.locator('[data-ralphflow-status][data-connection="offline"]').count(), 1, "offline marker");
       assert.match(await page.locator("[data-ralphflow-status]").first().innerText(), /同步中/);
       // The last confirmed value is retained and marked stale while the socket is down.
-      await assertPopoverText(/1\/4 已返回/);
+      await assertPopoverText(new RegExp(`1/${VOTE_COUNT} 已返回`));
       await page.screenshot({ path: path.join(out, "disconnected-stale.png") });
       blockSockets = false;
-      await assertPopoverText(/2\/4 已返回/, 15000);
+      await assertPopoverText(new RegExp(`2/${VOTE_COUNT} 已返回`), 15000);
       evidence.reconnect = { actualVoteChangedWhileDisconnected: true, staleMarked: true, fullSnapshotRestored: true };
     }
     await assertChatNotices(state);
-    if (i < 4) await assertStatus("verifying");
-    if (i < 4) await assertPopoverText(new RegExp(`${i}/4 已返回`));
-    if (i < 4) { assert.equal(state.status, "idle"); assert.equal(state.events.filter((e) => e.type === "turn/start").length, 1); }
+    if (i < VOTE_COUNT) await assertStatus("verifying");
+    if (i < VOTE_COUNT) await assertPopoverText(new RegExp(`${i}/${VOTE_COUNT} 已返回`));
+    if (i < VOTE_COUNT) { assert.equal(state.status, "idle"); assert.equal(state.events.filter((e) => e.type === "turn/start").length, 1); }
     rounds.push(record(state));
     console.log(`visible vote ${i}`);
   }
@@ -277,13 +280,13 @@ try {
     nextPreStepSources: state.messages.slice(3).map((m) => m.source.kind),
     beforeResetNotices: notices(state).filter((e) => e.seq < rep.seq).map((e) => e.seq) };
   await api("rework");
-  await until(async () => { const s = await stateOf(sid); return s.pending.length === 4 && s.status === "idle"; }, "rework four voters");
-  for (let i = 1; i <= 4; i++) {
+  await until(async () => { const s = await stateOf(sid); return s.pending.length === VOTE_COUNT && s.status === "idle"; }, "rework voters");
+  for (let i = 1; i <= VOTE_COUNT; i++) {
     await api("release?pass=true");
-    state = await until(async () => { const s = await stateOf(sid); return notices(s).filter((e) => /验证者 \d+\/4/.test(e.data.source.summary)).length >= 4 + i && s; }, `pass vote ${i}`);
+    state = await until(async () => { const s = await stateOf(sid); return notices(s).filter((e) => voterNotice.test(e.data.source.summary)).length >= VOTE_COUNT + i && s; }, `pass vote ${i}`);
     await assertChatNotices(state);
-    if (i < 4) await assertStatus("verifying");
-    if (i < 4) await assertPopoverText(new RegExp(`${i}/4 已返回`));
+    if (i < VOTE_COUNT) await assertStatus("verifying");
+    if (i < VOTE_COUNT) await assertPopoverText(new RegExp(`${i}/${VOTE_COUNT} 已返回`));
     rounds.push(record(state));
     console.log(`visible vote ${i}`);
   }

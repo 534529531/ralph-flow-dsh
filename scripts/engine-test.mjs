@@ -61,22 +61,22 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   const s = S();
   const wfs = engine.listWorkflows();
   check("内置 loop/spec 可加载", wfs.length >= 2 && wfs.every((w) => !w.invalid), JSON.stringify(wfs.map((w) => w.name)));
-  // 内置 loop 的**形状**（不是只看告警）：opencode 那三票逐字照抄 + 本仓库第 4 票，投票而非单 check
+  // 内置 loop 的**形状**（不是只看告警）：需求与边界 / 实际可用性 / 回归影响三个互补视角，投票而非单 check
   const loopDef = engine.loadWorkflow("loop").def;
   const loopStep = loopDef.steps[0];
-  check("内置 loop 是多验证者投票步（4 票 · 每票一条检查依据 · 不再写单 check）",
-    expectedVerdicts(loopStep) === 4 && loopStep.check === undefined
-    && loopStep.check_voting?.length === 4 && loopStep.check_voting.every((e) => !e.model),
+  check("内置 loop 是多验证者投票步（3 票 · 每票一条检查依据 · 不再写单 check）",
+    expectedVerdicts(loopStep) === 3 && loopStep.check === undefined
+    && loopStep.check_voting?.length === 3 && loopStep.check_voting.every((e) => !e.model),
     JSON.stringify({ check: loopStep.check, voters: loopStep.check_voting?.map((e) => e.check) }));
-  check("内置 loop 前三条检查依据逐字照抄 opencode 版 loop.yaml",
-    loopStep.check_voting[0].check === "用户任务的每一条要求都已落实"
-    && loopStep.check_voting[1].check === "实现的行为符合预期，真实可用"
-    && loopStep.check_voting[2].check === "没有遗漏的需求，边界情况已覆盖",
+  check("内置 loop 的三项分别覆盖需求与边界、可用性、回归影响",
+    loopStep.check_voting[0].check === "用户任务的每一条要求都已落实，没有遗漏，相关边界与异常情况已覆盖"
+    && loopStep.check_voting[1].check === "实现的行为和实际产出符合预期、真实可用，有可复核的验证依据"
+    && loopStep.check_voting[2].check === "修改不影响原有功能和既有约定，不引入需求以外的副作用",
     JSON.stringify(loopStep.check_voting.map((e) => e.check)));
-  check("内置 loop 第 4 票是本仓库自己的「修改不影响原有功能」口径（纯判断，不含取证动作）",
-    loopStep.check_voting[3].check === "修改不影响原有功能，不破坏需求以外的边界"
+  check("内置 loop 回归检查是通用判定，不假定测试套件或基线",
+    loopStep.check_voting[2].check === "修改不影响原有功能和既有约定，不引入需求以外的副作用"
     // 内置件要通用：check 正文里不得出现「测试套件 / 基线」这类项目专有假定
-    && !/测试|基线|lint|构建/.test(loopStep.check_voting[3].check), loopStep.check_voting[3].check);
+    && !/测试|基线|lint|构建/.test(loopStep.check_voting[2].check), loopStep.check_voting[2].check);
   {
     // 与 opencode 一致：reset 抄进来（**生效键**）；timeout_ms 不抄（加载期告警忽略的键）
     const raw = fs.readFileSync(new URL("../workflows/loop.yaml", import.meta.url), "utf-8");
@@ -132,7 +132,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   await settle();
   let st = engine.readState(id);
   check("infra → 暂停 check_infra 且 fail_count=0", st.paused && st.pause_reason === "check_infra" && st.fail_count === 0, JSON.stringify({ p: st.pause_reason, f: st.fail_count }));
-  scripted.push(...votes({ status: "failed", reason: "还是不行" })); // 先入队：continue 同步消费（整轮 4 票）
+  scripted.push(...votes({ status: "failed", reason: "还是不行" })); // 先入队：continue 同步消费（整轮投票）
   const c1 = engine.continueInstance(s); // 解除暂停 → 引擎同步启动重验（消费 scripted[0]）
   check("continue 解除暂停并自动重验", c1.ok);
   await settle();

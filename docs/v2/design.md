@@ -184,7 +184,7 @@
 - 所有者：用户手写（进 git）；交互式创建器 `ralphflow_create` **已实现**（`src/create.ts` 的 CREATE_GUIDE 引导设计 + `ralphflow_doctor` 校验到全部 ✅），手写与引导两条路都通。
 - **内置工作流不落盘**（对齐 opencode/claude 的 `ensureProjectWorkflows`）：`loadWorkflow` 回落插件目录，内置因此**始终是随插件发布的最新版**。播种副本会遮蔽插件目录、并在插件升级后变成陈旧副本——**实测踩过**：工作区里那份 7 步 `spec` 副本把新版 4 步内置整个挡住了，改内置却"没生效"。定制入口是"放同名文件遮蔽内置"（有意行为）。
 - **内置 `spec` = 4 步**（`explore → propose → implement → archive`），与 opencode 现行版同源；7 步是 opencode 在 2.6.0 废弃的旧版（我们此前从 claude 版抄来）。**与 opencode 完全一致**：`propose`/`implement` 标 `reset: true`（重置门，本版本已实现，见 §8）。首步 `explore` **不标**——首步 DO 是启动工具的返回值，结构上无法重置。依据与完整分析见 `spec-4step-brief.md` 与 `reset-feasibility.md`。
-- **内置 `loop` = 4 票 `check_voting`**：前三条**逐字照抄** opencode 版 `loop.yaml`（用户任务的每一条要求都已落实 / 实现的行为符合预期，真实可用 / 没有遗漏的需求，边界情况已覆盖），第 4 条是本仓库自己的口径「**修改不影响原有功能，不破坏需求以外的边界**」。第 4 条**刻意只写判断、不写取证动作**（不写「跑仓库自带测试 / 与基线比对」这类）：内置工作流要对任意项目通用，不能假定项目有测试套件、lint 工具链或 git 基线；取证方式由验证者按项目现状自选（它有 `read`/`grep`/`glob`/`bash`），这与前三条的形态也一致。**自包含取证配方**（打开哪些文件、跑哪些命令）是给**项目自己写的**工作流的建议，见 `ralphflow_create` 的设计最佳实践，不要上移到内置件里。与 opencode 版的**差异只写在注释里**（不抄进来）：它的 `reset: true`（本端**已支持**该方言，但 loop 只有一步、永远是首步 → 标了也只会得到启动回执里一行「首步无法重置」的如实说明）与 `adversarial_check.timeout_ms`（本端已从公开契约删除）——后者抄进来只会得到告警。形状由 `scripts/engine-test.mjs` §1 断言钉住（票数 / 三条逐字文案 / 第 4 票纯判断且不含项目专有假定 / 不含生效的 `reset`·`timeout_ms` 键 / 零告警），不只断言告警；reset 门的端到端验收见 `scripts/reset-surface-test.mjs`。
+- **内置 `loop` = 3 票 `check_voting`**：需求落实、遗漏与相关边界合为一票；第二票核对行为及实际产出、可复核的验证依据；第三票核对回归影响与既有约定。三票全过才放行，依据保持项目无关，不假定测试套件或 git 基线。保留 `reset: true`、摘要追加和 `max_fail_count: 100`；自定义投票仍支持 1–5 票。
 - 坏文件 fail-fast 说人话（§8 方言容错）。
 
 ## 10. 宪法（违反即回退）
@@ -224,6 +224,7 @@
 | v1.4 | **播报客户端半边已实现**：不改宿主投递与计票，另注册会话级私有 `ralphflow-notice` Chat 节点及摘要 / 全文渲染器；只读已有 append 日志，无新增轮询，刷新与 reset 后保留人类播报。改正 `form:notice` 自带可见性的假前提。 | 作者**直接指示**；验收 `scripts/visibility-test.mjs`（真实 bundle、宿主过滤与移除渲染 / context 负对照）、`scripts/client-package-test.mjs`（npm pack + 宿主装配闸）、真机证据 [ui-notice.md](evidence/ui-notice.md)，以及全量回归。 |
 | v1.5 | **当前会话状态 UI**：input dock 卡与 header 入口共享只读状态流，显示当前步、失败预算、本轮票、暂停/审查与终态。引擎派生展示，读取不运行 restore；不存相位、不新增 SessionEvent、不加模型消息。已有完成/取消播报 metadata 关联精确报告，冷读排除 fork 继承日志。 | 作者**直接指示**；[任务书](workflow-status-ui-brief.md)、[取证](workflow-status-ui-research.md)、[真机验收及双负对照](evidence/ui-status.md)；`workflow-status-test`、`status-source-test`、`status-owner-report-test` 与全量回归。 |
 | v1.6 | **状态界面精修（2.1.3）**：一处页头常驻，执行/验证不占输入区，待放行/暂停才出现单行动作；终态收为结果与精确报告。复用原生状态点、主题字号/圆角/阴影，弹层和提示条使用实色层背景；默认轮次/失败次数，预算只在接近上限时展开提示。机制与时间线角色不变。 | 作者**直接指示**；[精修任务书](workflow-status-ui-refine-brief.md)、[真机验收与三组负对照](evidence/ui-status.md)，包含原生 jobs/goal 浅色与深色截图对照。 |
+| v1.7 | **loop 三视角与恢复统一（2.3.0）**：默认验收合并需求与边界，保留实际可用性、回归影响；单 `check` 与投票一样，基础设施故障自动重试一次、仍故障暂停，人工恢复后重置重试机会，不消耗工作失败预算。 | 作者**直接指示**；[验收](evidence/loop-three-checks.md)，专项取消/恢复测试与真机正负对照。 |
 
 ## 12. 验收（v0 完成判据）
 

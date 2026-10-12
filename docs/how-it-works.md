@@ -112,7 +112,7 @@ check_voting 条目 model  >  步骤 check_model  >  全局 adversarial_check.mo
 
 ### 基础设施故障 ≠ 工作故障
 
-验证会话跑不起来（API 错误、后端缺能力、判定解析失败）**不能**说明工作成果的质量。引擎不把它计入步骤失败，也不让主会话回去重做已完成的工作：它在 CHECK 阶段暂停（`check_infra`），下一次 `/ralphflow-continue` **只**重跑验证。投票场景下 infra 会先自动重试一次，且只重跑故障票。
+验证会话跑不起来（API 错误、后端缺能力、判定解析失败）**不能**说明工作成果的质量。引擎不把它计入步骤失败，也不让主会话回去重做已完成的工作：普通 `check` 与 `check_voting` 都会先自动重试一次。仍故障才在 CHECK 阶段暂停（`check_infra`），下一次 `/ralphflow-continue` **只**重跑验证，并重新获得一次自动重试机会。投票只重跑故障票，已通过的票保留。
 
 ---
 
@@ -158,7 +158,7 @@ check_voting 条目 model  >  步骤 check_model  >  全局 adversarial_check.mo
 | **定义已声明免验证**（`check` / `check_voting` 都不写） | 不委派验证者、不写判定：非门 → 交卷即按 `on_pass` 推进；门 → 交卷即停在门状态等 `continue` |
 | 判定齐且全 `passed` | 若当前步在工作流级 `manual_step` 列表里 → 停在门状态等 `continue`；否则按 `on_pass` 推进 |
 | 任一条 `failed` | 按 `on_fail` 回退，失败计数 +1；未达上限 → 恢复 DO 等待重做；达上限 → 暂停 |
-| 任一条 `infra` | 暂停（`check_infra`），**不烧失败计数** |
+| 任一条 `infra` | 自动重试一次；仍故障则暂停（`check_infra`），**不烧失败计数** |
 | 判定全 passed 但有条目属于**别的步骤** | 拒绝推进（过旧/外来判定复用是明确的攻击向量） |
 | 有判定但未全过 | 拒绝，**不烧失败计数**（模型修好重新交卷即可） |
 | 已交卷无判定 | 重新委派验证 |

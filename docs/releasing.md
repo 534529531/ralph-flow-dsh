@@ -17,7 +17,7 @@ gh workflow run release.yml -f bump=minor
 
 | 作业 | 做什么 |
 |---|---|
-| **闸** | `npm ci && npm run build && npm run typecheck && npm run verify`（26 支套件）。**红了就到此为止，什么都不留下** —— tag 还没打 |
+| **闸** | `npm ci && npm run build && npm run typecheck && npm run verify`（27 支套件）。**红了就到此为止，什么都不留下** —— tag 还没打 |
 | **定版** | `npm version <bump>` → 提交 `release vX.Y.Z` → 打 annotated tag → 推回 `main` → 建 GitHub Release（`--generate-notes` 自动生成说明） |
 | **发布** | checkout 那个 tag → `npm ci` → `npm run build` → `npm publish --provenance` |
 
