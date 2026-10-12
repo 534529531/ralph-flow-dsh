@@ -1,0 +1,8 @@
+{
+  "dsh": "0.2.0-rc.2",
+  "plugin": "2.2.0",
+  "alphaPackages": [],
+  "packages": 610,
+  "install": "npm ci --ignore-scripts: 539 packages, no extraction errors",
+  "consumerDirectory": "/tmp/ralphflow-latest-consumer-fixed.9dh0qN"
+}

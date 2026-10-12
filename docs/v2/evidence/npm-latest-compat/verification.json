@@ -1,0 +1,22 @@
+{
+  "notice": {
+    "runtime": "dsh 0.2.0-rc.2",
+    "result": "PASS: Chat rows per vote, aggregates, pause, gate, completion, reset+refresh, model exact 3, no wake, SAME DOM assertion red without client"
+  },
+  "status": {
+    "runtime": "dsh 0.2.0-rc.2",
+    "result": "PASS: real Chat status, one persistent header location, conditional input prompt, native votes, one failure per round, reset, refresh, pause/gate, completion/cancel, empty/fork/owner isolation, disconnect/reconnect, native approval, cold host restart, one shared stream, no wake, three negative controls (client, push, persistent location)"
+  },
+  "packed-status": {
+    "runtime": "dsh 0.2.0-rc.2",
+    "result": "PASS: real Chat status, one persistent header location, conditional input prompt, native votes, one failure per round, reset, refresh, pause/gate, completion/cancel, empty/fork/owner isolation, disconnect/reconnect, native approval, cold host restart, one shared stream, no wake, three negative controls (client, push, persistent location)"
+  },
+  "alpha-status": {
+    "runtime": "dsh 0.2.1-alpha.1",
+    "result": "PASS: real Chat status, one persistent header location, conditional input prompt, native votes, one failure per round, reset, refresh, pause/gate, completion/cancel, empty/fork/owner isolation, disconnect/reconnect, native approval, cold host restart, one shared stream, no wake, three negative controls (client, push, persistent location)"
+  },
+  "regressions": {
+    "npm-default": "26/26, clean npm ci + build + typecheck + verify",
+    "alpha.1": "26/26, build + typecheck + verify"
+  }
+}

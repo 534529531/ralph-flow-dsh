@@ -1,0 +1,3235 @@
+{
+  "runtime": "dsh 0.2.0-rc.2",
+  "controlled": "local model outputs; real AgentLoop, ToolRuntime, spawn, persistence, Chat DOM",
+  "runs": {
+    "loop": {
+      "sessionId": "session-aa8aee07-bd66-40d9-ae3d-1c2e433bc7b6",
+      "rounds": [
+        {
+          "status": "idle",
+          "inboxPending": false,
+          "events": [
+            {
+              "type": "turn/start",
+              "seq": 5,
+              "time": 1791771606779,
+              "data": {
+                "turn": 1
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 9,
+              "time": 1791771607494,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "完成 UI_NOTICE_LOOP"
+                  }
+                ],
+                "source": {
+                  "kind": "user",
+                  "rpcId": "notice-1"
+                },
+                "role": "user",
+                "id": "5dfdd70b-9bfd-4c9a-8ec9-01ad7a9d84e6"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 23,
+              "time": 1791771607611,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 步骤 `loop` 已交卷，4 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。\n\n**本轮检查依据**（供你了解，不用回复）：\n- 1/4 用户任务的每一条要求都已落实\n- 2/4 实现的行为符合预期，真实可用\n- 3/4 没有遗漏的需求，边界情况已覆盖\n- 4/4 修改不影响原有功能，不破坏需求以外的边界\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看每张票的进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+                },
+                "role": "user",
+                "id": "bc840dff-b8f0-41a4-bbe8-294d996d2ea4"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "turn/end",
+              "seq": 25,
+              "time": 1791771607615,
+              "data": {
+                "turn": 1,
+                "reason": {
+                  "kind": "completed"
+                }
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 30,
+              "time": 1791771608838,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                },
+                "role": "user",
+                "id": "ffa95240-2655-404a-9b70-5a0749cab740"
+              },
+              "surfaceOp": "append"
+            }
+          ],
+          "summaries": [
+            {
+              "seq": 23,
+              "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+            },
+            {
+              "seq": 30,
+              "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+            }
+          ]
+        },
+        {
+          "status": "idle",
+          "inboxPending": false,
+          "events": [
+            {
+              "type": "turn/start",
+              "seq": 5,
+              "time": 1791771606779,
+              "data": {
+                "turn": 1
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 9,
+              "time": 1791771607494,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "完成 UI_NOTICE_LOOP"
+                  }
+                ],
+                "source": {
+                  "kind": "user",
+                  "rpcId": "notice-1"
+                },
+                "role": "user",
+                "id": "5dfdd70b-9bfd-4c9a-8ec9-01ad7a9d84e6"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 23,
+              "time": 1791771607611,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 步骤 `loop` 已交卷，4 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。\n\n**本轮检查依据**（供你了解，不用回复）：\n- 1/4 用户任务的每一条要求都已落实\n- 2/4 实现的行为符合预期，真实可用\n- 3/4 没有遗漏的需求，边界情况已覆盖\n- 4/4 修改不影响原有功能，不破坏需求以外的边界\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看每张票的进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+                },
+                "role": "user",
+                "id": "bc840dff-b8f0-41a4-bbe8-294d996d2ea4"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "turn/end",
+              "seq": 25,
+              "time": 1791771607615,
+              "data": {
+                "turn": 1,
+                "reason": {
+                  "kind": "completed"
+                }
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 30,
+              "time": 1791771608838,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                },
+                "role": "user",
+                "id": "ffa95240-2655-404a-9b70-5a0749cab740"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 31,
+              "time": 1791771608995,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                },
+                "role": "user",
+                "id": "03daa7aa-b5e6-4510-806b-2219cef398f7"
+              },
+              "surfaceOp": "append"
+            }
+          ],
+          "summaries": [
+            {
+              "seq": 23,
+              "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+            },
+            {
+              "seq": 30,
+              "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+            },
+            {
+              "seq": 31,
+              "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+            }
+          ]
+        },
+        {
+          "status": "idle",
+          "inboxPending": false,
+          "events": [
+            {
+              "type": "turn/start",
+              "seq": 5,
+              "time": 1791771606779,
+              "data": {
+                "turn": 1
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 9,
+              "time": 1791771607494,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "完成 UI_NOTICE_LOOP"
+                  }
+                ],
+                "source": {
+                  "kind": "user",
+                  "rpcId": "notice-1"
+                },
+                "role": "user",
+                "id": "5dfdd70b-9bfd-4c9a-8ec9-01ad7a9d84e6"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 23,
+              "time": 1791771607611,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 步骤 `loop` 已交卷，4 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。\n\n**本轮检查依据**（供你了解，不用回复）：\n- 1/4 用户任务的每一条要求都已落实\n- 2/4 实现的行为符合预期，真实可用\n- 3/4 没有遗漏的需求，边界情况已覆盖\n- 4/4 修改不影响原有功能，不破坏需求以外的边界\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看每张票的进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+                },
+                "role": "user",
+                "id": "bc840dff-b8f0-41a4-bbe8-294d996d2ea4"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "turn/end",
+              "seq": 25,
+              "time": 1791771607615,
+              "data": {
+                "turn": 1,
+                "reason": {
+                  "kind": "completed"
+                }
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 30,
+              "time": 1791771608838,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                },
+                "role": "user",
+                "id": "ffa95240-2655-404a-9b70-5a0749cab740"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 31,
+              "time": 1791771608995,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                },
+                "role": "user",
+                "id": "03daa7aa-b5e6-4510-806b-2219cef398f7"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 32,
+              "time": 1791771609237,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+                },
+                "role": "user",
+                "id": "e32ccf38-e7cb-4667-9ab9-f8d226cf5f01"
+              },
+              "surfaceOp": "append"
+            }
+          ],
+          "summaries": [
+            {
+              "seq": 23,
+              "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+            },
+            {
+              "seq": 30,
+              "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+            },
+            {
+              "seq": 31,
+              "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+            },
+            {
+              "seq": 32,
+              "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+            }
+          ]
+        },
+        {
+          "status": "running",
+          "inboxPending": false,
+          "events": [
+            {
+              "type": "turn/start",
+              "seq": 5,
+              "time": 1791771606779,
+              "data": {
+                "turn": 1
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 9,
+              "time": 1791771607494,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "完成 UI_NOTICE_LOOP"
+                  }
+                ],
+                "source": {
+                  "kind": "user",
+                  "rpcId": "notice-1"
+                },
+                "role": "user",
+                "id": "5dfdd70b-9bfd-4c9a-8ec9-01ad7a9d84e6"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 23,
+              "time": 1791771607611,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 步骤 `loop` 已交卷，4 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。\n\n**本轮检查依据**（供你了解，不用回复）：\n- 1/4 用户任务的每一条要求都已落实\n- 2/4 实现的行为符合预期，真实可用\n- 3/4 没有遗漏的需求，边界情况已覆盖\n- 4/4 修改不影响原有功能，不破坏需求以外的边界\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看每张票的进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+                },
+                "role": "user",
+                "id": "bc840dff-b8f0-41a4-bbe8-294d996d2ea4"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "turn/end",
+              "seq": 25,
+              "time": 1791771607615,
+              "data": {
+                "turn": 1,
+                "reason": {
+                  "kind": "completed"
+                }
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 30,
+              "time": 1791771608838,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                },
+                "role": "user",
+                "id": "ffa95240-2655-404a-9b70-5a0749cab740"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 31,
+              "time": 1791771608995,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                },
+                "role": "user",
+                "id": "03daa7aa-b5e6-4510-806b-2219cef398f7"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 32,
+              "time": 1791771609237,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+                },
+                "role": "user",
+                "id": "e32ccf38-e7cb-4667-9ab9-f8d226cf5f01"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 33,
+              "time": 1791771609432,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+                },
+                "role": "user",
+                "id": "e3a25097-7c67-4834-aaaa-5f6c356e93e7"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 34,
+              "time": 1791771609438,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 本步（`loop`）开始前做了上下文重置（来源：本步标了 `reset: true`）：此前对话已移出模型上下文，整段替换为一条交接稿（工作流 / 步骤 / 产出目录 / 交互契约）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "♻️ 步骤 loop 开始前已重置上下文（标了 `reset: true`）"
+                },
+                "role": "user",
+                "id": "775ff3b8-28f1-4f7b-a083-cb36644b1f55"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 35,
+              "time": 1791771609439,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow 交接稿] 上下文已在步骤边界重置：此前对话已移出模型上下文。\n\n- 工作流：`loop`（第 1/1 步）\n- 当前步骤：`loop` — 迭代执行任务直到通过对抗验证\n- 产出目录：`.dsh/ralph-flow/artifacts/UI_NOTICE_LOOP-efbm/`\n- 交互契约：本步完成后调用 `ralphflow_submit` 交卷；交卷后 4 个独立验证者并行取证判定，全过才放行。\n\n请只依据本稿与紧随其后的本步 DO 提示行事（原始记录仍留在会话日志里，可复盘）。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow"
+                },
+                "role": "user",
+                "id": "ebafc323-20ad-4115-aeb8-45910c9cac86"
+              },
+              "sourceEventSeqs": [
+                9,
+                10,
+                11,
+                15,
+                17,
+                20,
+                22,
+                23,
+                30,
+                31,
+                32,
+                33,
+                34
+              ],
+              "surfaceOp": {
+                "op": "replace",
+                "startSeq": 9,
+                "endSeq": 34
+              }
+            },
+            {
+              "type": "turn/start",
+              "seq": 37,
+              "time": 1791771609444,
+              "data": {
+                "turn": 2
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 40,
+              "time": 1791771609517,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 工作流 `loop` · 步骤 1/1：**loop** — 迭代执行任务直到通过对抗验证\n\n## 任务\nUI_NOTICE_LOOP\n\n## 本步要做什么\n把任务做到位：它的每一条要求都成立。\n\n每轮交卷前，把本轮摘要**追加**到 summary.md（一轮一节，保持精简）：\n- 完成事项（逐条对照任务要求）\n- 变更文件\n- 验证结果\n- 未完成部分与下一步打算\n\nsummary.md 是**过程文档**：按提示词「产出目录」一节落在本实例产出目录里，不要写进工作目录。\n\n## 产出目录\n`.dsh/ralph-flow/artifacts/UI_NOTICE_LOOP-efbm/` —— 本步的**过程文档**（清单、方案、报告、摘要、草稿等）只落这里：`do`/`output` 里写**裸文件名**的（如 `summary.md`）落到这个目录；写了**明确路径**的（如 `docs/x.md`）按写的路径来。\n\n工作目录只放本步的**产物**（代码、资源、可执行文件）；过程文档除「写了明确路径」外不进工作目录，同一份过程文档只写一处、不要留副本（例如产出目录已有 `summary.md`、工作目录根又出现一份，那是落点错误）。\n\n## 交付物\n实现的代码/文件\n\n（这一节说的是本步**产出什么**；它们落在**哪里**由「产出目录」一节决定 —— 过程文档写裸文件名就落产出目录，不因为列在这一节就改写进工作目录。）\n\n## 上一轮验证未通过，请针对性修复\n多验证者检查 0/4 通过，全过才放行：\n\n### ✗ 未通过的验证者（必须修复）\n\n**验证者 2/4**\n检查依据：实现的行为符合预期，真实可用\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 1/4**\n检查依据：用户任务的每一条要求都已落实\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 4/4**\n检查依据：修改不影响原有功能，不破坏需求以外的边界\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 3/4**\n检查依据：没有遗漏的需求，边界情况已覆盖\n问题：\n真机受控票：未通过，需要返工\n\n## 交卷方式\n完成实际工作后，按顺序做两件事：\n\n1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（4 个独立验证者**并行**取证，各自只查一条检查依据，**全过才放行**；异步，**不需要用户做任何操作**；验证者是独立会话，正在读文件、跑命令取证，它在做什么用户在会话里看得到）→ 期间用户可以做什么（补充信息或纠正方向 / 用 `/ralphflow-status` 看进度 / 用 `/ralphflow-cancel` 中止）。**不要给任何时长预估**：委派没有超时上界，估计出来的时间只会是编的。用用户的语言写，不要把它埋进技术叙述里。\n2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。4 个独立验证者会立刻**并行**检查你的产出（全过才放行）。\n\n不要只在回复里说「完成了」——那样不会触发验证。**必须调用工具**。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔄 步骤 loop 验证未通过，自动返工（loop 第 1 次）"
+                },
+                "role": "user",
+                "id": "a3b68381-f76d-4914-a00b-2e7bbdce304a"
+              },
+              "surfaceOp": "append"
+            }
+          ],
+          "summaries": [
+            {
+              "seq": 23,
+              "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+            },
+            {
+              "seq": 30,
+              "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+            },
+            {
+              "seq": 31,
+              "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+            },
+            {
+              "seq": 32,
+              "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+            },
+            {
+              "seq": 33,
+              "summary": "❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+            },
+            {
+              "seq": 34,
+              "summary": "♻️ 步骤 loop 开始前已重置上下文（标了 `reset: true`）"
+            },
+            {
+              "seq": 40,
+              "summary": "🔄 步骤 loop 验证未通过，自动返工（loop 第 1 次）"
+            }
+          ]
+        },
+        {
+          "status": "idle",
+          "inboxPending": false,
+          "events": [
+            {
+              "type": "turn/start",
+              "seq": 5,
+              "time": 1791771606779,
+              "data": {
+                "turn": 1
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 9,
+              "time": 1791771607494,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "完成 UI_NOTICE_LOOP"
+                  }
+                ],
+                "source": {
+                  "kind": "user",
+                  "rpcId": "notice-1"
+                },
+                "role": "user",
+                "id": "5dfdd70b-9bfd-4c9a-8ec9-01ad7a9d84e6"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 23,
+              "time": 1791771607611,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 步骤 `loop` 已交卷，4 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。\n\n**本轮检查依据**（供你了解，不用回复）：\n- 1/4 用户任务的每一条要求都已落实\n- 2/4 实现的行为符合预期，真实可用\n- 3/4 没有遗漏的需求，边界情况已覆盖\n- 4/4 修改不影响原有功能，不破坏需求以外的边界\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看每张票的进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+                },
+                "role": "user",
+                "id": "bc840dff-b8f0-41a4-bbe8-294d996d2ea4"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "turn/end",
+              "seq": 25,
+              "time": 1791771607615,
+              "data": {
+                "turn": 1,
+                "reason": {
+                  "kind": "completed"
+                }
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 30,
+              "time": 1791771608838,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                },
+                "role": "user",
+                "id": "ffa95240-2655-404a-9b70-5a0749cab740"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 31,
+              "time": 1791771608995,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                },
+                "role": "user",
+                "id": "03daa7aa-b5e6-4510-806b-2219cef398f7"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 32,
+              "time": 1791771609237,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+                },
+                "role": "user",
+                "id": "e32ccf38-e7cb-4667-9ab9-f8d226cf5f01"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 33,
+              "time": 1791771609432,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+                },
+                "role": "user",
+                "id": "e3a25097-7c67-4834-aaaa-5f6c356e93e7"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 34,
+              "time": 1791771609438,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 本步（`loop`）开始前做了上下文重置（来源：本步标了 `reset: true`）：此前对话已移出模型上下文，整段替换为一条交接稿（工作流 / 步骤 / 产出目录 / 交互契约）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "♻️ 步骤 loop 开始前已重置上下文（标了 `reset: true`）"
+                },
+                "role": "user",
+                "id": "775ff3b8-28f1-4f7b-a083-cb36644b1f55"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 35,
+              "time": 1791771609439,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow 交接稿] 上下文已在步骤边界重置：此前对话已移出模型上下文。\n\n- 工作流：`loop`（第 1/1 步）\n- 当前步骤：`loop` — 迭代执行任务直到通过对抗验证\n- 产出目录：`.dsh/ralph-flow/artifacts/UI_NOTICE_LOOP-efbm/`\n- 交互契约：本步完成后调用 `ralphflow_submit` 交卷；交卷后 4 个独立验证者并行取证判定，全过才放行。\n\n请只依据本稿与紧随其后的本步 DO 提示行事（原始记录仍留在会话日志里，可复盘）。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow"
+                },
+                "role": "user",
+                "id": "ebafc323-20ad-4115-aeb8-45910c9cac86"
+              },
+              "sourceEventSeqs": [
+                9,
+                10,
+                11,
+                15,
+                17,
+                20,
+                22,
+                23,
+                30,
+                31,
+                32,
+                33,
+                34
+              ],
+              "surfaceOp": {
+                "op": "replace",
+                "startSeq": 9,
+                "endSeq": 34
+              }
+            },
+            {
+              "type": "turn/start",
+              "seq": 37,
+              "time": 1791771609444,
+              "data": {
+                "turn": 2
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 40,
+              "time": 1791771609517,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 工作流 `loop` · 步骤 1/1：**loop** — 迭代执行任务直到通过对抗验证\n\n## 任务\nUI_NOTICE_LOOP\n\n## 本步要做什么\n把任务做到位：它的每一条要求都成立。\n\n每轮交卷前，把本轮摘要**追加**到 summary.md（一轮一节，保持精简）：\n- 完成事项（逐条对照任务要求）\n- 变更文件\n- 验证结果\n- 未完成部分与下一步打算\n\nsummary.md 是**过程文档**：按提示词「产出目录」一节落在本实例产出目录里，不要写进工作目录。\n\n## 产出目录\n`.dsh/ralph-flow/artifacts/UI_NOTICE_LOOP-efbm/` —— 本步的**过程文档**（清单、方案、报告、摘要、草稿等）只落这里：`do`/`output` 里写**裸文件名**的（如 `summary.md`）落到这个目录；写了**明确路径**的（如 `docs/x.md`）按写的路径来。\n\n工作目录只放本步的**产物**（代码、资源、可执行文件）；过程文档除「写了明确路径」外不进工作目录，同一份过程文档只写一处、不要留副本（例如产出目录已有 `summary.md`、工作目录根又出现一份，那是落点错误）。\n\n## 交付物\n实现的代码/文件\n\n（这一节说的是本步**产出什么**；它们落在**哪里**由「产出目录」一节决定 —— 过程文档写裸文件名就落产出目录，不因为列在这一节就改写进工作目录。）\n\n## 上一轮验证未通过，请针对性修复\n多验证者检查 0/4 通过，全过才放行：\n\n### ✗ 未通过的验证者（必须修复）\n\n**验证者 2/4**\n检查依据：实现的行为符合预期，真实可用\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 1/4**\n检查依据：用户任务的每一条要求都已落实\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 4/4**\n检查依据：修改不影响原有功能，不破坏需求以外的边界\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 3/4**\n检查依据：没有遗漏的需求，边界情况已覆盖\n问题：\n真机受控票：未通过，需要返工\n\n## 交卷方式\n完成实际工作后，按顺序做两件事：\n\n1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（4 个独立验证者**并行**取证，各自只查一条检查依据，**全过才放行**；异步，**不需要用户做任何操作**；验证者是独立会话，正在读文件、跑命令取证，它在做什么用户在会话里看得到）→ 期间用户可以做什么（补充信息或纠正方向 / 用 `/ralphflow-status` 看进度 / 用 `/ralphflow-cancel` 中止）。**不要给任何时长预估**：委派没有超时上界，估计出来的时间只会是编的。用用户的语言写，不要把它埋进技术叙述里。\n2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。4 个独立验证者会立刻**并行**检查你的产出（全过才放行）。\n\n不要只在回复里说「完成了」——那样不会触发验证。**必须调用工具**。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔄 步骤 loop 验证未通过，自动返工（loop 第 1 次）"
+                },
+                "role": "user",
+                "id": "a3b68381-f76d-4914-a00b-2e7bbdce304a"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 47,
+              "time": 1791771611388,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 步骤 `loop` 已交卷，4 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。\n\n**本轮检查依据**（供你了解，不用回复）：\n- 1/4 用户任务的每一条要求都已落实\n- 2/4 实现的行为符合预期，真实可用\n- 3/4 没有遗漏的需求，边界情况已覆盖\n- 4/4 修改不影响原有功能，不破坏需求以外的边界\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看每张票的进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+                },
+                "role": "user",
+                "id": "e61fd89a-1a5a-4c66-9211-bdf57b2780d3"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "turn/end",
+              "seq": 49,
+              "time": 1791771611389,
+              "data": {
+                "turn": 2,
+                "reason": {
+                  "kind": "completed"
+                }
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 54,
+              "time": 1791771611711,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+                },
+                "role": "user",
+                "id": "357bf947-f77a-494c-b664-d23636bfd220"
+              },
+              "surfaceOp": "append"
+            }
+          ],
+          "summaries": [
+            {
+              "seq": 23,
+              "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+            },
+            {
+              "seq": 30,
+              "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+            },
+            {
+              "seq": 31,
+              "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+            },
+            {
+              "seq": 32,
+              "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+            },
+            {
+              "seq": 33,
+              "summary": "❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+            },
+            {
+              "seq": 34,
+              "summary": "♻️ 步骤 loop 开始前已重置上下文（标了 `reset: true`）"
+            },
+            {
+              "seq": 40,
+              "summary": "🔄 步骤 loop 验证未通过，自动返工（loop 第 1 次）"
+            },
+            {
+              "seq": 47,
+              "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+            },
+            {
+              "seq": 54,
+              "summary": "✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+            }
+          ]
+        },
+        {
+          "status": "idle",
+          "inboxPending": false,
+          "events": [
+            {
+              "type": "turn/start",
+              "seq": 5,
+              "time": 1791771606779,
+              "data": {
+                "turn": 1
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 9,
+              "time": 1791771607494,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "完成 UI_NOTICE_LOOP"
+                  }
+                ],
+                "source": {
+                  "kind": "user",
+                  "rpcId": "notice-1"
+                },
+                "role": "user",
+                "id": "5dfdd70b-9bfd-4c9a-8ec9-01ad7a9d84e6"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 23,
+              "time": 1791771607611,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 步骤 `loop` 已交卷，4 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。\n\n**本轮检查依据**（供你了解，不用回复）：\n- 1/4 用户任务的每一条要求都已落实\n- 2/4 实现的行为符合预期，真实可用\n- 3/4 没有遗漏的需求，边界情况已覆盖\n- 4/4 修改不影响原有功能，不破坏需求以外的边界\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看每张票的进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+                },
+                "role": "user",
+                "id": "bc840dff-b8f0-41a4-bbe8-294d996d2ea4"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "turn/end",
+              "seq": 25,
+              "time": 1791771607615,
+              "data": {
+                "turn": 1,
+                "reason": {
+                  "kind": "completed"
+                }
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 30,
+              "time": 1791771608838,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                },
+                "role": "user",
+                "id": "ffa95240-2655-404a-9b70-5a0749cab740"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 31,
+              "time": 1791771608995,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                },
+                "role": "user",
+                "id": "03daa7aa-b5e6-4510-806b-2219cef398f7"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 32,
+              "time": 1791771609237,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+                },
+                "role": "user",
+                "id": "e32ccf38-e7cb-4667-9ab9-f8d226cf5f01"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 33,
+              "time": 1791771609432,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+                },
+                "role": "user",
+                "id": "e3a25097-7c67-4834-aaaa-5f6c356e93e7"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 34,
+              "time": 1791771609438,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 本步（`loop`）开始前做了上下文重置（来源：本步标了 `reset: true`）：此前对话已移出模型上下文，整段替换为一条交接稿（工作流 / 步骤 / 产出目录 / 交互契约）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "♻️ 步骤 loop 开始前已重置上下文（标了 `reset: true`）"
+                },
+                "role": "user",
+                "id": "775ff3b8-28f1-4f7b-a083-cb36644b1f55"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 35,
+              "time": 1791771609439,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow 交接稿] 上下文已在步骤边界重置：此前对话已移出模型上下文。\n\n- 工作流：`loop`（第 1/1 步）\n- 当前步骤：`loop` — 迭代执行任务直到通过对抗验证\n- 产出目录：`.dsh/ralph-flow/artifacts/UI_NOTICE_LOOP-efbm/`\n- 交互契约：本步完成后调用 `ralphflow_submit` 交卷；交卷后 4 个独立验证者并行取证判定，全过才放行。\n\n请只依据本稿与紧随其后的本步 DO 提示行事（原始记录仍留在会话日志里，可复盘）。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow"
+                },
+                "role": "user",
+                "id": "ebafc323-20ad-4115-aeb8-45910c9cac86"
+              },
+              "sourceEventSeqs": [
+                9,
+                10,
+                11,
+                15,
+                17,
+                20,
+                22,
+                23,
+                30,
+                31,
+                32,
+                33,
+                34
+              ],
+              "surfaceOp": {
+                "op": "replace",
+                "startSeq": 9,
+                "endSeq": 34
+              }
+            },
+            {
+              "type": "turn/start",
+              "seq": 37,
+              "time": 1791771609444,
+              "data": {
+                "turn": 2
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 40,
+              "time": 1791771609517,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 工作流 `loop` · 步骤 1/1：**loop** — 迭代执行任务直到通过对抗验证\n\n## 任务\nUI_NOTICE_LOOP\n\n## 本步要做什么\n把任务做到位：它的每一条要求都成立。\n\n每轮交卷前，把本轮摘要**追加**到 summary.md（一轮一节，保持精简）：\n- 完成事项（逐条对照任务要求）\n- 变更文件\n- 验证结果\n- 未完成部分与下一步打算\n\nsummary.md 是**过程文档**：按提示词「产出目录」一节落在本实例产出目录里，不要写进工作目录。\n\n## 产出目录\n`.dsh/ralph-flow/artifacts/UI_NOTICE_LOOP-efbm/` —— 本步的**过程文档**（清单、方案、报告、摘要、草稿等）只落这里：`do`/`output` 里写**裸文件名**的（如 `summary.md`）落到这个目录；写了**明确路径**的（如 `docs/x.md`）按写的路径来。\n\n工作目录只放本步的**产物**（代码、资源、可执行文件）；过程文档除「写了明确路径」外不进工作目录，同一份过程文档只写一处、不要留副本（例如产出目录已有 `summary.md`、工作目录根又出现一份，那是落点错误）。\n\n## 交付物\n实现的代码/文件\n\n（这一节说的是本步**产出什么**；它们落在**哪里**由「产出目录」一节决定 —— 过程文档写裸文件名就落产出目录，不因为列在这一节就改写进工作目录。）\n\n## 上一轮验证未通过，请针对性修复\n多验证者检查 0/4 通过，全过才放行：\n\n### ✗ 未通过的验证者（必须修复）\n\n**验证者 2/4**\n检查依据：实现的行为符合预期，真实可用\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 1/4**\n检查依据：用户任务的每一条要求都已落实\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 4/4**\n检查依据：修改不影响原有功能，不破坏需求以外的边界\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 3/4**\n检查依据：没有遗漏的需求，边界情况已覆盖\n问题：\n真机受控票：未通过，需要返工\n\n## 交卷方式\n完成实际工作后，按顺序做两件事：\n\n1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（4 个独立验证者**并行**取证，各自只查一条检查依据，**全过才放行**；异步，**不需要用户做任何操作**；验证者是独立会话，正在读文件、跑命令取证，它在做什么用户在会话里看得到）→ 期间用户可以做什么（补充信息或纠正方向 / 用 `/ralphflow-status` 看进度 / 用 `/ralphflow-cancel` 中止）。**不要给任何时长预估**：委派没有超时上界，估计出来的时间只会是编的。用用户的语言写，不要把它埋进技术叙述里。\n2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。4 个独立验证者会立刻**并行**检查你的产出（全过才放行）。\n\n不要只在回复里说「完成了」——那样不会触发验证。**必须调用工具**。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔄 步骤 loop 验证未通过，自动返工（loop 第 1 次）"
+                },
+                "role": "user",
+                "id": "a3b68381-f76d-4914-a00b-2e7bbdce304a"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 47,
+              "time": 1791771611388,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 步骤 `loop` 已交卷，4 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。\n\n**本轮检查依据**（供你了解，不用回复）：\n- 1/4 用户任务的每一条要求都已落实\n- 2/4 实现的行为符合预期，真实可用\n- 3/4 没有遗漏的需求，边界情况已覆盖\n- 4/4 修改不影响原有功能，不破坏需求以外的边界\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看每张票的进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+                },
+                "role": "user",
+                "id": "e61fd89a-1a5a-4c66-9211-bdf57b2780d3"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "turn/end",
+              "seq": 49,
+              "time": 1791771611389,
+              "data": {
+                "turn": 2,
+                "reason": {
+                  "kind": "completed"
+                }
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 54,
+              "time": 1791771611711,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+                },
+                "role": "user",
+                "id": "357bf947-f77a-494c-b664-d23636bfd220"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 55,
+              "time": 1791771612010,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ✅ 验证者 4/4 通过：修改不影响原有功能，不破坏需求以外的边界"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "✅ 验证者 4/4 通过：修改不影响原有功能，不破坏需求以外的边界"
+                },
+                "role": "user",
+                "id": "fb44a860-49f4-4c7a-9084-7c5b65a8a9fc"
+              },
+              "surfaceOp": "append"
+            }
+          ],
+          "summaries": [
+            {
+              "seq": 23,
+              "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+            },
+            {
+              "seq": 30,
+              "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+            },
+            {
+              "seq": 31,
+              "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+            },
+            {
+              "seq": 32,
+              "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+            },
+            {
+              "seq": 33,
+              "summary": "❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+            },
+            {
+              "seq": 34,
+              "summary": "♻️ 步骤 loop 开始前已重置上下文（标了 `reset: true`）"
+            },
+            {
+              "seq": 40,
+              "summary": "🔄 步骤 loop 验证未通过，自动返工（loop 第 1 次）"
+            },
+            {
+              "seq": 47,
+              "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+            },
+            {
+              "seq": 54,
+              "summary": "✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+            },
+            {
+              "seq": 55,
+              "summary": "✅ 验证者 4/4 通过：修改不影响原有功能，不破坏需求以外的边界"
+            }
+          ]
+        },
+        {
+          "status": "idle",
+          "inboxPending": false,
+          "events": [
+            {
+              "type": "turn/start",
+              "seq": 5,
+              "time": 1791771606779,
+              "data": {
+                "turn": 1
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 9,
+              "time": 1791771607494,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "完成 UI_NOTICE_LOOP"
+                  }
+                ],
+                "source": {
+                  "kind": "user",
+                  "rpcId": "notice-1"
+                },
+                "role": "user",
+                "id": "5dfdd70b-9bfd-4c9a-8ec9-01ad7a9d84e6"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 23,
+              "time": 1791771607611,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 步骤 `loop` 已交卷，4 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。\n\n**本轮检查依据**（供你了解，不用回复）：\n- 1/4 用户任务的每一条要求都已落实\n- 2/4 实现的行为符合预期，真实可用\n- 3/4 没有遗漏的需求，边界情况已覆盖\n- 4/4 修改不影响原有功能，不破坏需求以外的边界\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看每张票的进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+                },
+                "role": "user",
+                "id": "bc840dff-b8f0-41a4-bbe8-294d996d2ea4"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "turn/end",
+              "seq": 25,
+              "time": 1791771607615,
+              "data": {
+                "turn": 1,
+                "reason": {
+                  "kind": "completed"
+                }
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 30,
+              "time": 1791771608838,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                },
+                "role": "user",
+                "id": "ffa95240-2655-404a-9b70-5a0749cab740"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 31,
+              "time": 1791771608995,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                },
+                "role": "user",
+                "id": "03daa7aa-b5e6-4510-806b-2219cef398f7"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 32,
+              "time": 1791771609237,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+                },
+                "role": "user",
+                "id": "e32ccf38-e7cb-4667-9ab9-f8d226cf5f01"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 33,
+              "time": 1791771609432,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+                },
+                "role": "user",
+                "id": "e3a25097-7c67-4834-aaaa-5f6c356e93e7"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 34,
+              "time": 1791771609438,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 本步（`loop`）开始前做了上下文重置（来源：本步标了 `reset: true`）：此前对话已移出模型上下文，整段替换为一条交接稿（工作流 / 步骤 / 产出目录 / 交互契约）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "♻️ 步骤 loop 开始前已重置上下文（标了 `reset: true`）"
+                },
+                "role": "user",
+                "id": "775ff3b8-28f1-4f7b-a083-cb36644b1f55"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 35,
+              "time": 1791771609439,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow 交接稿] 上下文已在步骤边界重置：此前对话已移出模型上下文。\n\n- 工作流：`loop`（第 1/1 步）\n- 当前步骤：`loop` — 迭代执行任务直到通过对抗验证\n- 产出目录：`.dsh/ralph-flow/artifacts/UI_NOTICE_LOOP-efbm/`\n- 交互契约：本步完成后调用 `ralphflow_submit` 交卷；交卷后 4 个独立验证者并行取证判定，全过才放行。\n\n请只依据本稿与紧随其后的本步 DO 提示行事（原始记录仍留在会话日志里，可复盘）。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow"
+                },
+                "role": "user",
+                "id": "ebafc323-20ad-4115-aeb8-45910c9cac86"
+              },
+              "sourceEventSeqs": [
+                9,
+                10,
+                11,
+                15,
+                17,
+                20,
+                22,
+                23,
+                30,
+                31,
+                32,
+                33,
+                34
+              ],
+              "surfaceOp": {
+                "op": "replace",
+                "startSeq": 9,
+                "endSeq": 34
+              }
+            },
+            {
+              "type": "turn/start",
+              "seq": 37,
+              "time": 1791771609444,
+              "data": {
+                "turn": 2
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 40,
+              "time": 1791771609517,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 工作流 `loop` · 步骤 1/1：**loop** — 迭代执行任务直到通过对抗验证\n\n## 任务\nUI_NOTICE_LOOP\n\n## 本步要做什么\n把任务做到位：它的每一条要求都成立。\n\n每轮交卷前，把本轮摘要**追加**到 summary.md（一轮一节，保持精简）：\n- 完成事项（逐条对照任务要求）\n- 变更文件\n- 验证结果\n- 未完成部分与下一步打算\n\nsummary.md 是**过程文档**：按提示词「产出目录」一节落在本实例产出目录里，不要写进工作目录。\n\n## 产出目录\n`.dsh/ralph-flow/artifacts/UI_NOTICE_LOOP-efbm/` —— 本步的**过程文档**（清单、方案、报告、摘要、草稿等）只落这里：`do`/`output` 里写**裸文件名**的（如 `summary.md`）落到这个目录；写了**明确路径**的（如 `docs/x.md`）按写的路径来。\n\n工作目录只放本步的**产物**（代码、资源、可执行文件）；过程文档除「写了明确路径」外不进工作目录，同一份过程文档只写一处、不要留副本（例如产出目录已有 `summary.md`、工作目录根又出现一份，那是落点错误）。\n\n## 交付物\n实现的代码/文件\n\n（这一节说的是本步**产出什么**；它们落在**哪里**由「产出目录」一节决定 —— 过程文档写裸文件名就落产出目录，不因为列在这一节就改写进工作目录。）\n\n## 上一轮验证未通过，请针对性修复\n多验证者检查 0/4 通过，全过才放行：\n\n### ✗ 未通过的验证者（必须修复）\n\n**验证者 2/4**\n检查依据：实现的行为符合预期，真实可用\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 1/4**\n检查依据：用户任务的每一条要求都已落实\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 4/4**\n检查依据：修改不影响原有功能，不破坏需求以外的边界\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 3/4**\n检查依据：没有遗漏的需求，边界情况已覆盖\n问题：\n真机受控票：未通过，需要返工\n\n## 交卷方式\n完成实际工作后，按顺序做两件事：\n\n1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（4 个独立验证者**并行**取证，各自只查一条检查依据，**全过才放行**；异步，**不需要用户做任何操作**；验证者是独立会话，正在读文件、跑命令取证，它在做什么用户在会话里看得到）→ 期间用户可以做什么（补充信息或纠正方向 / 用 `/ralphflow-status` 看进度 / 用 `/ralphflow-cancel` 中止）。**不要给任何时长预估**：委派没有超时上界，估计出来的时间只会是编的。用用户的语言写，不要把它埋进技术叙述里。\n2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。4 个独立验证者会立刻**并行**检查你的产出（全过才放行）。\n\n不要只在回复里说「完成了」——那样不会触发验证。**必须调用工具**。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔄 步骤 loop 验证未通过，自动返工（loop 第 1 次）"
+                },
+                "role": "user",
+                "id": "a3b68381-f76d-4914-a00b-2e7bbdce304a"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 47,
+              "time": 1791771611388,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 步骤 `loop` 已交卷，4 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。\n\n**本轮检查依据**（供你了解，不用回复）：\n- 1/4 用户任务的每一条要求都已落实\n- 2/4 实现的行为符合预期，真实可用\n- 3/4 没有遗漏的需求，边界情况已覆盖\n- 4/4 修改不影响原有功能，不破坏需求以外的边界\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看每张票的进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+                },
+                "role": "user",
+                "id": "e61fd89a-1a5a-4c66-9211-bdf57b2780d3"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "turn/end",
+              "seq": 49,
+              "time": 1791771611389,
+              "data": {
+                "turn": 2,
+                "reason": {
+                  "kind": "completed"
+                }
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 54,
+              "time": 1791771611711,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+                },
+                "role": "user",
+                "id": "357bf947-f77a-494c-b664-d23636bfd220"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 55,
+              "time": 1791771612010,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ✅ 验证者 4/4 通过：修改不影响原有功能，不破坏需求以外的边界"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "✅ 验证者 4/4 通过：修改不影响原有功能，不破坏需求以外的边界"
+                },
+                "role": "user",
+                "id": "fb44a860-49f4-4c7a-9084-7c5b65a8a9fc"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 56,
+              "time": 1791771612189,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ✅ 验证者 2/4 通过：实现的行为符合预期，真实可用"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "✅ 验证者 2/4 通过：实现的行为符合预期，真实可用"
+                },
+                "role": "user",
+                "id": "fb165513-18d3-4bc7-8a5e-05380e9265f1"
+              },
+              "surfaceOp": "append"
+            }
+          ],
+          "summaries": [
+            {
+              "seq": 23,
+              "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+            },
+            {
+              "seq": 30,
+              "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+            },
+            {
+              "seq": 31,
+              "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+            },
+            {
+              "seq": 32,
+              "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+            },
+            {
+              "seq": 33,
+              "summary": "❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+            },
+            {
+              "seq": 34,
+              "summary": "♻️ 步骤 loop 开始前已重置上下文（标了 `reset: true`）"
+            },
+            {
+              "seq": 40,
+              "summary": "🔄 步骤 loop 验证未通过，自动返工（loop 第 1 次）"
+            },
+            {
+              "seq": 47,
+              "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+            },
+            {
+              "seq": 54,
+              "summary": "✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+            },
+            {
+              "seq": 55,
+              "summary": "✅ 验证者 4/4 通过：修改不影响原有功能，不破坏需求以外的边界"
+            },
+            {
+              "seq": 56,
+              "summary": "✅ 验证者 2/4 通过：实现的行为符合预期，真实可用"
+            }
+          ]
+        },
+        {
+          "status": "idle",
+          "inboxPending": false,
+          "events": [
+            {
+              "type": "turn/start",
+              "seq": 5,
+              "time": 1791771606779,
+              "data": {
+                "turn": 1
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 9,
+              "time": 1791771607494,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "完成 UI_NOTICE_LOOP"
+                  }
+                ],
+                "source": {
+                  "kind": "user",
+                  "rpcId": "notice-1"
+                },
+                "role": "user",
+                "id": "5dfdd70b-9bfd-4c9a-8ec9-01ad7a9d84e6"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 23,
+              "time": 1791771607611,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 步骤 `loop` 已交卷，4 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。\n\n**本轮检查依据**（供你了解，不用回复）：\n- 1/4 用户任务的每一条要求都已落实\n- 2/4 实现的行为符合预期，真实可用\n- 3/4 没有遗漏的需求，边界情况已覆盖\n- 4/4 修改不影响原有功能，不破坏需求以外的边界\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看每张票的进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+                },
+                "role": "user",
+                "id": "bc840dff-b8f0-41a4-bbe8-294d996d2ea4"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "turn/end",
+              "seq": 25,
+              "time": 1791771607615,
+              "data": {
+                "turn": 1,
+                "reason": {
+                  "kind": "completed"
+                }
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 30,
+              "time": 1791771608838,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                },
+                "role": "user",
+                "id": "ffa95240-2655-404a-9b70-5a0749cab740"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 31,
+              "time": 1791771608995,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                },
+                "role": "user",
+                "id": "03daa7aa-b5e6-4510-806b-2219cef398f7"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 32,
+              "time": 1791771609237,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+                },
+                "role": "user",
+                "id": "e32ccf38-e7cb-4667-9ab9-f8d226cf5f01"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 33,
+              "time": 1791771609432,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+                },
+                "role": "user",
+                "id": "e3a25097-7c67-4834-aaaa-5f6c356e93e7"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 34,
+              "time": 1791771609438,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 本步（`loop`）开始前做了上下文重置（来源：本步标了 `reset: true`）：此前对话已移出模型上下文，整段替换为一条交接稿（工作流 / 步骤 / 产出目录 / 交互契约）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "♻️ 步骤 loop 开始前已重置上下文（标了 `reset: true`）"
+                },
+                "role": "user",
+                "id": "775ff3b8-28f1-4f7b-a083-cb36644b1f55"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 35,
+              "time": 1791771609439,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow 交接稿] 上下文已在步骤边界重置：此前对话已移出模型上下文。\n\n- 工作流：`loop`（第 1/1 步）\n- 当前步骤：`loop` — 迭代执行任务直到通过对抗验证\n- 产出目录：`.dsh/ralph-flow/artifacts/UI_NOTICE_LOOP-efbm/`\n- 交互契约：本步完成后调用 `ralphflow_submit` 交卷；交卷后 4 个独立验证者并行取证判定，全过才放行。\n\n请只依据本稿与紧随其后的本步 DO 提示行事（原始记录仍留在会话日志里，可复盘）。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow"
+                },
+                "role": "user",
+                "id": "ebafc323-20ad-4115-aeb8-45910c9cac86"
+              },
+              "sourceEventSeqs": [
+                9,
+                10,
+                11,
+                15,
+                17,
+                20,
+                22,
+                23,
+                30,
+                31,
+                32,
+                33,
+                34
+              ],
+              "surfaceOp": {
+                "op": "replace",
+                "startSeq": 9,
+                "endSeq": 34
+              }
+            },
+            {
+              "type": "turn/start",
+              "seq": 37,
+              "time": 1791771609444,
+              "data": {
+                "turn": 2
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 40,
+              "time": 1791771609517,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 工作流 `loop` · 步骤 1/1：**loop** — 迭代执行任务直到通过对抗验证\n\n## 任务\nUI_NOTICE_LOOP\n\n## 本步要做什么\n把任务做到位：它的每一条要求都成立。\n\n每轮交卷前，把本轮摘要**追加**到 summary.md（一轮一节，保持精简）：\n- 完成事项（逐条对照任务要求）\n- 变更文件\n- 验证结果\n- 未完成部分与下一步打算\n\nsummary.md 是**过程文档**：按提示词「产出目录」一节落在本实例产出目录里，不要写进工作目录。\n\n## 产出目录\n`.dsh/ralph-flow/artifacts/UI_NOTICE_LOOP-efbm/` —— 本步的**过程文档**（清单、方案、报告、摘要、草稿等）只落这里：`do`/`output` 里写**裸文件名**的（如 `summary.md`）落到这个目录；写了**明确路径**的（如 `docs/x.md`）按写的路径来。\n\n工作目录只放本步的**产物**（代码、资源、可执行文件）；过程文档除「写了明确路径」外不进工作目录，同一份过程文档只写一处、不要留副本（例如产出目录已有 `summary.md`、工作目录根又出现一份，那是落点错误）。\n\n## 交付物\n实现的代码/文件\n\n（这一节说的是本步**产出什么**；它们落在**哪里**由「产出目录」一节决定 —— 过程文档写裸文件名就落产出目录，不因为列在这一节就改写进工作目录。）\n\n## 上一轮验证未通过，请针对性修复\n多验证者检查 0/4 通过，全过才放行：\n\n### ✗ 未通过的验证者（必须修复）\n\n**验证者 2/4**\n检查依据：实现的行为符合预期，真实可用\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 1/4**\n检查依据：用户任务的每一条要求都已落实\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 4/4**\n检查依据：修改不影响原有功能，不破坏需求以外的边界\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 3/4**\n检查依据：没有遗漏的需求，边界情况已覆盖\n问题：\n真机受控票：未通过，需要返工\n\n## 交卷方式\n完成实际工作后，按顺序做两件事：\n\n1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（4 个独立验证者**并行**取证，各自只查一条检查依据，**全过才放行**；异步，**不需要用户做任何操作**；验证者是独立会话，正在读文件、跑命令取证，它在做什么用户在会话里看得到）→ 期间用户可以做什么（补充信息或纠正方向 / 用 `/ralphflow-status` 看进度 / 用 `/ralphflow-cancel` 中止）。**不要给任何时长预估**：委派没有超时上界，估计出来的时间只会是编的。用用户的语言写，不要把它埋进技术叙述里。\n2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。4 个独立验证者会立刻**并行**检查你的产出（全过才放行）。\n\n不要只在回复里说「完成了」——那样不会触发验证。**必须调用工具**。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔄 步骤 loop 验证未通过，自动返工（loop 第 1 次）"
+                },
+                "role": "user",
+                "id": "a3b68381-f76d-4914-a00b-2e7bbdce304a"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 47,
+              "time": 1791771611388,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 步骤 `loop` 已交卷，4 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。\n\n**本轮检查依据**（供你了解，不用回复）：\n- 1/4 用户任务的每一条要求都已落实\n- 2/4 实现的行为符合预期，真实可用\n- 3/4 没有遗漏的需求，边界情况已覆盖\n- 4/4 修改不影响原有功能，不破坏需求以外的边界\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看每张票的进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+                },
+                "role": "user",
+                "id": "e61fd89a-1a5a-4c66-9211-bdf57b2780d3"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "turn/end",
+              "seq": 49,
+              "time": 1791771611389,
+              "data": {
+                "turn": 2,
+                "reason": {
+                  "kind": "completed"
+                }
+              }
+            },
+            {
+              "type": "user/message",
+              "seq": 54,
+              "time": 1791771611711,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+                },
+                "role": "user",
+                "id": "357bf947-f77a-494c-b664-d23636bfd220"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 55,
+              "time": 1791771612010,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ✅ 验证者 4/4 通过：修改不影响原有功能，不破坏需求以外的边界"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "✅ 验证者 4/4 通过：修改不影响原有功能，不破坏需求以外的边界"
+                },
+                "role": "user",
+                "id": "fb44a860-49f4-4c7a-9084-7c5b65a8a9fc"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 56,
+              "time": 1791771612189,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ✅ 验证者 2/4 通过：实现的行为符合预期，真实可用"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "✅ 验证者 2/4 通过：实现的行为符合预期，真实可用"
+                },
+                "role": "user",
+                "id": "fb165513-18d3-4bc7-8a5e-05380e9265f1"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 57,
+              "time": 1791771612369,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] 🔍 ✅ 验证者 1/4 通过：用户任务的每一条要求都已落实"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "✅ 验证者 1/4 通过：用户任务的每一条要求都已落实"
+                },
+                "role": "user",
+                "id": "42d8ac6b-6ec8-4e75-a415-8dde4e0a70a8"
+              },
+              "surfaceOp": "append"
+            },
+            {
+              "type": "user/message",
+              "seq": 58,
+              "time": 1791771612374,
+              "data": {
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "[ralphflow] ✅ 工作流 `loop` 完成，报告已归档到 `.dsh/ralph-flow/reports/loop-mv4mjwmu-efbm.md`。\n\n实例目录已销毁、产出目录保留；报告与产出是永久的，需要时按上面这个路径翻。"
+                  }
+                ],
+                "source": {
+                  "kind": "ralphflow",
+                  "form": "notice",
+                  "summary": "✅ 工作流 loop 完成（报告 .dsh/ralph-flow/reports/loop-mv4mjwmu-efbm.md）",
+                  "uiRef": {
+                    "v": 1,
+                    "runId": "loop-mv4mjwmu-efbm",
+                    "reportRef": ".dsh/ralph-flow/reports/loop-mv4mjwmu-efbm.md",
+                    "ended": "done"
+                  }
+                },
+                "role": "user",
+                "id": "a9babdb1-b8ec-4f7f-b217-8b49d0b1a295"
+              },
+              "surfaceOp": "append"
+            }
+          ],
+          "summaries": [
+            {
+              "seq": 23,
+              "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+            },
+            {
+              "seq": 30,
+              "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+            },
+            {
+              "seq": 31,
+              "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+            },
+            {
+              "seq": 32,
+              "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+            },
+            {
+              "seq": 33,
+              "summary": "❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+            },
+            {
+              "seq": 34,
+              "summary": "♻️ 步骤 loop 开始前已重置上下文（标了 `reset: true`）"
+            },
+            {
+              "seq": 40,
+              "summary": "🔄 步骤 loop 验证未通过，自动返工（loop 第 1 次）"
+            },
+            {
+              "seq": 47,
+              "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+            },
+            {
+              "seq": 54,
+              "summary": "✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+            },
+            {
+              "seq": 55,
+              "summary": "✅ 验证者 4/4 通过：修改不影响原有功能，不破坏需求以外的边界"
+            },
+            {
+              "seq": 56,
+              "summary": "✅ 验证者 2/4 通过：实现的行为符合预期，真实可用"
+            },
+            {
+              "seq": 57,
+              "summary": "✅ 验证者 1/4 通过：用户任务的每一条要求都已落实"
+            },
+            {
+              "seq": 58,
+              "summary": "✅ 工作流 loop 完成（报告 .dsh/ralph-flow/reports/loop-mv4mjwmu-efbm.md）"
+            }
+          ]
+        }
+      ],
+      "final": {
+        "status": "idle",
+        "inboxPending": false,
+        "events": [
+          {
+            "type": "turn/start",
+            "seq": 5,
+            "time": 1791771606779,
+            "data": {
+              "turn": 1
+            }
+          },
+          {
+            "type": "user/message",
+            "seq": 9,
+            "time": 1791771607494,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "完成 UI_NOTICE_LOOP"
+                }
+              ],
+              "source": {
+                "kind": "user",
+                "rpcId": "notice-1"
+              },
+              "role": "user",
+              "id": "5dfdd70b-9bfd-4c9a-8ec9-01ad7a9d84e6"
+            },
+            "surfaceOp": "append"
+          },
+          {
+            "type": "user/message",
+            "seq": 23,
+            "time": 1791771607611,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[ralphflow] 🔍 步骤 `loop` 已交卷，4 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。\n\n**本轮检查依据**（供你了解，不用回复）：\n- 1/4 用户任务的每一条要求都已落实\n- 2/4 实现的行为符合预期，真实可用\n- 3/4 没有遗漏的需求，边界情况已覆盖\n- 4/4 修改不影响原有功能，不破坏需求以外的边界\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看每张票的进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+                }
+              ],
+              "source": {
+                "kind": "ralphflow",
+                "form": "notice",
+                "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+              },
+              "role": "user",
+              "id": "bc840dff-b8f0-41a4-bbe8-294d996d2ea4"
+            },
+            "surfaceOp": "append"
+          },
+          {
+            "type": "turn/end",
+            "seq": 25,
+            "time": 1791771607615,
+            "data": {
+              "turn": 1,
+              "reason": {
+                "kind": "completed"
+              }
+            }
+          },
+          {
+            "type": "user/message",
+            "seq": 30,
+            "time": 1791771608838,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[ralphflow] 🔍 ❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+                }
+              ],
+              "source": {
+                "kind": "ralphflow",
+                "form": "notice",
+                "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+              },
+              "role": "user",
+              "id": "ffa95240-2655-404a-9b70-5a0749cab740"
+            },
+            "surfaceOp": "append"
+          },
+          {
+            "type": "user/message",
+            "seq": 31,
+            "time": 1791771608995,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[ralphflow] 🔍 ❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+                }
+              ],
+              "source": {
+                "kind": "ralphflow",
+                "form": "notice",
+                "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+              },
+              "role": "user",
+              "id": "03daa7aa-b5e6-4510-806b-2219cef398f7"
+            },
+            "surfaceOp": "append"
+          },
+          {
+            "type": "user/message",
+            "seq": 32,
+            "time": 1791771609237,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[ralphflow] 🔍 ❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+                }
+              ],
+              "source": {
+                "kind": "ralphflow",
+                "form": "notice",
+                "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+              },
+              "role": "user",
+              "id": "e32ccf38-e7cb-4667-9ab9-f8d226cf5f01"
+            },
+            "surfaceOp": "append"
+          },
+          {
+            "type": "user/message",
+            "seq": 33,
+            "time": 1791771609432,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[ralphflow] 🔍 ❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+                }
+              ],
+              "source": {
+                "kind": "ralphflow",
+                "form": "notice",
+                "summary": "❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+              },
+              "role": "user",
+              "id": "e3a25097-7c67-4834-aaaa-5f6c356e93e7"
+            },
+            "surfaceOp": "append"
+          },
+          {
+            "type": "user/message",
+            "seq": 34,
+            "time": 1791771609438,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[ralphflow] 本步（`loop`）开始前做了上下文重置（来源：本步标了 `reset: true`）：此前对话已移出模型上下文，整段替换为一条交接稿（工作流 / 步骤 / 产出目录 / 交互契约）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。"
+                }
+              ],
+              "source": {
+                "kind": "ralphflow",
+                "form": "notice",
+                "summary": "♻️ 步骤 loop 开始前已重置上下文（标了 `reset: true`）"
+              },
+              "role": "user",
+              "id": "775ff3b8-28f1-4f7b-a083-cb36644b1f55"
+            },
+            "surfaceOp": "append"
+          },
+          {
+            "type": "user/message",
+            "seq": 35,
+            "time": 1791771609439,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[ralphflow 交接稿] 上下文已在步骤边界重置：此前对话已移出模型上下文。\n\n- 工作流：`loop`（第 1/1 步）\n- 当前步骤：`loop` — 迭代执行任务直到通过对抗验证\n- 产出目录：`.dsh/ralph-flow/artifacts/UI_NOTICE_LOOP-efbm/`\n- 交互契约：本步完成后调用 `ralphflow_submit` 交卷；交卷后 4 个独立验证者并行取证判定，全过才放行。\n\n请只依据本稿与紧随其后的本步 DO 提示行事（原始记录仍留在会话日志里，可复盘）。"
+                }
+              ],
+              "source": {
+                "kind": "ralphflow"
+              },
+              "role": "user",
+              "id": "ebafc323-20ad-4115-aeb8-45910c9cac86"
+            },
+            "sourceEventSeqs": [
+              9,
+              10,
+              11,
+              15,
+              17,
+              20,
+              22,
+              23,
+              30,
+              31,
+              32,
+              33,
+              34
+            ],
+            "surfaceOp": {
+              "op": "replace",
+              "startSeq": 9,
+              "endSeq": 34
+            }
+          },
+          {
+            "type": "turn/start",
+            "seq": 37,
+            "time": 1791771609444,
+            "data": {
+              "turn": 2
+            }
+          },
+          {
+            "type": "user/message",
+            "seq": 40,
+            "time": 1791771609517,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[ralphflow] 工作流 `loop` · 步骤 1/1：**loop** — 迭代执行任务直到通过对抗验证\n\n## 任务\nUI_NOTICE_LOOP\n\n## 本步要做什么\n把任务做到位：它的每一条要求都成立。\n\n每轮交卷前，把本轮摘要**追加**到 summary.md（一轮一节，保持精简）：\n- 完成事项（逐条对照任务要求）\n- 变更文件\n- 验证结果\n- 未完成部分与下一步打算\n\nsummary.md 是**过程文档**：按提示词「产出目录」一节落在本实例产出目录里，不要写进工作目录。\n\n## 产出目录\n`.dsh/ralph-flow/artifacts/UI_NOTICE_LOOP-efbm/` —— 本步的**过程文档**（清单、方案、报告、摘要、草稿等）只落这里：`do`/`output` 里写**裸文件名**的（如 `summary.md`）落到这个目录；写了**明确路径**的（如 `docs/x.md`）按写的路径来。\n\n工作目录只放本步的**产物**（代码、资源、可执行文件）；过程文档除「写了明确路径」外不进工作目录，同一份过程文档只写一处、不要留副本（例如产出目录已有 `summary.md`、工作目录根又出现一份，那是落点错误）。\n\n## 交付物\n实现的代码/文件\n\n（这一节说的是本步**产出什么**；它们落在**哪里**由「产出目录」一节决定 —— 过程文档写裸文件名就落产出目录，不因为列在这一节就改写进工作目录。）\n\n## 上一轮验证未通过，请针对性修复\n多验证者检查 0/4 通过，全过才放行：\n\n### ✗ 未通过的验证者（必须修复）\n\n**验证者 2/4**\n检查依据：实现的行为符合预期，真实可用\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 1/4**\n检查依据：用户任务的每一条要求都已落实\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 4/4**\n检查依据：修改不影响原有功能，不破坏需求以外的边界\n问题：\n真机受控票：未通过，需要返工\n\n**验证者 3/4**\n检查依据：没有遗漏的需求，边界情况已覆盖\n问题：\n真机受控票：未通过，需要返工\n\n## 交卷方式\n完成实际工作后，按顺序做两件事：\n\n1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（4 个独立验证者**并行**取证，各自只查一条检查依据，**全过才放行**；异步，**不需要用户做任何操作**；验证者是独立会话，正在读文件、跑命令取证，它在做什么用户在会话里看得到）→ 期间用户可以做什么（补充信息或纠正方向 / 用 `/ralphflow-status` 看进度 / 用 `/ralphflow-cancel` 中止）。**不要给任何时长预估**：委派没有超时上界，估计出来的时间只会是编的。用用户的语言写，不要把它埋进技术叙述里。\n2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。4 个独立验证者会立刻**并行**检查你的产出（全过才放行）。\n\n不要只在回复里说「完成了」——那样不会触发验证。**必须调用工具**。"
+                }
+              ],
+              "source": {
+                "kind": "ralphflow",
+                "form": "notice",
+                "summary": "🔄 步骤 loop 验证未通过，自动返工（loop 第 1 次）"
+              },
+              "role": "user",
+              "id": "a3b68381-f76d-4914-a00b-2e7bbdce304a"
+            },
+            "surfaceOp": "append"
+          },
+          {
+            "type": "user/message",
+            "seq": 47,
+            "time": 1791771611388,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[ralphflow] 🔍 步骤 `loop` 已交卷，4 个独立验证者（独立会话，看不到本对话）正在**并行**取证判定，各查一条检查依据，**全过才放行**。\n\n**本轮检查依据**（供你了解，不用回复）：\n- 1/4 用户任务的每一条要求都已落实\n- 2/4 实现的行为符合预期，真实可用\n- 3/4 没有遗漏的需求，边界情况已覆盖\n- 4/4 修改不影响原有功能，不破坏需求以外的边界\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它们现在正在读文件、跑命令取证，你在会话里看得到它们在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看每张票的进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+                }
+              ],
+              "source": {
+                "kind": "ralphflow",
+                "form": "notice",
+                "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+              },
+              "role": "user",
+              "id": "e61fd89a-1a5a-4c66-9211-bdf57b2780d3"
+            },
+            "surfaceOp": "append"
+          },
+          {
+            "type": "turn/end",
+            "seq": 49,
+            "time": 1791771611389,
+            "data": {
+              "turn": 2,
+              "reason": {
+                "kind": "completed"
+              }
+            }
+          },
+          {
+            "type": "user/message",
+            "seq": 54,
+            "time": 1791771611711,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[ralphflow] 🔍 ✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+                }
+              ],
+              "source": {
+                "kind": "ralphflow",
+                "form": "notice",
+                "summary": "✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+              },
+              "role": "user",
+              "id": "357bf947-f77a-494c-b664-d23636bfd220"
+            },
+            "surfaceOp": "append"
+          },
+          {
+            "type": "user/message",
+            "seq": 55,
+            "time": 1791771612010,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[ralphflow] 🔍 ✅ 验证者 4/4 通过：修改不影响原有功能，不破坏需求以外的边界"
+                }
+              ],
+              "source": {
+                "kind": "ralphflow",
+                "form": "notice",
+                "summary": "✅ 验证者 4/4 通过：修改不影响原有功能，不破坏需求以外的边界"
+              },
+              "role": "user",
+              "id": "fb44a860-49f4-4c7a-9084-7c5b65a8a9fc"
+            },
+            "surfaceOp": "append"
+          },
+          {
+            "type": "user/message",
+            "seq": 56,
+            "time": 1791771612189,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[ralphflow] 🔍 ✅ 验证者 2/4 通过：实现的行为符合预期，真实可用"
+                }
+              ],
+              "source": {
+                "kind": "ralphflow",
+                "form": "notice",
+                "summary": "✅ 验证者 2/4 通过：实现的行为符合预期，真实可用"
+              },
+              "role": "user",
+              "id": "fb165513-18d3-4bc7-8a5e-05380e9265f1"
+            },
+            "surfaceOp": "append"
+          },
+          {
+            "type": "user/message",
+            "seq": 57,
+            "time": 1791771612369,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[ralphflow] 🔍 ✅ 验证者 1/4 通过：用户任务的每一条要求都已落实"
+                }
+              ],
+              "source": {
+                "kind": "ralphflow",
+                "form": "notice",
+                "summary": "✅ 验证者 1/4 通过：用户任务的每一条要求都已落实"
+              },
+              "role": "user",
+              "id": "42d8ac6b-6ec8-4e75-a415-8dde4e0a70a8"
+            },
+            "surfaceOp": "append"
+          },
+          {
+            "type": "user/message",
+            "seq": 58,
+            "time": 1791771612374,
+            "data": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "[ralphflow] ✅ 工作流 `loop` 完成，报告已归档到 `.dsh/ralph-flow/reports/loop-mv4mjwmu-efbm.md`。\n\n实例目录已销毁、产出目录保留；报告与产出是永久的，需要时按上面这个路径翻。"
+                }
+              ],
+              "source": {
+                "kind": "ralphflow",
+                "form": "notice",
+                "summary": "✅ 工作流 loop 完成（报告 .dsh/ralph-flow/reports/loop-mv4mjwmu-efbm.md）",
+                "uiRef": {
+                  "v": 1,
+                  "runId": "loop-mv4mjwmu-efbm",
+                  "reportRef": ".dsh/ralph-flow/reports/loop-mv4mjwmu-efbm.md",
+                  "ended": "done"
+                }
+              },
+              "role": "user",
+              "id": "a9babdb1-b8ec-4f7f-b217-8b49d0b1a295"
+            },
+            "surfaceOp": "append"
+          }
+        ],
+        "summaries": [
+          {
+            "seq": 23,
+            "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+          },
+          {
+            "seq": 30,
+            "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+          },
+          {
+            "seq": 31,
+            "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+          },
+          {
+            "seq": 32,
+            "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+          },
+          {
+            "seq": 33,
+            "summary": "❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+          },
+          {
+            "seq": 34,
+            "summary": "♻️ 步骤 loop 开始前已重置上下文（标了 `reset: true`）"
+          },
+          {
+            "seq": 40,
+            "summary": "🔄 步骤 loop 验证未通过，自动返工（loop 第 1 次）"
+          },
+          {
+            "seq": 47,
+            "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+          },
+          {
+            "seq": 54,
+            "summary": "✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+          },
+          {
+            "seq": 55,
+            "summary": "✅ 验证者 4/4 通过：修改不影响原有功能，不破坏需求以外的边界"
+          },
+          {
+            "seq": 56,
+            "summary": "✅ 验证者 2/4 通过：实现的行为符合预期，真实可用"
+          },
+          {
+            "seq": 57,
+            "summary": "✅ 验证者 1/4 通过：用户任务的每一条要求都已落实"
+          },
+          {
+            "seq": 58,
+            "summary": "✅ 工作流 loop 完成（报告 .dsh/ralph-flow/reports/loop-mv4mjwmu-efbm.md）"
+          }
+        ]
+      }
+    },
+    "pause": {
+      "sessionId": "session-e90d0af1-9312-4499-b0d1-bc6c04f4c430",
+      "status": "idle",
+      "inboxPending": false,
+      "events": [
+        {
+          "type": "turn/start",
+          "seq": 5,
+          "time": 1791771619992,
+          "data": {
+            "turn": 1
+          }
+        },
+        {
+          "type": "user/message",
+          "seq": 9,
+          "time": 1791771620256,
+          "data": {
+            "content": [
+              {
+                "type": "text",
+                "text": "完成 UI_NOTICE_PAUSE"
+              }
+            ],
+            "source": {
+              "kind": "user",
+              "rpcId": "notice-13"
+            },
+            "role": "user",
+            "id": "52ee2d1b-0a17-4cac-a777-dea6df5c0317"
+          },
+          "surfaceOp": "append"
+        },
+        {
+          "type": "user/message",
+          "seq": 23,
+          "time": 1791771620327,
+          "data": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[ralphflow] 🔍 步骤 `only` 已交卷，独立验证者（独立会话，看不到本对话）正在取证判定。\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它现在正在读文件、跑命令取证，你在会话里看得到它在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+              }
+            ],
+            "source": {
+              "kind": "ralphflow",
+              "form": "notice",
+              "summary": "🔍 步骤 only 已交卷，独立验证者正在取证（无需操作）"
+            },
+            "role": "user",
+            "id": "2dd62fdb-cec0-41a6-afe9-a86727bc3ca8"
+          },
+          "surfaceOp": "append"
+        },
+        {
+          "type": "turn/end",
+          "seq": 25,
+          "time": 1791771620330,
+          "data": {
+            "turn": 1,
+            "reason": {
+              "kind": "completed"
+            }
+          }
+        },
+        {
+          "type": "user/message",
+          "seq": 27,
+          "time": 1791771620850,
+          "data": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[ralphflow] ⏸ 步骤 `only` 连续 1 轮未通过（上限 1），已暂停等你定夺。\n\n验证者的意见：\n真机受控票：未通过，需要返工\n\n处理后可运行 `/ralphflow-continue` 重新验证，或 `/ralphflow-cancel` 结束。"
+              }
+            ],
+            "source": {
+              "kind": "ralphflow",
+              "form": "notice",
+              "summary": "⏸ 步骤 only 连续 1 轮未通过，已暂停等你定夺"
+            },
+            "role": "user",
+            "id": "aaf0d8ca-d8cc-4949-96f5-39e54a824ffa"
+          },
+          "surfaceOp": "append"
+        }
+      ],
+      "summaries": [
+        {
+          "seq": 23,
+          "summary": "🔍 步骤 only 已交卷，独立验证者正在取证（无需操作）"
+        },
+        {
+          "seq": 27,
+          "summary": "⏸ 步骤 only 连续 1 轮未通过，已暂停等你定夺"
+        }
+      ]
+    },
+    "gate": {
+      "sessionId": "session-fa7142c4-1b2d-4d0e-b973-555750c04404",
+      "status": "idle",
+      "inboxPending": false,
+      "events": [
+        {
+          "type": "turn/start",
+          "seq": 5,
+          "time": 1791771621950,
+          "data": {
+            "turn": 1
+          }
+        },
+        {
+          "type": "user/message",
+          "seq": 9,
+          "time": 1791771622166,
+          "data": {
+            "content": [
+              {
+                "type": "text",
+                "text": "完成 UI_NOTICE_GATE"
+              }
+            ],
+            "source": {
+              "kind": "user",
+              "rpcId": "notice-17"
+            },
+            "role": "user",
+            "id": "2a79b428-7e28-46bf-a4bf-248b4a74d01e"
+          },
+          "surfaceOp": "append"
+        },
+        {
+          "type": "user/message",
+          "seq": 23,
+          "time": 1791771622227,
+          "data": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[ralphflow] 🔍 步骤 `only` 已交卷，独立验证者（独立会话，看不到本对话）正在取证判定。\n\n**这一步你是异步等待的，不需要做任何操作** —— 验证者跑完会自动唤醒本会话并继续工作流。它现在正在读文件、跑命令取证，你在会话里看得到它在做什么。\n\n期间你可以：\n- 直接在此会话补充信息或纠正方向（会被模型看到）\n- 用 `/ralphflow-status` 随时查看进度与最近轨迹\n- 想中止就 `/ralphflow-cancel`"
+              }
+            ],
+            "source": {
+              "kind": "ralphflow",
+              "form": "notice",
+              "summary": "🔍 步骤 only 已交卷，独立验证者正在取证（无需操作）"
+            },
+            "role": "user",
+            "id": "5f80d543-368b-405b-85f7-2018300884c5"
+          },
+          "surfaceOp": "append"
+        },
+        {
+          "type": "turn/end",
+          "seq": 25,
+          "time": 1791771622228,
+          "data": {
+            "turn": 1,
+            "reason": {
+              "kind": "completed"
+            }
+          }
+        },
+        {
+          "type": "user/message",
+          "seq": 27,
+          "time": 1791771622713,
+          "data": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[ralphflow] 🙋 步骤 `only` 已通过独立验证，停在审查门等你放行。\n\n确认无误运行 `/ralphflow-continue` 进入下一步；需要修改就直接说明，改完重新交卷会再次验证。"
+              }
+            ],
+            "source": {
+              "kind": "ralphflow",
+              "form": "notice",
+              "summary": "🙋 步骤 only 已通过验证，停在审查门等你放行"
+            },
+            "role": "user",
+            "id": "e6bdae80-aaf6-4581-8d48-11cace4726df"
+          },
+          "surfaceOp": "append"
+        }
+      ],
+      "summaries": [
+        {
+          "seq": 23,
+          "summary": "🔍 步骤 only 已交卷，独立验证者正在取证（无需操作）"
+        },
+        {
+          "seq": 27,
+          "summary": "🙋 步骤 only 已通过验证，停在审查门等你放行"
+        }
+      ]
+    }
+  },
+  "modelAfterReset": {
+    "count": 3,
+    "roles": [
+      "system",
+      "user",
+      "user"
+    ],
+    "replaceSeq": 35,
+    "doSeq": 40,
+    "nextPreStepSources": [
+      "runtime-context",
+      "skill-catalog"
+    ],
+    "beforeResetNotices": [
+      23,
+      30,
+      31,
+      32,
+      33,
+      34
+    ]
+  },
+  "slots": {
+    "requestedRoot": {
+      "name": "conversation.chat.node",
+      "available": true
+    },
+    "trees": [
+      {
+        "type": "slot",
+        "name": "conversation.chat.node",
+        "kind": "keyed",
+        "scope": "session",
+        "purpose": "Final Chat node renderer, keyed by `ChatNodeKind`.",
+        "replaceRisk": "shadows-shipped-ui",
+        "registration": [
+          {
+            "name": "key",
+            "type": "string",
+            "required": true
+          }
+        ],
+        "keyDomain": "fixed by the owner's key table { [Kind in ChatNodeKind]: { node: ChatNode<Kind> } }, already taken: assistant-step, command, command-input, compaction, context, manual-compaction, model-retry, question-reply, steering, system-prompt, tool-call, turn-error, turn-max-tokens, turn-process, turn-tail, turn-trigger, unknown, user, workflow-run",
+        "children": [
+          {
+            "type": "slot",
+            "name": "tool.call.toolview",
+            "kind": "keyed",
+            "scope": "session",
+            "purpose": "Keyed Tool call view dispatched by wire Tool name.",
+            "replaceRisk": "shadows-shipped-ui",
+            "registration": [
+              {
+                "name": "key",
+                "type": "string",
+                "required": true
+              }
+            ],
+            "keyDomain": "open: any string the owner dispatches (no compile-time key set), already taken: ask_user_question, bash, cordis_define, cordis_inspect_list, cordis_inspect_query, cordis_inspect_self, cordis_run, cordis_stop, cordis_undefine, create_goal, edit, get_goal, glob, grep, interrupt_agent, job_kill, job_list, job_output, list_agents, list_subagent_models, lsp, present, ralph, read, read_image, schedule_create, schedule_delete, schedule_list, schedule_update, send_message, session_event_read, session_event_search, session_event_trace, session_search, session_trace, skill, spawn_teammate, subagent, team_task_create, team_task_get, team_task_list, team_task_update, terminal_close, terminal_list, terminal_open, terminal_read, terminal_signal, todo_write, update_goal, wait_agent, web_fetch, web_search, workflow, write",
+            "children": [
+              {
+                "type": "slot",
+                "name": "tool.call.images",
+                "kind": "single",
+                "scope": "session",
+                "purpose": "Durable images of a settled image-bearing Tool call, rendered through the attachment presentation plugin.",
+                "replaceRisk": "shadows-shipped-ui",
+                "children": []
+              },
+              {
+                "type": "slot",
+                "name": "tool.view.cordis",
+                "kind": "keyed",
+                "scope": "session",
+                "purpose": "Interactive Package-owned region rendered inside the latest eligible `cordis_run` card in the conversation flow.",
+                "replaceRisk": "none",
+                "registration": [
+                  {
+                    "name": "key",
+                    "type": "string",
+                    "required": true
+                  }
+                ],
+                "keyDomain": "fixed by the dynamic Client Guard",
+                "allowedKeys": [
+                  {
+                    "value": "self",
+                    "description": "The only accepted key. The Guard binds it to this Package's pluginId and packageId."
+                  }
+                ],
+                "children": []
+              }
+            ]
+          },
+          {
+            "type": "slot",
+            "name": "conversation.chat.assistant-actions",
+            "kind": "list",
+            "scope": "session",
+            "purpose": "Ordered actions for one finalized assistant message.",
+            "replaceRisk": "none",
+            "registration": [
+              {
+                "name": "id",
+                "type": "string",
+                "required": true
+              },
+              {
+                "name": "order",
+                "type": "number",
+                "required": false
+              },
+              {
+                "name": "label",
+                "type": "string | (() => string)",
+                "required": false
+              }
+            ],
+            "children": []
+          },
+          {
+            "type": "slot",
+            "name": "conversation.chat.commandview",
+            "kind": "keyed",
+            "scope": "session",
+            "purpose": "Command row keyed by the command name.",
+            "replaceRisk": "none",
+            "registration": [
+              {
+                "name": "key",
+                "type": "string",
+                "required": true
+              }
+            ],
+            "keyDomain": "open: any string the owner dispatches (no compile-time key set), none are taken yet",
+            "children": []
+          },
+          {
+            "type": "slot",
+            "name": "conversation.chat.turnTail",
+            "kind": "list",
+            "scope": "session",
+            "purpose": "Ordered feature contributions before a completed Turn's action row.",
+            "replaceRisk": "none",
+            "registration": [
+              {
+                "name": "id",
+                "type": "string",
+                "required": true
+              },
+              {
+                "name": "order",
+                "type": "number",
+                "required": false
+              },
+              {
+                "name": "label",
+                "type": "string | (() => string)",
+                "required": false
+              }
+            ],
+            "children": [
+              {
+                "type": "slot",
+                "name": "deliverables.file.actions",
+                "kind": "list",
+                "scope": "session",
+                "purpose": "Open one file through its authorized Session event coordinates.",
+                "replaceRisk": "none",
+                "registration": [
+                  {
+                    "name": "id",
+                    "type": "string",
+                    "required": true
+                  },
+                  {
+                    "name": "order",
+                    "type": "number",
+                    "required": false
+                  },
+                  {
+                    "name": "label",
+                    "type": "string | (() => string)",
+                    "required": false
+                  }
+                ],
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "selected": {
+      "type": "slot",
+      "name": "conversation.chat.node",
+      "kind": "keyed",
+      "scope": "session",
+      "declaredBy": "an entry in \"conversation.view\" (mf)",
+      "occupants": [
+        {
+          "registrant": "mf",
+          "key": "tool-call",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "user",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "steering",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "context",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "turn-trigger",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "system-prompt",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "assistant-step",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "command",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "manual-compaction",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "compaction",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "model-retry",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "turn-error",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "turn-max-tokens",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "turn-process",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "turn-tail",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "unknown",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "ralphflow-notice",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "command-input",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "workflow-run",
+          "priority": 0,
+          "active": true
+        },
+        {
+          "registrant": "mf",
+          "key": "question-reply",
+          "priority": 0,
+          "active": true
+        }
+      ],
+      "catalog": {
+        "description": "Final Chat node renderer, keyed by `ChatNodeKind`. The component receives\nthe typed node, shared Chat actions, and Turn-data hook. Reusing a key\nreplaces that node renderer; a kind with no occupant renders no row.",
+        "registration": [
+          {
+            "name": "key",
+            "type": "string",
+            "required": true,
+            "description": "Your cell key: the entry renders where the owner dispatches this exact key. Registering an already-occupied key replaces that occupant."
+          }
+        ],
+        "ownerProps": [
+          "/** Stable owner currency delivered to a keyed Chat renderer. */\nexport interface ChatNodeOwnerProps {\n  /** Renderer-owned Node portion selected by the grouping Definition. */\n  groupPart?: string\n  cwd?: string | undefined\n  /** Open the current source file of a skill referenced by a sent message. */\n  openSkill: (name: string) => void\n  openFile: (path: string, options?: OpenFileOptions) => void\n  inspectCall: ((callId: ToolCallId) => void) | undefined\n  forkAt: (seq: number) => void\n  /**\n   * Session-authorized image loader, down-threaded from the Chat view so a\n   * chat-node renderer can render the attachment presentation slot directly\n   * with only the durable references plus this loader, instead of receiving a\n   * rendering closure.\n   */\n  loadImage: MessageImageLoader\n  renderMessageImages: RenderMessageImages\n  fileMentions: (owner: TurnTailOwnerProps) => MarkdownFileMentions | undefined\n  /** Turn-process state when this Node belongs to a projected Turn. */\n  turnProcess?: TurnProcessOwnerProps | undefined\n}"
+        ],
+        "ownerPropsReferences": [
+          "MarkdownFileMentions",
+          "MessageImageLoader",
+          "OpenFileOptions",
+          "RenderMessageImages",
+          "TurnProcessOwnerProps",
+          "TurnTailOwnerProps"
+        ],
+        "standardProps": [
+          "useResource: UseResource",
+          "useWorkspaces: SnapshotSelectorHook<WorkspaceSnapshot>",
+          "usePanelInfo: UsePanelInfo",
+          "useSessions: UseSessions",
+          "useSessionStatus: UseSessionStatus",
+          "useSessionRetainInfo: UseSessionRetainInfo",
+          "useWorkspaces: SnapshotSelectorHook<WorkspaceSnapshot>",
+          "useChat: UseChat",
+          "useConversation: UseConversation",
+          "useInput: SnapshotSelectorHook<InputState>",
+          "inputActions: InputActions",
+          "useSession: SessionSnapshotSelector",
+          "sessionId: SessionId",
+          "useProjection: UseProjection",
+          "useTrajectory: UseTrajectory"
+        ],
+        "keyDomain": "fixed by the owner's key table { [Kind in ChatNodeKind]: { node: ChatNode<Kind> } }, already taken: assistant-step, command, command-input, compaction, context, manual-compaction, model-retry, question-reply, steering, system-prompt, tool-call, turn-error, turn-max-tokens, turn-process, turn-tail, turn-trigger, unknown, user, workflow-run",
+        "hookContext": "ChatNodeHookContext",
+        "slotInject": "ChatNodeInjected",
+        "replaceRisk": "shadows-shipped-ui"
+      }
+    },
+    "referencedTypes": []
+  },
+  "negative": {
+    "sameSessionId": "session-aa8aee07-bd66-40d9-ae3d-1c2e433bc7b6",
+    "sameAssertionRejected": true,
+    "clientFactoriesRemoved": 1,
+    "visibleNoticeRows": 0
+  },
+  "diskLogs": {
+    "loop": {
+      "path": "/tmp/rf-notice-web-AEZGMs/sessions/--tmp-rf-notice-web-AEZGMs-workspace--/session-aa8aee07-bd66-40d9-ae3d-1c2e433bc7b6/session.v4.jsonl.zstd",
+      "sha256": "fa835c56978478d7b963118690681c68e2bd46f04afadac723e73c60e619db43",
+      "appendNotices": [
+        {
+          "seq": 23,
+          "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+        },
+        {
+          "seq": 30,
+          "summary": "❌ 验证者 2/4 不通过：实现的行为符合预期，真实可用"
+        },
+        {
+          "seq": 31,
+          "summary": "❌ 验证者 1/4 不通过：用户任务的每一条要求都已落实"
+        },
+        {
+          "seq": 32,
+          "summary": "❌ 验证者 4/4 不通过：修改不影响原有功能，不破坏需求以外的边界"
+        },
+        {
+          "seq": 33,
+          "summary": "❌ 验证者 3/4 不通过：没有遗漏的需求，边界情况已覆盖"
+        },
+        {
+          "seq": 34,
+          "summary": "♻️ 步骤 loop 开始前已重置上下文（标了 `reset: true`）"
+        },
+        {
+          "seq": 40,
+          "summary": "🔄 步骤 loop 验证未通过，自动返工（loop 第 1 次）"
+        },
+        {
+          "seq": 47,
+          "summary": "🔍 步骤 loop 已交卷，4 个独立验证者并行取证（无需操作）"
+        },
+        {
+          "seq": 54,
+          "summary": "✅ 验证者 3/4 通过：没有遗漏的需求，边界情况已覆盖"
+        },
+        {
+          "seq": 55,
+          "summary": "✅ 验证者 4/4 通过：修改不影响原有功能，不破坏需求以外的边界"
+        },
+        {
+          "seq": 56,
+          "summary": "✅ 验证者 2/4 通过：实现的行为符合预期，真实可用"
+        },
+        {
+          "seq": 57,
+          "summary": "✅ 验证者 1/4 通过：用户任务的每一条要求都已落实"
+        },
+        {
+          "seq": 58,
+          "summary": "✅ 工作流 loop 完成（报告 .dsh/ralph-flow/reports/loop-mv4mjwmu-efbm.md）"
+        }
+      ]
+    },
+    "pause": {
+      "path": "/tmp/rf-notice-web-AEZGMs/sessions/--tmp-rf-notice-web-AEZGMs-workspace--/session-e90d0af1-9312-4499-b0d1-bc6c04f4c430/session.v4.jsonl.zstd",
+      "sha256": "e861ef225ca5581783dc62eb0f20ed6ef1aae74929efaee8dc4fa81a0ffd3369",
+      "appendNotices": [
+        {
+          "seq": 23,
+          "summary": "🔍 步骤 only 已交卷，独立验证者正在取证（无需操作）"
+        },
+        {
+          "seq": 27,
+          "summary": "⏸ 步骤 only 连续 1 轮未通过，已暂停等你定夺"
+        }
+      ]
+    },
+    "gate": {
+      "path": "/tmp/rf-notice-web-AEZGMs/sessions/--tmp-rf-notice-web-AEZGMs-workspace--/session-fa7142c4-1b2d-4d0e-b973-555750c04404/session.v4.jsonl.zstd",
+      "sha256": "dcb3217c850e7cdb8b904728f99602b4ffb2c92d3b3628a07dd7fc8f09c0bea4",
+      "appendNotices": [
+        {
+          "seq": 23,
+          "summary": "🔍 步骤 only 已交卷，独立验证者正在取证（无需操作）"
+        },
+        {
+          "seq": 27,
+          "summary": "🙋 步骤 only 已通过验证，停在审查门等你放行"
+        }
+      ]
+    }
+  },
+  "result": "PASS: Chat rows per vote, aggregates, pause, gate, completion, reset+refresh, model exact 3, no wake, SAME DOM assertion red without client"
+}

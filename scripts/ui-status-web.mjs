@@ -16,12 +16,12 @@ const source = fs.readFileSync(path.join(repo, "src/client/status.tsx"), "utf8")
 assert.doesNotMatch(source, /rgba?\(|#[0-9a-f]{3,8}\b|fontSize\s*:\s*\d|font-size\s*:\s*\d|borderRadius\s*:\s*\d|border-radius\s*:\s*\d|boxShadow\s*:\s*["']|box-shadow\s*:\s*(?!var\()[\d]/i,
   "colors, fonts, radii and shadows must come from native dsh tokens");
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "/home/yj/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs");
-const out = path.join(repo, "docs/v2/evidence/ui-status-refine");
+const out = process.env.RALPHFLOW_UI_EVIDENCE_DIR ?? path.join(repo, "docs/v2/evidence/ui-status-refine");
 fs.mkdirSync(out, { recursive: true });
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "rf-status-web-"));
 const profile = path.join(root, "profiles/web"), workspace = path.join(root, "workspace");
 fs.mkdirSync(path.join(profile, "node_modules"), { recursive: true });
-fs.symlinkSync(repo, path.join(profile, "node_modules/ralphflow-dsh"));
+fs.symlinkSync(process.env.RALPHFLOW_UI_PLUGIN_DIR ?? repo, path.join(profile, "node_modules/ralphflow-dsh"));
 fs.writeFileSync(path.join(profile, "package.json"), JSON.stringify({ name: "notice-acceptance", private: true,
   dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "ralphflow-dsh"] } } }));
 fs.writeFileSync(path.join(profile, "cordis.yml"), "[]\n");
@@ -51,7 +51,12 @@ async function until(fn, label, timeout = 15000) {
   throw new Error(`timeout: ${label}`);
 }
 const sessionIds = {};
-const evidence = { runtime: "dsh 0.2.1-alpha.1", controlled: "local model outputs; real AgentLoop, ToolRuntime, spawn, persistence, Chat DOM", runs: {} };
+const versionCheck = spawnSync("dsh", ["--version"], { encoding: "utf8" });
+assert.equal(versionCheck.status, 0, "acceptance must launch the selected dsh CLI");
+const runtimeVersion = versionCheck.stdout.trim();
+assert.equal(runtimeVersion, JSON.parse(fs.readFileSync(path.join(repo, "node_modules/@deepseek-ai/dsh/package.json"))).version,
+  "CLI and test imports must come from the same dsh release");
+const evidence = { runtime: `dsh ${runtimeVersion}`, controlled: "local model outputs; real AgentLoop, ToolRuntime, spawn, persistence, Chat DOM", runs: {} };
 try {
   const authUrl = await until(() => log.match(/dsh web: (http:\/\/[^\s]+)/)?.[1], "web startup", 30000);
   const base = new URL(authUrl).origin;
@@ -351,11 +356,11 @@ try {
       await page.locator("[data-ralphflow-status]").click();
       await page.locator("[data-ralphflow-status-popover]").waitFor();
       // The real native job-list, goal strip, and our UI share this same Chat frame.
-      await page.locator(".Hcm_Iq_trigger").waitFor();
+      await page.getByRole("button", { name: /后台任务/ }).waitFor();
       await page.screenshot({ path: path.join(out, "native-comparison-light.png") });
       await page.keyboard.press("Escape");
-      await page.locator(".Hcm_Iq_trigger").click();
-      await page.locator(".Hcm_Iq_menu").waitFor();
+      await page.getByRole("button", { name: /后台任务/ }).click();
+      await page.getByRole("list", { name: "后台任务", exact: true }).waitFor();
       await page.screenshot({ path: path.join(out, "native-jobs-light.png") });
       await page.keyboard.press("Escape");
       await page.evaluate(() => document.body.setAttribute("data-ds-dark-theme", ""));

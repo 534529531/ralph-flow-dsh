@@ -1,0 +1,246 @@
+{
+  "case": "union peer ranges without peerDependenciesMeta",
+  "dsh": "0.2.0-rc.2",
+  "alphaPackages": [
+    {
+      "path": "node_modules/@deepseek-ai/cordis",
+      "version": "4.0.5-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/cosmokit",
+      "version": "1.8.6-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-agent",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-api-gateway",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-api-gateway/node_modules/@deepseek-ai/schemastery",
+      "version": "3.18.5-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-attachment",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-brand",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-chunked-list",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-client-connection",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-client-connection/node_modules/@deepseek-ai/schemastery",
+      "version": "3.18.5-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-client-ui-chat",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-client-ui-chat/node_modules/@deepseek-ai/schemastery",
+      "version": "3.18.5-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-client-ui-conversation",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-client-ui-conversation/node_modules/@deepseek-ai/schemastery",
+      "version": "3.18.5-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-client-ui-primitives",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-client-ui-renderer",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-commands",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-compaction",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-compaction-image-offload",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-credentials",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-deque",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-fs",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-llm",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-llm/node_modules/@deepseek-ai/schemastery",
+      "version": "3.18.5-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-ptc-runtime",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-sandbox",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-sandbox-policy",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-sandbox-policy/node_modules/@deepseek-ai/schemastery",
+      "version": "3.18.5-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-scope",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-session",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-session-format",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-session-format-catalog",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-session-format-v0-to-v1",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-session-format-v1-to-v2",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-session-format-v2-to-v3",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-session-format-v3-to-v4",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-session-projection",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-session-query",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-session-title",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-session-title/node_modules/@deepseek-ai/schemastery",
+      "version": "3.18.5-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-skill",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-skill/node_modules/@deepseek-ai/schemastery",
+      "version": "3.18.5-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-subagent",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-subagent/node_modules/@deepseek-ai/schemastery",
+      "version": "3.18.5-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-system-prompt",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-system-prompt/node_modules/@deepseek-ai/schemastery",
+      "version": "3.18.5-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-timeout",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-tool-todo",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-tool-todo/node_modules/@deepseek-ai/schemastery",
+      "version": "3.18.5-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-tools",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-tools/node_modules/@deepseek-ai/schemastery",
+      "version": "3.18.5-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-typert-protocol",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-typert-registry",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-user-approval",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-user-approval/node_modules/@deepseek-ai/schemastery",
+      "version": "3.18.5-alpha.1"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-util-crypto",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-util-time",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-util-values",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-working-directory",
+      "version": "0.2.1-alpha.2"
+    },
+    {
+      "path": "node_modules/@deepseek-ai/dsh-working-directory/node_modules/@deepseek-ai/schemastery",
+      "version": "3.18.5-alpha.1"
+    }
+  ]
+}

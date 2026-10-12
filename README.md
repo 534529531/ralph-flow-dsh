@@ -81,7 +81,7 @@ CHECK 不是同一个会话再问一遍"你做完了吗"。它是一个**全新�
 
 ### 安装
 
-前置：已安装 **dsh**（`@deepseek-ai/dsh-* >= 0.2.0-rc.2`、`cordis >= 4.0.4`）与 **pnpm**（`dsh plugin` 是 pnpm 的转发器）。
+前置：已安装 **dsh** 与 **pnpm**（`dsh plugin` 是 pnpm 的转发器）。已验证 npm 默认频道 `dsh@0.2.0-rc.2`（`cordis@4.0.4`）及原有 `dsh@0.2.1-alpha.1`；**不需要升级到 alpha**。宿主包由 dsh 提供，插件不会通过 peer 自动安装另一套宿主。
 
 ```bash
 dsh plugin --profile web add ralphflow-dsh

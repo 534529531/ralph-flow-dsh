@@ -6,6 +6,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { Context } from "@deepseek-ai/cordis";
+import { evaluatePluginCompatibility } from "@deepseek-ai/dsh-app-boot";
 import { ClientModuleRegistry } from "@deepseek-ai/dsh-client-modules";
 import { loadNoticeClient } from "./helpers/notice-client.mjs";
 
@@ -34,6 +35,18 @@ try {
     }] });
     return new ClientModuleRegistry(ctx).graph();
   }
+  // Exercise the host's real compatibility gate, not a hand-written semver check.
+  for (const version of ["0.2.0-rc.2", "0.2.1-alpha.1", "0.2.1-alpha.2"]) {
+    assert.equal(evaluatePluginCompatibility(pkg, {}, version), undefined, `host admission: ${version}`);
+  }
+  assert(evaluatePluginCompatibility(pkg, {}, "0.1.7-rc.2"), "older hosts remain unsupported");
+  const alphaOnly = structuredClone(pkg);
+  for (const name of Object.keys(alphaOnly.peerDependencies)) if (name.startsWith("@deepseek-ai/dsh-")) {
+    alphaOnly.peerDependencies[name] = "^0.2.1-alpha.1";
+  }
+  assert(evaluatePluginCompatibility(alphaOnly, {}, "0.2.0-rc.2"), "negative: original alpha-only manifest rejects npm latest");
+  // These remain host-version constraints, but must not install a second host via npm peers.
+  for (const name of Object.keys(pkg.peerDependencies)) assert.equal(pkg.peerDependenciesMeta[name].optional, true);
   const graph = compose(pkg);
   assert(JSON.stringify(graph).includes(pkg.name));
   loadNoticeClient(); // The factory must also materialize and register its client face.
@@ -49,5 +62,5 @@ try {
     mutation(bad);
     assert.throws(() => compose(bad), /client-modules/);
   }
-  console.log("8 passed, 0 failed — npm pack + real client-modules activation, 6 negative declarations");
+  console.log("13 passed, 0 failed — npm pack, native runtime admission, alpha-only negative, 6 negative declarations");
 } finally { fs.rmSync(root, { recursive: true, force: true }); }

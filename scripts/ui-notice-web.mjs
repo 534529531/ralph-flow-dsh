@@ -13,12 +13,12 @@ import { fileURLToPath } from "node:url";
 
 const repo = fileURLToPath(new URL("../", import.meta.url));
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "/home/yj/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs");
-const out = path.join(repo, "docs/v2/evidence/ui-notice");
+const out = process.env.RALPHFLOW_UI_EVIDENCE_DIR ?? path.join(repo, "docs/v2/evidence/ui-notice");
 fs.mkdirSync(out, { recursive: true });
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "rf-notice-web-"));
 const profile = path.join(root, "profiles/web"), workspace = path.join(root, "workspace");
 fs.mkdirSync(path.join(profile, "node_modules"), { recursive: true });
-fs.symlinkSync(repo, path.join(profile, "node_modules/ralphflow-dsh"));
+fs.symlinkSync(process.env.RALPHFLOW_UI_PLUGIN_DIR ?? repo, path.join(profile, "node_modules/ralphflow-dsh"));
 fs.writeFileSync(path.join(profile, "package.json"), JSON.stringify({ name: "notice-acceptance", private: true,
   dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "ralphflow-dsh"] } } }));
 fs.writeFileSync(path.join(profile, "cordis.yml"), "[]\n");
@@ -38,7 +38,12 @@ async function until(fn, label, timeout = 15000) {
   while (Date.now() < end) { const result = await fn(); if (result) return result; await pause(80); }
   throw new Error(`timeout: ${label}`);
 }
-const evidence = { runtime: "dsh 0.2.1-alpha.1", controlled: "local model outputs; real AgentLoop, ToolRuntime, spawn, persistence, Chat DOM", runs: {} };
+const versionCheck = spawnSync("dsh", ["--version"], { encoding: "utf8" });
+assert.equal(versionCheck.status, 0, "acceptance must launch the selected dsh CLI");
+const runtimeVersion = versionCheck.stdout.trim();
+assert.equal(runtimeVersion, JSON.parse(fs.readFileSync(path.join(repo, "node_modules/@deepseek-ai/dsh/package.json"))).version,
+  "CLI and test imports must come from the same dsh release");
+const evidence = { runtime: `dsh ${runtimeVersion}`, controlled: "local model outputs; real AgentLoop, ToolRuntime, spawn, persistence, Chat DOM", runs: {} };
 try {
   const authUrl = await until(() => log.match(/dsh web: (http:\/\/[^\s]+)/)?.[1], "web startup", 30000);
   const base = new URL(authUrl).origin;

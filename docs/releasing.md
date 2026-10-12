@@ -94,12 +94,14 @@ workflow 用 `GITHUB_TOKEN` 推 `main` 与 tag；GitHub 规定这种推送**不�
 
 1. **本机的 `node_modules/@deepseek-ai` 是指向 dsh 安装目录的软链** —— 开发时借宿主的包用。
    GitHub runner 上没有这个软链，只能从 npm 装。
-2. **我们对着开发的是 dsh 的预发布线**（`cordis@4.0.5-alpha.1` / `dsh-*@0.2.1-alpha.1`）。
-   如果只写宽松的 peer 范围（`>=0.2.0-rc.2` 这种），npm 会去挑更老的**稳定版**，然后和
-   `dsh-typert-protocol` 的 `~4.0.5-alpha.1` 撞车 —— `npm ci` 直接 ERESOLVE 失败。
-   所以 peer 范围如实收紧成 `^<宿主版本>`，同时在 devDependencies 里钉死同一个版本。
-   （semver 的预发布规则是这里最容易踩的坑：`>=4.0.4` 和 `~4.0.4` **都不匹配**
-   `4.0.5-alpha.1`，必须有同元组的预发布比较符才放行。）
+2. **构建基线改为 npm 默认频道**：`cordis@4.0.4` / `dsh-*@0.2.0-rc.2`。已对这套完整依赖
+   做干净安装、构建、类型检查、全量回归和真实 Chat 验收；状态流与 UI 所需接口在 rc.2 已存在。
+   peer 范围接受 `^0.2.0-rc.2 || ^0.2.1-alpha.1`，Cordis 接受 `^4.0.4 || ^4.0.5-alpha.1`，
+   所以默认频道和原有 alpha 用户都能用；devDependencies 仍精确固定一整套，避免混装。
+   所有宿主 peer 都设置 `peerDependenciesMeta.optional: true`：仅关闭 npm 的自动补装，
+   **不代表运行时可以缺少这些宿主服务**。dsh 仍通过 manifest 的 peer 范围检查版本，
+   且自己的模块解析器提供安装树里的宿主包。若只写联合范围而不关闭自动补装，
+   `npm install @deepseek-ai/dsh@latest <插件包>` 会另装一整套 alpha，形成混合宿主。
 3. **`@deepseek-ai/dsh` 那一条是关键**：它一次带进 80 个 `@deepseek-ai/*` 依赖，凑齐
    `.d.ts` 互相引用的闭包。少了它，`skipLibCheck: true` 会把缺失的引用悄悄降级成 `any`，
    CI 的 typecheck 就**比本机弱** —— 本机精确、CI 退化成 any，等于闸变松了。
