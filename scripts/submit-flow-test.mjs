@@ -93,6 +93,7 @@ console.log("\nS2 turn-stopping：未交卷时提醒（且提醒有上限）");
   const last = cli(delivered.at(-1));
   check("达上限后不再重复催促", delivered.length === before + 1, `added=${delivered.length - before}`);
   check("改为暂停并告知用户", last.includes("已暂停等你处理"), last.slice(0, 120));
+  check("暂停后提示先恢复再交卷（暂停态拒绝交卷）", last.indexOf("/ralphflow-continue") < last.indexOf("ralphflow_submit"), last);
 
   const iid = fs.readdirSync(path.join(ws, ".dsh", "ralph-flow", "instances"))[0];
   const st = JSON.parse(fs.readFileSync(path.join(ws, ".dsh", "ralph-flow", "instances", iid, "state.json"), "utf-8"));

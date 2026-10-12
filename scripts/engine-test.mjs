@@ -6,8 +6,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createEngine, resolveCheckModel, makeArtifactsDirName, stepHasCheck, listWorkflowsIn, stepStats, voterCountOf, expectedVerdicts, REQUIRED_STEP_FIELDS } from "../lib/engine.js";
-import { buildCheckPrompt } from "../lib/verify.js";
-import { CREATE_GUIDE } from "../lib/create.js";
+import { buildCheckPrompt, VERIFIER_PERSONA } from "../lib/verify.js";
+import { CREATE_GUIDE, AUTHORING_REFERENCE_PATH } from "../lib/create.js";
+const AUTHORING_GUIDE = CREATE_GUIDE + "\n" + fs.readFileSync(AUTHORING_REFERENCE_PATH, "utf8");
 
 import { deliveryPorts } from "./helpers/ports.mjs";
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
@@ -97,7 +98,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     r.text.slice(0, 320));
   check("投票首步：DO prompt 写明每票只查一条检查依据、全过才放行",
     r.text.includes(`${LOOP_VOTERS} 个独立验证者**并行**取证，各自只查一条检查依据，**全过才放行**`)
-    && r.text.includes(`${LOOP_VOTERS} 个独立验证者会立刻**并行**检查你的产出（全过才放行）`),
+    && r.text.includes("交卷工具会结束当前回合"),
     r.text.slice(-420));
   scripted.push(...votes({ status: "passed", reason: "文件存在且内容正确" }));
   submit(s, "已完成，创建了 hello.html。");
@@ -621,7 +622,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   // （opencode 与 claude 版同样从不传入自述，并明令"不要依赖任何外部提供的实现总结"）
   check("CHECK 不注入「执行者交卷摘要」段", !prompt.includes("执行者交卷摘要"), prompt);
   check("CHECK 不出现任何自述标记", !prompt.includes("（无摘要）"), prompt);
-  check("CHECK 明示只看结果、不采信自述", prompt.includes("只看结果") && prompt.includes("不采信任何执行者自述"));
+  check("CHECK 明示只看结果、不采信自述", VERIFIER_PERSONA.includes("只看结果") && VERIFIER_PERSONA.includes("不采信任何执行者自述"));
   // 类型层面：VerifyRequest 不得再有 submitSummary 字段（防止重新引入）
   check("VerifyRequest 类型已移除 submitSummary",
     !fs.readFileSync(new URL("../src/engine.ts", import.meta.url), "utf-8")
@@ -737,18 +738,18 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}
 }
 
-// ── 16) §1.6 CREATE_GUIDE 与引擎实际行为一致（文本 + 行为双向交叉验证）────────
+// ── 16) §1.6 AUTHORING_GUIDE 与引擎实际行为一致（文本 + 行为双向交叉验证）────────
 {
   // 文本侧：不得再出现与实测相反的陈述
-  check("指引不再声称 doctor 报告「可启动」", !CREATE_GUIDE.includes("报告「可启动」") && !CREATE_GUIDE.includes("直到「可启动」"));
-  check("指引明确 input 只进 CHECK 提示词", CREATE_GUIDE.includes("只进 CHECK 提示词"));
-  check("指引教了子工作流调用点的写法（workflow: 代替 do:）", CREATE_GUIDE.includes("代替 `do:`") && CREATE_GUIDE.includes("workflow: analyze"));
-  check("指引写明子工作流的加载期硬错误清单与 2000 步上限", CREATE_GUIDE.includes("子工作流的加载期硬错误") && CREATE_GUIDE.includes("2000"));
+  check("指引不再声称 doctor 报告「可启动」", !AUTHORING_GUIDE.includes("报告「可启动」") && !AUTHORING_GUIDE.includes("直到「可启动」"));
+  check("指引明确 input 进 DO 与 CHECK 提示词", AUTHORING_GUIDE.includes("进 DO 与 CHECK 提示词"));
+  check("指引教了子工作流调用点的写法（workflow: 代替 do:）", AUTHORING_GUIDE.includes("代替 `do:`") && AUTHORING_GUIDE.includes("workflow: analyze"));
+  check("指引写明子工作流的加载期硬错误清单与 2000 步上限", AUTHORING_GUIDE.includes("子工作流的加载期硬错误") && AUTHORING_GUIDE.includes("2000"));
   check("指引不再声称本版本没有子工作流 / 不再说它是无法启动的形状",
-    !CREATE_GUIDE.includes("本版本没有子工作流") && !CREATE_GUIDE.includes("硬错误、工作流无法启动"));
+    !AUTHORING_GUIDE.includes("本版本没有子工作流") && !AUTHORING_GUIDE.includes("硬错误、工作流无法启动"));
   check("指引把六个步骤字段标为**必填**（desc/input/output/on_pass/on_fail/max_fail_count）",
-    CREATE_GUIDE.includes("六个步骤字段必填") && CREATE_GUIDE.includes("空串算缺")
-    && CREATE_GUIDE.includes("子工作流调用点同样必填这六个"));
+    AUTHORING_GUIDE.includes("六个步骤字段必填") && AUTHORING_GUIDE.includes("空串算缺")
+    && AUTHORING_GUIDE.includes("子工作流调用点同样必填这六个"));
 
   const guideFile = (name, lines) => {
     fs.writeFileSync(path.join(engine.workflowsDir, `${name}.yaml`), lines.join("\n"));
@@ -774,31 +775,31 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   // 行为侧 3：doctor 输出没有「可启动」，只有 ✅/❌ 与结论行
   const diag = engine.diagnose().text;
   check("doctor 输出不含「可启动」（指引措辞与输出一致）", !diag.includes("可启动") && diag.includes("全部 ✅"));
-  // 行为侧 4：input 只出现在 CHECK，不出现在 DO
+  // 行为侧 4：input 在 DO 与 CHECK 同源
   const inp = guideFile("guide-input", ["steps:", "  - id: a", "    desc: 描述D", "    do: 干活D", "    check: 检查D", "    input: 输入标记I", "    output: 交付标记O", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
   const sInp = S();
   const started = engine.start("guide-input", "输入提示词用例", sInp);
-  check("DO 提示词含 desc/交付物、但**不含** input", started.ok && started.text.includes("描述D") && started.text.includes("交付标记O") && !started.text.includes("输入标记I"), started.text.slice(0, 400));
+  check("DO 提示词含 desc/交付物与 input", started.ok && started.text.includes("描述D") && started.text.includes("交付标记O") && started.text.includes("输入标记I"), started.text.slice(0, 400));
   const checkPrompt = buildCheckPrompt({
     instId: "guide-input", step: inp.def.steps[0], workflow: inp.def, userTask: "任务",
     checkIndex: 0, artifactsRelDir: ".dsh/ralph-flow/artifacts/guide-input", signal: new AbortController().signal,
   }, true);
   check("CHECK 提示词含 input（指引所述一致）", checkPrompt.includes("输入标记I"));
   // 行为侧 5：A1 —— 指引声称支持 check_model 与两形态 model，行为必须一致
-  check("指引提到 check_model", CREATE_GUIDE.includes("check_model"));
-  check("指引写明验证模型优先级链", CREATE_GUIDE.includes("check_model` > 全局"), CREATE_GUIDE.slice(0, 200));
+  check("指引提到 check_model", AUTHORING_GUIDE.includes("check_model"));
+  check("指引写明验证模型优先级链", AUTHORING_GUIDE.includes("check_model` > 全局"), AUTHORING_GUIDE.slice(0, 200));
   const cmGuide = guideFile("guide-cm", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check: c", "    check_model: deepseek/deepseek-chat", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
   check("指引所述 check_model 写法确实可加载", !!cmGuide.def && cmGuide.problems.length === 0, JSON.stringify(cmGuide));
   const cmBadGuide = guideFile("guide-cm-bad", ["steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check_model: a/b", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
   check("指引所述「无 check 即硬错误」确实成立", !cmBadGuide.def && cmBadGuide.problems.some((p) => p.includes("check_model")), JSON.stringify(cmBadGuide.problems));
 
   // 行为侧 6：验证者配置收敛 —— 指引只介绍 model，不再出现已删除字段
-  check("指引不再出现 adversarial_check.agent", !CREATE_GUIDE.includes("adversarial_check.agent") && !/\bagent:\s*spawn/.test(CREATE_GUIDE));
-  check("指引不再出现 system_prompt", !CREATE_GUIDE.includes("system_prompt"));
-  check("指引不再出现 timeout_ms", !CREATE_GUIDE.includes("timeout_ms"));
-  check("指引写明 adversarial_check 只允许 model 一个字段", CREATE_GUIDE.includes("只允许 model"), CREATE_GUIDE.slice(0, 500));
-  check("指引写明验证者身份是 Ralphflow 内部定义", CREATE_GUIDE.includes("内部定义"));
-  check("指引写明未覆盖时回退发起会话当前模型", CREATE_GUIDE.includes("发起会话当前模型"));
+  check("指引不再出现 adversarial_check.agent", !AUTHORING_GUIDE.includes("adversarial_check.agent") && !/\bagent:\s*spawn/.test(AUTHORING_GUIDE));
+  check("指引不再出现 system_prompt", !AUTHORING_GUIDE.includes("system_prompt"));
+  check("指引不再出现 timeout_ms", !AUTHORING_GUIDE.includes("timeout_ms"));
+  check("指引写明 adversarial_check 只允许 model 一个字段", AUTHORING_GUIDE.includes("只允许 model"), AUTHORING_GUIDE.slice(0, 500));
+  check("指引写明验证者身份是 Ralphflow 内部定义", AUTHORING_GUIDE.includes("内部定义"));
+  check("指引写明未覆盖时回退发起会话当前模型", AUTHORING_GUIDE.includes("发起会话当前模型"));
   // 行为侧 7：指引示例里的 adversarial_check 确实只写 model 也能加载启动
   const acGuide = guideFile("guide-ac", ["adversarial_check:", "  model: deepseek/deepseek-chat", "steps:", "  - id: a", "    desc: 步骤 a", "    input: 上游产出", "    output: 本步产出", "    do: X", "    check: c", "    on_pass: done", "    on_fail: a", "    max_fail_count: 1"]);
   check("指引所述 adversarial_check 写法可加载且无告警", !!acGuide.def && acGuide.problems.length === 0 && acGuide.warnings.length === 0, JSON.stringify(acGuide));
@@ -892,7 +893,8 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     deliveries.length = 0;
     const { r, id } = start("skip-gate", "纯人工审查用例", s);
     check("17b 门的 DO 提示词含「不配置对抗性检查」与 continue 放行说明",
-      r.ok && r.text.includes("不配置对抗性检查") && r.text.includes("/ralphflow-continue"), r.text.slice(-400));
+      r.ok && r.text.includes("不配置对抗性检查") && r.text.includes("/ralphflow-continue")
+      && r.text.includes("交卷即停在审查门") && !r.text.includes("通过后停在审查门"), r.text.slice(-400));
     // 首步是"无 check 的门"时，start 回执必须说「停在审查门等放行」，不得预告独立验证
     check("17b start 回执不预告独立验证、写明停在审查门",
       !r.text.includes("取证判定") && r.text.includes("停在审查门等你 `/ralphflow-continue` 放行"), r.text.slice(0, 360));

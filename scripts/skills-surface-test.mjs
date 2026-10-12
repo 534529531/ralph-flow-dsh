@@ -45,10 +45,10 @@ const sleep = (ms = 100) => new Promise((r) => setTimeout(r, ms));
 const tick = () => new Promise((r) => setTimeout(r, 30));
 
 /**
- * 触发词（任务书「描述文本」一节**逐字**）。写死在这里是**判据本身**：技能描述必须逐字等于它，
+ * 触发词（当前模型触发描述**逐字**）。写死在这里是**判据本身**：技能描述必须逐字等于它，
  * 否则「触发词只出现一次」那条就无从谈起。
  */
-const START_DESCRIPTION = "每步都由独立会话的验证者验收的工作流。用户点名 ralphflow，或要求做完由独立验证者验收才算完成时用它。";
+const START_DESCRIPTION = "Ralph Flow：用户点名 ralphflow，或要求执行后由独立会话的验证者验收时，用它启动工作流。";
 
 /** 命令面的**完整**清单（判据 1/2/6：逐条归类后剩下的就是这 8 条）。 */
 const EXPECTED_COMMANDS = [
@@ -139,7 +139,7 @@ console.log("T1 真 SkillRegistry：注册了什么、哪一面看得见（判�
     `modelVisible=${modelVisible.map((s) => s.name).join(",")}`);
 
   const start = ralphflowSkills.find((s) => s.name === "ralphflow-start");
-  check("ralphflow-start 的描述**逐字**等于任务书那句触发词",
+  check("ralphflow-start 的描述**逐字**等于当前触发描述",
     start?.description === START_DESCRIPTION, JSON.stringify(start?.description));
 
   check("模型目录里那一行逐字是 `- \\`ralphflow-start\\`: <触发词>`（renderCatalogEntries 形态）",

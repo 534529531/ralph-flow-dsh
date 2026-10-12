@@ -24,7 +24,8 @@
     "lib",
     "workflows",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "references"
   ],
   "dsh": {
     "bundle": {

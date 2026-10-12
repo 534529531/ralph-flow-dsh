@@ -23,7 +23,7 @@ import { buildCheckPrompt } from "../lib/verify.js";
 import {
   decideVotingOutcome, formatVotingFailureReason, formatVotingPassReason, voterProgressLine, voterStatusLabel,
 } from "../lib/voting.js";
-import { CREATE_GUIDE } from "../lib/create.js";
+import { CREATE_GUIDE, AUTHORING_REFERENCE_PATH } from "../lib/create.js";
 
 import { deliveryPorts } from "./helpers/ports.mjs";
 import { captureAppends } from "./helpers/plugin-harness.mjs";
@@ -141,7 +141,7 @@ console.log("== A. 加载期校验 ==");
 
   check("CREATE_GUIDE 教了 check_voting", CREATE_GUIDE.includes("check_voting"), CREATE_GUIDE.slice(0, 120));
   check("CREATE_GUIDE 不再说 check_voting 未支持", !CREATE_GUIDE.includes("check_voting`（多验证者投票，v0 按单验证者执行"));
-  check("CREATE_GUIDE 写明互斥与 1-5 票硬规则", CREATE_GUIDE.includes("互斥") && CREATE_GUIDE.includes("1-5"));
+  check("CREATE_GUIDE 写明互斥与 1-5 票硬规则", fs.readFileSync(AUTHORING_REFERENCE_PATH, "utf8").includes("互斥") && fs.readFileSync(AUTHORING_REFERENCE_PATH, "utf8").includes("1-5"));
   check("CREATE_GUIDE 仍不提 system_prompt/timeout_ms（引擎未兑现的键不进指引）",
     !CREATE_GUIDE.includes("system_prompt") && !CREATE_GUIDE.includes("timeout_ms"));
 }
@@ -605,7 +605,7 @@ console.log("== N. 插件级端到端：真实链路（工具 → 引擎 → ver
   const prompts = starts.map((r) => (r.prompt ?? []).map((b) => b.text).join("\n"));
   check("插件级：每票提示词含「你是 2 个验证者之一」", prompts.every((t) => t.includes("## 你是 2 个验证者之一")), prompts.map((t) => t.slice(0, 40)).join(" | "));
   check("插件级：各票只看到自己的检查依据", prompts.some((t) => t.includes("需求逐条落实") && !t.includes("行为真实可用")) && prompts.some((t) => t.includes("行为真实可用") && !t.includes("需求逐条落实")));
-  check("插件级：验证者身份走 persona 通道（单一来源）", starts.every((r) => typeof r.persona === "string" && r.persona.includes("对抗性的检查者")));
+  check("插件级：验证者身份走 persona 通道（单一来源）", starts.every((r) => typeof r.persona === "string" && r.persona.includes("独立验证者") && r.persona.includes("默认不通过")));
   check("插件级：结构化判定契约仍启用（outputSchema）", starts.every((r) => r.outputSchema?.properties?.passed?.type === "boolean"));
   const progressNotes = sent.filter((m) => /验证者 \d+\/2 (通过|不通过|重试)/.test(m.source?.summary ?? ""));
   check("插件级：每票各推一条可见进度（含 summary）", progressNotes.length === 2 && progressNotes.every((m) => m.source?.form === "notice"), JSON.stringify(progressNotes.map((m) => m.source?.summary)));

@@ -43,6 +43,7 @@ export function buildPluginCopy(patches, label) {
   // 内置工作流（loop/spec）由 `lib/../workflows/*.yaml` 解析：漏了它，还原构建里连
   // `ralphflow_start loop` 都跑不起来（负对照会变成「构建不全」的证据，而不是修复的证据）
   fs.cpSync(path.join(REPO, "workflows"), path.join(dir, "workflows"), { recursive: true });
+  fs.cpSync(path.join(REPO, "references"), path.join(dir, "references"), { recursive: true });
   // 依赖解析：软链仓库的 node_modules（rmSync 不会跟进软链，清理是安全的）
   fs.symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"), "dir");
 
@@ -98,7 +99,7 @@ export function revertHonestVerifyNotice(src) {
  * 从命令改成技能之后，这段机制说明随**技能正文**进对话，不再随命令指令进对话。
  */
 export function revertMechanismWording(src) {
-  const honest = "验证者（独立会话）会真的去读文件、跑命令取证，它在做什么你在会话里看得到；期间不需要你做任何操作，跑完会自动唤醒本会话。**不要给时长预估**——委派没有超时上界，任何时间承诺都是编的。";
+  const honest = "独立验证没有可承诺的完成时长。";
   if (!src.includes(honest)) throw new Error("负对照锚点（机制说明文案）不见了 —— 修复被改写，请同步更新负对照");
   return src.replace(honest, "通常需要 1–5 分钟，期间不需要你做任何操作，跑完会自动唤醒本会话。");
 }

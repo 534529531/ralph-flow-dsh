@@ -2298,6 +2298,16 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       `## 任务`,
       effectiveTaskOf(step, state.user_task),
       "",
+      `## 输入`,
+      String(step.input).trim(),
+      "先读取本步所需输入；重置后从指定文件恢复需求、决定与验证依据。文件中的完成声明是待核对的记录，以当前产出与证据为准。",
+      "",
+      ...(hasCheck ? [
+        "## 本步验收依据（供自查）",
+        ...(voters > 0 ? step.check_voting!.map((v, i) => `${i + 1}. ${v.check.trim()}`) : [step.check!.trim()]),
+        "以下执行要求应交付满足这些判据的产出；独立判定由验证者负责。",
+        "",
+      ] : []),
       `## 本步要做什么`,
       (step.do || step.desc || step.id).trim(),
       "",
@@ -2320,7 +2330,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       );
     }
     if (rework) {
-      parts.push("", `## 上一轮验证未通过，请针对性修复`, rework.trim());
+      parts.push(
+        "", "## 上一轮验证未通过（反馈）", rework.trim(),
+        "反馈用于定位与安排修复；完成条件仍是当前步的完整要求。修复这些问题后，继续核对其它要求与实际产出，全部满足后再交卷。",
+      );
     }
     if (rewind) {
       // 回退原因**自成一段**：不依赖交接稿、不依赖历史 —— 接手这一步的模型一定能看到它。
@@ -2341,41 +2354,23 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           : "⚠️ **本步是工作流顺序上的最后一步**：它自己的既有产出仍在盘上、基于旧方向，重做时以新方向为准；交卷时请说明旧产出里哪些已不再适用。",
       );
     }
+    const afterSubmit = hasCheck
+      ? (voters > 0
+        ? `${voters} 个独立验证者**并行**取证，各自只查一条检查依据，**全过才放行**。`
+        : "独立验证者取证判定。")
+      : "本步未配置 check / check_voting，跳过对抗性验证。";
+    const nextAction = gate
+      ? `${hasCheck ? "通过后" : "交卷即"}停在审查门，等用户 \`/ralphflow-continue\` 放行。`
+      : (hasCheck ? "由引擎自动推进或投递失败依据。" : "交卷后由引擎自动推进。");
     parts.push(
       "",
       "## 交卷方式",
-      "完成实际工作后，按顺序做两件事：",
-      "",
-      // 有无对抗性检查决定「交卷之后发生什么」：有（check 或 check_voting）→ 独立验证；
-      // 无 → 跳过对抗性验证。绝不预告一个不会发生的验证（省 token 不能以伪造事实为代价）。
-      // 单 check 的两条与改造前**逐字相同**（回归基线）；投票步只换「一个/N 个并行」这层事实。
-      hasCheck
-        ? (voters > 0
-          ? `1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（${voters} 个独立验证者**并行**取证，各自只查一条检查依据，**全过才放行**；异步，**不需要用户做任何操作**；验证者是独立会话，正在读文件、跑命令取证，它在做什么用户在会话里看得到）→ 期间用户可以做什么（补充信息或纠正方向 / 用 \`/ralphflow-status\` 看进度 / 用 \`/ralphflow-cancel\` 中止）。**不要给任何时长预估**：委派没有超时上界，估计出来的时间只会是编的。用用户的语言写，不要把它埋进技术叙述里。`
-          : "1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 接下来进入**独立验证**（异步，**不需要用户做任何操作**；验证者是独立会话，正在读文件、跑命令取证，它在做什么用户在会话里看得到）→ 期间用户可以做什么（补充信息或纠正方向 / 用 `/ralphflow-status` 看进度 / 用 `/ralphflow-cancel` 中止）。**不要给任何时长预估**：委派没有超时上界，估计出来的时间只会是编的。用用户的语言写，不要把它埋进技术叙述里。")
-        : (gate
-          ? "1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 本步**不配置对抗性检查**，会**跳过对抗性验证**（不会有独立验证进程来复核）→ 交卷后停在**审查门**，等用户运行 `/ralphflow-continue` 放行。用用户的语言写，不要把它埋进技术叙述里。"
-          : "1. **先用一两句面向用户的话说明现在的状态与接下来会发生什么**，要让用户一眼看懂：本步已完成 → 本步**不配置对抗性检查**，会**跳过对抗性验证**（不会有独立验证进程来复核）→ 接下来自动进入下一步（**不需要用户做任何操作**）。用用户的语言写，不要把它埋进技术叙述里。"),
-      hasCheck
-        ? (voters > 0
-          ? `2. **调用 \`ralphflow_submit\` 工具交卷**（可在参数 \`summary\` 里简述你做了什么）。${voters} 个独立验证者会立刻**并行**检查你的产出（全过才放行）。`
-          : "2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。独立验证者会立刻检查你的产出。")
-        : "2. **调用 `ralphflow_submit` 工具交卷**（可在参数 `summary` 里简述你做了什么）。本步不委派独立验证者，交卷即生效。",
-      "",
-      hasCheck
-        ? "不要只在回复里说「完成了」——那样不会触发验证。**必须调用工具**。"
-        : "不要只在回复里说「完成了」——那样不会触发推进。**必须调用工具**。",
+      "1. 对照本步要求核验交付物。将跨步需要的用户决定、验证方法与结果写入本步已有过程文档；需要用户补充信息时说明阻塞项，等信息齐全再完成本步。",
+      "2. 面向用户简短说明本步交付内容及自查结果，然后**调用 `ralphflow_submit` 工具交卷**。验证者看不到 summary 参数：需要验收的证据应能从文件或命令结果独立取得。",
+      `交卷后：${afterSubmit}${nextAction}`,
+      ...(hasCheck ? ["独立验证期间不需要用户做任何操作；可用 `/ralphflow-status` 查进度或 `/ralphflow-cancel` 中止。保持已交付产出稳定，新增修改等返工或用户指令后再做；不要给任何时长预估。"] : []),
+      "交卷工具会结束当前回合，随后等待引擎或用户的下一条指令。通知与状态入口由插件展示，不需要重复播报。",
     );
-    if (!hasCheck) {
-      // 主干照 opencode 的措辞（`opencode/src/engine.ts:1565`）；manual_step 门这一支按本版本的
-      // 纯人工审查语义分开说 —— opencode 原文不区分，与上面的「停在审查门等放行」会自相矛盾。
-      parts.push(
-        "",
-        gate
-          ? `ℹ️ 本步骤**不配置对抗性检查**：完成即可，不会有独立的验证进程来复核。请务必自查产出是否满足任务要求——交卷后停在**审查门**，等用户运行 \`/ralphflow-continue\` 放行。`
-          : `ℹ️ 本步骤**不配置对抗性检查**：完成即可，不会有独立的验证进程来复核。请务必自查产出是否满足任务要求。`,
-      );
-    }
     return parts.join("\n");
   }
 
@@ -3602,7 +3597,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       return {
         remind: false,
         summary: `⏸ 步骤 ${step.id} 反复未交卷，已暂停等你处理`,
-        message: `⏸ 步骤 \`${step.id}\` 已提醒 ${used} 次仍未收到交卷，已暂停等你处理。\n\n如果工作其实做完了：让模型调用 \`ralphflow_submit\` 交卷，再 \`/ralphflow-continue\`。\n如果它卡住了：说明情况或 \`/ralphflow-cancel\` 结束。`,
+        message: `⏸ 步骤 \`${step.id}\` 已提醒 ${used} 次仍未收到交卷，已暂停等你处理。\n\n如果工作其实做完了：先用 \`/ralphflow-continue\` 恢复，再让模型调用 \`ralphflow_submit\` 交卷。\n如果它卡住了：说明情况或 \`/ralphflow-cancel\` 结束。`,
       };
     }
     pushHistory(state, "submit_reminder", `第 ${used + 1} 次`, step.id);
@@ -4169,7 +4164,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
     if (s.paused) {
       if (s.pause_reason === "max_failures") return "**等你定夺**：修好问题后 `/ralphflow-continue` 重新验证，或 `/ralphflow-cancel` 结束。";
-      if (s.pause_reason === "no_submit") return "**等你处理**：模型反复未交卷。让它调用 `ralphflow_submit`，再 `/ralphflow-continue`；或 `/ralphflow-cancel` 结束。";
+      if (s.pause_reason === "no_submit") return "**等你处理**：模型反复未交卷。先 `/ralphflow-continue` 恢复，再让它调用 `ralphflow_submit`；或 `/ralphflow-cancel` 结束。";
       return "**暂停中**：处理后 `/ralphflow-continue` 恢复（基础设施问题不计失败）。";
     }
     if (s.delegations.length > 0) {

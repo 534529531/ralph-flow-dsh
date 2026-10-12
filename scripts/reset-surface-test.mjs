@@ -698,7 +698,7 @@ console.log("\n8) 内置 spec.yaml（propose / implement 的 reset 已启用）"
   check("内置 spec：交接稿写的是第 2/4 步 propose，且产出目录就位",
     texts[1].includes("`spec`（第 2/4 步）") && texts[1].includes("`propose`") && texts[1].includes("artifacts/"), texts[1]);
   check("内置 spec：第 2 条是 propose 的 DO（定稿 proposal + 拆 tasks.md）",
-    texts[2].includes("把 proposal.md 定稿") && texts[2].includes("tasks.md"), texts[2]?.slice(0, 120));
+    texts[2].includes("定稿方案并拆为 tasks.md") && texts[2].includes("tasks.md"), texts[2]?.slice(0, 120));
   check("内置 spec：explore 阶段的旧对话已被移出上下文",
     !texts.some((t) => t.includes("重构登录模块")), JSON.stringify(texts.map((t) => t.slice(0, 24))));
   check("内置 spec：DO 照常投递", delivered.length === 1 && textOf(delivered[0]).includes("tasks.md"));
@@ -729,7 +729,7 @@ console.log("\n9) 审查门放行进入 implement（spec 的第二行 reset）")
   await sleep(20);
   const gateMsgs = H.notices(); // 🙋 放行提示是**播报**：直接 append 到可见面，不进收件箱
   check("propose 通过后停在审查门（投递 🙋 放行提示，不是 implement 的 DO）",
-    gateMsgs.some((m) => textOf(m).includes("审查门")) && !gateMsgs.some((m) => textOf(m).includes("按 tasks.md 逐任务实现")),
+    gateMsgs.some((m) => textOf(m).includes("审查门")) && !gateMsgs.some((m) => textOf(m).includes("先读 proposal.md、tasks.md")),
     JSON.stringify(gateMsgs.map((m) => textOf(m).slice(0, 50))));
   check("停在审查门时还没进 implement（replace 仍为 1）", replacementEventsOf(H.session).length === 1);
 
@@ -756,11 +756,11 @@ console.log("\n9) 审查门放行进入 implement（spec 的第二行 reset）")
   check("implement 交接后 messages 恰好 3 条 = 系统提示 + 交接稿 + DO", msgs.length === 3, `count=${msgs.length}`);
   check("第 0 条仍是系统提示", texts[0] === SYSTEM_TEXT);
   check("交接稿写的是第 3/4 步 implement", texts[1].includes("`spec`（第 3/4 步）") && texts[1].includes("`implement`"), texts[1]);
-  check("第 2 条是 implement 的 DO", texts[2].includes("按 tasks.md 逐任务实现"), texts[2]?.slice(0, 100));
+  check("第 2 条是 implement 的 DO", texts[2].includes("先读 proposal.md、tasks.md"), texts[2]?.slice(0, 100));
   check("propose 阶段的整段对话（含 propose 的交接稿与审查门往返）100% 移出上下文",
-    !texts.some((t) => t.includes("把 proposal.md 定稿")) && !texts.some((t) => t.includes("审查门等你放行")),
+    !texts.some((t) => t.includes("定稿方案并拆为 tasks.md")) && !texts.some((t) => t.includes("审查门等你放行")),
     JSON.stringify(texts.map((t) => t.slice(0, 30))));
-  check("DO 照常投递", delivered.some((m) => textOf(m).includes("按 tasks.md 逐任务实现")),
+  check("DO 照常投递", delivered.some((m) => textOf(m).includes("先读 proposal.md、tasks.md")),
     JSON.stringify(delivered.map((m) => textOf(m).slice(0, 40))));
   cleanupTmp(H.ws);
 }

@@ -134,7 +134,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
   const toolDefs: Array<{ name: string; description: string; params: Record<string, any>; handler: ToolHandler; concludeTurn?: boolean }> = [
     {
       name: "ralphflow_start",
-      description: "启动一个 Ralph Flow 工作流：模型执行当前步骤；有 `check` / `check_voting` 的步骤交卷后由独立验证者取证判定（投票步 N 票并行、全过才放行），失败自动返工；没有 `check` / `check_voting` 的步骤跳过对抗性验证。启动结果会给出本步的 DO 提示与交卷方式。",
+      description: "启动用户要求的工作流，返回当前 DO。有 `check` / `check_voting` 才独立取证判定；没有 `check` / `check_voting` 则跳过对抗性验证。",
       params: {
         workflow: { type: "string", required: true, description: "工作流名（loop / spec，或自定义 YAML 名）。" },
         task: { type: "string", required: true, description: "要完成的任务描述。" },
@@ -143,18 +143,18 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: "ralphflow_submit",
-      description: "【DO 阶段交卷】本步工作完成后调用。有 `check` / `check_voting` 的步骤：独立验证者随即取证判定（投票步 N 票并行、全过才放行）；没有 `check` / `check_voting` 的步骤：跳过对抗性验证直接继续（`manual_step` 则停在审查门等放行）。不交卷则工作流不会推进。",
+      description: "【DO 阶段交卷】本步完成并自查后调用，结束当前回合。有 `check` / `check_voting` 才独立取证判定；没有 `check` / `check_voting` 则跳过对抗性验证。按定义自动推进或停在审查门。",
       params: {
-        summary: { type: "string", description: "可选：简述本步做了什么。**验证者看不到它**（T1：验证请求不含执行者自述），它只留在实例状态里；验证者只独立取证。" },
+        summary: { type: "string", description: "可选：简述本步做了什么。**验证者看不到它**（T1：验证请求不含执行者自述），它仅供审查门重交去重，不是验证证据，也不作持久交接；跨步信息应写入过程文档。" },
       },
       handler: submitHandler,
       concludeTurn: true,
     },
     {
       name: "ralphflow_continue",
-      description: "推进工作流：放行审查门 / 解除暂停 / 接管实例（**只在无属主时自动接管**；有属主的实例必须显式给 `instance`）。判定未通过时拒绝推进。",
+      description: "按用户明确指令放行审查门、解除暂停或接管实例。普通步骤自动推进。只在无属主时自动接管；有属主的实例必须显式给 `instance`。",
       params: {
-        instance: { type: "string", description: "要接管/推进的实例 ID（可前缀）。带它 = 用户显式指定 —— 有属主的实例只走这条显式路径。" },
+        instance: { type: "string", description: "要接管/推进的实例 ID（可前缀）。按用户指定填写；有属主的实例必须显式指定，参数本身不替代用户授权。" },
       },
       handler: continueHandler,
     },
@@ -183,7 +183,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: "ralphflow_create",
-      description: "获取自定义工作流的交互式设计指引（模型与用户一轮问清流程 → 呈现步骤图 → 写 YAML → doctor 校验到全部 ✅ 且无告警）。",
+      description: "获取自定义工作流的交互式设计指引（按需澄清 → 步骤图 → 写 YAML → doctor 校验目标定义）。",
       params: {
         idea: { type: "string", description: "用户想自动化的流程想法（可选，有则附在指引前）。" },
       },
@@ -321,7 +321,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       input: { hint: "[流程想法]" },
       shim: (inv) => ({
         kind: "directive",
-        text: `用户想${inv.rawInput.trim() ? `创建一个工作流：${inv.rawInput.trim()}` : "创建自定义 Ralph Flow 工作流"}。请调用 \`ralphflow_create\` 工具获取完整设计指引，然后按指引与用户交互：一轮问清流程阶段与审查门位置（用户没说清楚才问）→ 呈现步骤图 → 写 YAML 到 \`.dsh/ralph-flow/workflows/\` → 调用 \`ralphflow_doctor\` 校验到全部 ✅ 且无告警 → 交接运行方式。`,
+        text: `用户想${inv.rawInput.trim() ? `创建一个工作流：${inv.rawInput.trim()}` : "创建自定义 Ralph Flow 工作流"}。请调用 \`ralphflow_create\` 工具，按它返回的创建步骤与按需参考完成定义，交接运行方式。`,
       }),
     },
     {
@@ -329,7 +329,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       description: "诊断工作流定义与实例状态。示例：/ralphflow-doctor",
       shim: () => ({
         kind: "directive",
-        text: "用户执行了 /ralphflow-doctor，想诊断工作流与实例。请调用 `ralphflow_doctor` 工具，然后把诊断为 ❌ 的每一项用通俗语言向用户说明原因与修复建议；全部 ✅ 就简短说「一切正常」。",
+        text: "用户执行了 /ralphflow-doctor，想诊断工作流与实例。请调用 `ralphflow_doctor` 工具，然后把诊断为 ❌ 的每一项用通俗语言向用户说明原因与修复建议；同时转达告警；仅在无 ❌ 且无告警时说检查通过。修复动作以用户授权范围为准。",
       }),
     },
     {
