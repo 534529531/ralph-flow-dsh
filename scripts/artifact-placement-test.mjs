@@ -59,8 +59,12 @@ console.log("A) loop 的「交付物」不再把 summary.md 列成交付物（�
 const loopDef = engine.loadWorkflow("loop").def;
 const loopStep = loopDef.steps[0];
 check("loop 的 output 不含过程文档名 summary.md", !/summary\.md/.test(String(loopStep.output)), loopStep.output);
-check("loop 的 do 仍要求「每轮把摘要追加到 summary.md」（累积器保留）",
+check("loop 的 do 仍要求「每次交卷前把摘要追加到 summary.md」（累积器保留）",
   /追加/.test(loopStep.do) && loopStep.do.includes("summary.md"), loopStep.do);
+check("summary 的边界是「每次交卷」，不是每个会话回合",
+  loopStep.do.includes("每次交卷前") && loopStep.do.includes("一次交卷一节") && !loopStep.do.includes("每轮结束时"), loopStep.do);
+check("loop 的 do 不暴露引擎内部协议（unfinished / 交卷方式 / 未完成部分）",
+  !/unfinished/.test(loopStep.do) && !/交卷方式/.test(loopStep.do) && !/未完成部分/.test(loopStep.do), loopStep.do);
 
 // ── B) 拼装后的 DO 提示词：逐节自洽 ──────────────────────────────────────────
 console.log("\nB) 整篇拼装后的 DO 提示词：关于「过程文档落在哪」只有一个说法");

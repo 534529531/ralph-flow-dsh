@@ -25,6 +25,8 @@ import { Session, SESSION_FORMAT_VERSION } from "@deepseek-ai/dsh-session";
  *   传一个「永不 resolve」的实现即可把验证**钉在飞行中**（问题一的用例就是这么做的）。
  */
 export function mkEnv(ws, sid, opts = {}) {
+  // 插件按加载目录解析默认项目根（真实 dsh 就从工作区目录启动）；测试也必须同形。
+  process.chdir(ws);
   const ctx = new Context();
   const registered = { tools: [], commands: [], skills: [] };
   const sent = [];
@@ -45,11 +47,12 @@ export function mkEnv(ws, sid, opts = {}) {
   ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
-    getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
-    start: opts.start
-      ?? (async () => ({ id: "child", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) })),
+    getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
+    startActivation: opts.start
+      ?? (async () => ({ childId: "child", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) })),
   });
-  ctx.provide("agents", { get: (id) => agents.get(id) });
+    ctx.provide("agentPresets", { register: async () => async () => {} });
+ctx.provide("agents", { get: (id) => agents.get(id) });
   ctx.provide("sessions", { list: () => [], get: (id) => (id === sid ? session : undefined) });
   ctx.provide("logger", { info() {}, warn() {}, error() {} });
   return { ctx, registered, sent, sid, agents };

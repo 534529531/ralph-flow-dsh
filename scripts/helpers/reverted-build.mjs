@@ -29,12 +29,13 @@ export const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export function buildPluginCopy(patches, label) {
   const dir = mkTmp(`build-${label}`);
   const srcDir = path.join(dir, "src");
-  fs.mkdirSync(srcDir, { recursive: true });
-  for (const f of fs.readdirSync(path.join(REPO, "src"))) {
-    if (!f.endsWith(".ts")) continue;
-    const raw = fs.readFileSync(path.join(REPO, "src", f), "utf-8");
-    const patched = patches?.[f] ? patches[f](raw) : raw;
-    fs.writeFileSync(path.join(srcDir, f), patched, "utf-8");
+  // 整个 src/ 递归复制（Graph 与 client 子目录也是插件的一部分）；负对照补丁按
+  // 相对 src 的文件名应用，缺锚点由各 patch 自己大声失败。
+  fs.cpSync(path.join(REPO, "src"), srcDir, { recursive: true });
+  for (const [f, patch] of Object.entries(patches ?? {})) {
+    const target = path.join(srcDir, f);
+    const raw = fs.readFileSync(target, "utf-8");
+    fs.writeFileSync(target, patch(raw), "utf-8");
   }
   // NodeNext 解析要靠 package.json 的 "type": "module"（缺了会把 import.meta 判成 CJS）
   for (const f of ["tsconfig.json", "package.json"]) {
@@ -43,6 +44,9 @@ export function buildPluginCopy(patches, label) {
   // 内置工作流（loop/spec）由 `lib/../workflows/*.yaml` 解析：漏了它，还原构建里连
   // `ralphflow_start loop` 都跑不起来（负对照会变成「构建不全」的证据，而不是修复的证据）
   fs.cpSync(path.join(REPO, "workflows"), path.join(dir, "workflows"), { recursive: true });
+  if (fs.existsSync(path.join(REPO, "graphs"))) {
+    fs.cpSync(path.join(REPO, "graphs"), path.join(dir, "graphs"), { recursive: true });
+  }
   fs.cpSync(path.join(REPO, "references"), path.join(dir, "references"), { recursive: true });
   // 依赖解析：软链仓库的 node_modules（rmSync 不会跟进软链，清理是安全的）
   fs.symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"), "dir");
@@ -63,22 +67,20 @@ export function buildPluginCopy(patches, label) {
 }
 
 /**
- * 【问题一的还原】把「属主活着就不打扰」的判据还原成修复前的行为：**无条件当作孤儿**
- * （`restore()` 见委派就清空 + 暂停）。
+ * 【问题一的还原】把「属主还活着就不打扰」的判据还原成修复前的行为：**无条件当属主已死**
+ * （`restore()` 见到在飞实例就清空委派 + 标中断）。
  *
- * 锚点 `ralphflow:orphan-liveness` 就写在判据函数上方；找不到它说明修复被改写，这里直接抛。
+ * 锚点就是 `owner.ts` 的 `ownerAlive` 函数；找不到它说明修复被改写，这里直接抛。
  */
 export function revertOrphanLivenessGuard(src) {
-  const lines = src.split("\n");
-  const marker = lines.findIndex((l) => l.includes("ralphflow:orphan-liveness"));
-  if (marker < 0) throw new Error("负对照锚点 `ralphflow:orphan-liveness` 不见了 —— 修复被改写，请同步更新负对照");
-  let end = -1;
-  for (let i = marker + 1; i < lines.length; i++) {
-    if (lines[i] === "}") { end = i; break; }
-  }
-  if (end < 0) throw new Error("负对照锚点后找不到判据函数的结尾 `}`");
-  lines.splice(marker, end - marker + 1, "function delegationOwnerAlive(_d: Delegation): boolean { return false; } // 负对照：还原为修复前的「无条件清空委派」");
-  return lines.join("\n");
+  const marker = "export function ownerAlive(state: OwnerStamp, now = Date.now()): boolean {";
+  const start = src.indexOf(marker);
+  if (start < 0) throw new Error("负对照锚点 `ownerAlive` 不见了 —— 修复被改写，请同步更新负对照");
+  const end = src.indexOf("\n}", start);
+  if (end < 0) throw new Error("负对照锚点后找不到 `ownerAlive` 的结尾 `}`");
+  return src.slice(0, start)
+    + "export function ownerAlive(_state: OwnerStamp, _now = Date.now()): boolean {\n  return false; // 负对照：还原为「无条件把属主当死」\n}"
+    + src.slice(end + 2);
 }
 
 /**

@@ -30,7 +30,7 @@ provide("commands", { register() {} });
 provide("skills", { register() {} });
 provide("subagents", {
   list() { return ["spawn"]; },
-  getProvider() { return { capabilities: { outputSchema: false, toolFilter: true, persona: true }, inheritsParentContext: false }; },
+  getProvider() { return { capabilities: { outputSchema: false, agentPreset: true }, inheritsParentContext: false }; },
   start() { throw new Error("stub: no real subagent in smoke"); },
 });
 provide("agents", { get() { return undefined; } });

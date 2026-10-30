@@ -1,7 +1,7 @@
 {
   "name": "ralphflow-dsh",
-  "version": "2.3.1",
-  "description": "Ralph Flow for DeepSeek Harness — 执行者/验证者模式的具象化：主会话执行，独立验证者对抗检查，推进权在机械程序（v2 原生重做）",
+  "version": "2.3.2",
+  "description": "Ralph Flow for DeepSeek Harness — Flow 顺序状态机 + Graph DAG（统一插件/命令/工具/查看器）：主会话执行，独立验证者取证，推进权在机械程序（v2 原生）",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -23,6 +23,7 @@
   "files": [
     "lib",
     "workflows",
+    "graphs",
     "cordis.patch.yml",
     "README.md",
     "references"
@@ -38,7 +39,8 @@
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-api-gateway",
-        "@deepseek-ai/dsh-client-ui-primitives"
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
       ],
       "external": [
         "react",
@@ -61,22 +63,24 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.4 || ^4.0.5-alpha.1",
-    "@deepseek-ai/dsh-agent": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-llm": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-subagent": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-session": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-compaction": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-commands": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-skill": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-client-ui-chat": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-client-ui-conversation": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-client-ui-renderer": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-typert-protocol": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-typert-registry": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-api-gateway": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-session-query": "^0.2.0-rc.2 || ^0.2.1-alpha.1",
-    "@deepseek-ai/dsh-client-ui-primitives": "^0.2.0-rc.2 || ^0.2.1-alpha.1"
+    "@deepseek-ai/dsh-agent": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-subagent": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-session": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-compaction": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-commands": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-skill": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-home-paths": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-chat": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-typert-registry": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-api-gateway": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-session-query": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "^0.2.0-rc.2 || ^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "^0.2.0-rc.2 || ^0.2.1-rc.2"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
@@ -84,25 +88,27 @@
     "esbuild": "^0.28.2",
     "@types/react": "^18.3.1",
     "react": "^18.3.1",
-    "@deepseek-ai/cordis": "4.0.4",
-    "@deepseek-ai/dsh-agent": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-subagent": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-session": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-compaction": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-commands": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-skill": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-chat": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-conversation": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-renderer": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-typert-registry": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-api-gateway": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-session-query": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-primitives": "0.2.0-rc.2",
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-agent": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-subagent": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-compaction": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-commands": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-skill": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-home-paths": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-chat": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-typert-registry": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-api-gateway": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-session-query": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.1-rc.2",
     "typescript": "^5.9.3",
-    "@deepseek-ai/dsh": "0.2.0-rc.2"
+    "@deepseek-ai/dsh": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "0.2.1-rc.2"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
@@ -138,6 +144,9 @@
     "@deepseek-ai/dsh-skill": {
       "optional": true
     },
+    "@deepseek-ai/dsh-home-paths": {
+      "optional": true
+    },
     "@deepseek-ai/dsh-client-ui-chat": {
       "optional": true
     },
@@ -160,6 +169,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-client-ui-primitives": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-sidebar-right": {
       "optional": true
     }
   }

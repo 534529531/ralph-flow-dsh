@@ -19,7 +19,11 @@ const files = fs.readdirSync(path.join(dir, "scripts"))
 
 let failed = 0;
 for (const f of files) {
-  const r = spawnSync(process.execPath, [path.join(dir, "scripts", f)], { cwd: dir, encoding: "utf-8" });
+  // 测试必须读自己的隔离 HOME：`DSH_HOME` 会盖过 HOME，若继承用户真实配置，
+  // 用户级工作流（比如自建的 release.yaml）会漏进每一个用例。
+  const env = { ...process.env };
+  delete env.DSH_HOME;
+  const r = spawnSync(process.execPath, [path.join(dir, "scripts", f)], { cwd: dir, encoding: "utf-8", env });
   const lines = (r.stdout ?? "").split("\n");
   const tail = lines.filter((l) => /passed|APPLY_OK|failed/.test(l)).slice(-1)[0] ?? "";
   console.log(`${r.status === 0 ? "✓" : "✗"} ${f.padEnd(32)} ${tail.trim().slice(0, 60)}`);

@@ -16,7 +16,6 @@ if (!entry || !ws || !sid) {
   console.error("用法: node touch-probe.mjs <entry> <workspace> <sessionId> [tool]");
   process.exit(2);
 }
-process.env.RALPHFLOW_WORKSPACE = ws;
 
 const plugin = await import(entry);
 const env = mkEnv(ws, sid, {});

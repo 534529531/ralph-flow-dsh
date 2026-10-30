@@ -187,18 +187,20 @@ console.log("\nH6 对照：DO 阶段未判定时重复交卷不重复验证");
   check("返工后的新交卷正常触发验证", after === before + 1, `${before} → ${after}`);
 }
 
-// ── H7 崩溃恢复：孤儿委派仍然 fail-safe 暂停，不隐式推进 ────────────────────
-console.log("\nH7 后备：孤儿委派 fail-safe（加固不得削弱既有安全网）");
+// ── H7 崩溃恢复：属主失联仍然 fail-safe 标中断，不隐式推进 ──────────────────
+console.log("\nH7 后备：属主失联 fail-safe（加固不得削弱既有安全网）");
 {
   const s = S();
-  const { id } = start("loop", "孤儿委派回归", s);
+  const { id } = start("loop", "属主失联回归", s);
   const st = engine.readState(id);
+  st.owner_runtime = "dead-runtime";
+  delete st.owner_heartbeat_at;
   st.delegations.push({ run_id: "orphan-hardening", check_index: 0, ts: new Date().toISOString() });
   fs.writeFileSync(path.join(engine.instanceDir(id), "state.json"), JSON.stringify(st, null, 2));
   engine.restore();
   const after = engine.readState(id);
-  check("孤儿委派 → 暂停 check_infra 且清空委派",
-    after.paused && after.pause_reason === "check_infra" && after.delegations.length === 0,
+  check("属主心跳停了 → 标中断（host_restarted）且清空委派",
+    after.paused && after.pause_reason === "host_restarted" && after.delegations.length === 0,
     JSON.stringify({ p: after.pause_reason, d: after.delegations.length }));
 }
 
