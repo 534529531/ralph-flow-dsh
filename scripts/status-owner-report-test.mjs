@@ -6,6 +6,7 @@ import * as plugin from "../lib/index.js";
 import { TYPERT } from "../lib/typert.js";
 import { mkEnv, mkTmp, cleanupTmp, toolOf, execTool, sleep } from "./helpers/plugin-harness.mjs";
 const root = mkTmp("status-owner-report");
+process.chdir(root);
 process.env.DSH_HOME = `${root}/isolated-home`;
 const env = mkEnv(root, "owner");
 const session = env.agents.get("owner").session;
@@ -27,7 +28,7 @@ try {
   await sleep(10);
   await invoke("ralphflow_start", { workflow: "manual", task: "新运行已完成" });
   assert.equal((await read()).status.stage, "executing");
-  await invoke("ralphflow_submit", { summary: "交卷" });
+  await invoke("ralphflow_submit", { summary: "交卷", unfinished: [] });
   assert.equal((await read()).status.stage, "gate");
   await invoke("ralphflow_continue");
   const seq = session.seq, terminal = (await read()).status;

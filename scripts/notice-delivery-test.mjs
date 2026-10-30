@@ -48,6 +48,9 @@ const RUN = Math.random().toString(36).slice(2, 8);
  * `inbox` 是它的收件箱：宿主的回合循环只看 `inbox.nextStep.length` 决定要不要续跑一步。
  */
 function mkEnv(ws, sid) {
+
+  // 插件按加载目录解析默认项目根（真实 dsh 就从工作区目录启动）；测试也必须同形。
+  process.chdir(ws);
   const ctx = new Context();
   const registered = { tools: [], commands: [], skills: [] };
   const steered = [];
@@ -65,11 +68,12 @@ function mkEnv(ws, sid) {
   ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
-    getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
+    getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
     // 验证委派永远悬挂：本文件只关心「投播报的那一瞬」，不关心判定
-    start: () => ({ id: "child", result: new Promise(() => {}) }),
+    startActivation: () => ({ childId: "child", result: new Promise(() => {}) }),
   });
-  ctx.provide("agents", { get: (id) => agents.get(id) });
+    ctx.provide("agentPresets", { register: async () => async () => {} });
+ctx.provide("agents", { get: (id) => agents.get(id) });
   ctx.provide("sessions", { list: () => [], get: (id) => (id === sid ? session : undefined) });
   ctx.provide("logger", { info() {}, warn() {}, error() {} });
 
@@ -89,7 +93,6 @@ const DO_MARK = "本步要做什么";
 console.log("N1 空闲会话：播报**立刻**落成可见行，且**不唤醒**（不开新回合）");
 {
   const ws = mkTmp("notice1");
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const sid = `notice1-${RUN}`;
   const H = mkEnv(ws, sid);
   plugin.apply(H.ctx);
@@ -104,7 +107,7 @@ console.log("N1 空闲会话：播报**立刻**落成可见行，且**不唤醒*
   const steeredBefore = H.steered.length;
 
   // 交卷 → 引擎发出「独立验证者正在取证」这条**播报**
-  await call(submitTool, { summary: "做完了" });
+  await call(submitTool, { summary: "做完了", unfinished: [] });
 
   // ① 立刻可见：**没有**等任何回合、任何 drain
   const notices = H.surfaceNotices();
@@ -134,7 +137,6 @@ console.log("N1 空闲会话：播报**立刻**落成可见行，且**不唤醒*
 console.log("\nN2 回合正在收尾：投播报**不把回合续上**（收件箱保持为空）");
 {
   const ws = mkTmp("notice2");
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const sid = `notice2-${RUN}`;
   const H = mkEnv(ws, sid);
   plugin.apply(H.ctx);
@@ -143,7 +145,7 @@ console.log("\nN2 回合正在收尾：投播报**不把回合续上**（收件�
   const call = (t, a) => t.execute(a ?? {}, { agent: { session: { id: sid } }, signal: new AbortController().signal });
 
   await call(startTool, { workflow: "loop", task: "收尾不被续上" });
-  await call(submitTool, { summary: "做完了" });
+  await call(submitTool, { summary: "做完了", unfinished: [] });
 
   // 宿主回合循环的续跑判据（dsh-agent-loop）：`turnEnds && inbox.nextStep.length === 0` → break。
   // 播报不进收件箱 ⇒ 判据仍成立 ⇒ 这个正在收尾的回合照原样结束。
@@ -157,7 +159,6 @@ console.log("\nN2 回合正在收尾：投播报**不把回合续上**（收件�
 console.log("\nN3 指令仍唤醒：命令转达 / DO 仍走 steer");
 {
   const ws = mkTmp("notice3");
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const sid = `notice3-${RUN}`;
   const H = mkEnv(ws, sid);
   plugin.apply(H.ctx);
@@ -185,7 +186,7 @@ console.log("\nN3 指令仍唤醒：命令转达 / DO 仍走 steer");
   const call = (t, a) => t.execute(a ?? {}, { agent: { session: { id: sid } }, signal: new AbortController().signal });
   await call(startTool, { workflow: "nochk", task: "两步无检查" });
   const beforeSteer = H.steered.length;
-  await call(submitTool, { summary: "第一步完成" });
+  await call(submitTool, { summary: "第一步完成", unfinished: [] });
   const newSteers = H.steered.slice(beforeSteer);
   check("N3c 下一步 DO 仍是**指令**（唤醒模型继续干）",
     newSteers.some((m) => textOf(m).includes(DO_MARK)), JSON.stringify(newSteers.map((m) => textOf(m).slice(0, 40))));
@@ -198,7 +199,6 @@ console.log("\nN3 指令仍唤醒：命令转达 / DO 仍走 steer");
 console.log("\nN4 工具调用在飞：播报**挂起**，绝不插进 tool 配对中间");
 {
   const ws = mkTmp("notice4");
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const sid = `notice4-${RUN}`;
   const H = mkEnv(ws, sid);
   plugin.apply(H.ctx);
@@ -218,7 +218,7 @@ console.log("\nN4 工具调用在飞：播报**挂起**，绝不插进 tool 配�
   const submitTool = toolOf(H.registered, "ralphflow_submit");
   const call = (t, a) => t.execute(a ?? {}, { agent: { session: { id: sid } }, signal: new AbortController().signal });
   await call(startTool, { workflow: "loop", task: "工具在飞时投播报" });
-  await call(submitTool, { summary: "做完了" });
+  await call(submitTool, { summary: "做完了", unfinished: [] });
 
   check("N4a 配对不平衡时**不插队**：播报没有立刻落到可见面上",
     !H.surfaceNotices().some((m) => textOf(m).includes("独立验证者")),

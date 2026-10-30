@@ -7,6 +7,8 @@ export function apply(ctx) {
   let serial = 0;
   const pending = [], holds = [];
   const submitted = new Set();
+  const graphWrote = new Set();
+  let graphStarted = false;
   let approvalAbort, nativeJob;
   ctx.jobs.attachController("ui-native-comparison");
   ctx.tools.register(defineTool({ name: "status_approval_probe", description: "状态 UI 的原生审批验收", parameters: {},
@@ -38,15 +40,30 @@ export function apply(ctx) {
     async resolveModel(provider, id) { return { provider, id, name: id }; }
     async listModels(provider) { return [{ provider, id: "notice", name: "notice" }]; }
     async *stream(options) {
-      const texts = (options.messages ?? []).map((m) => typeof m.content === "string" ? m.content : JSON.stringify(m.content));
+      const texts = (options.messages ?? []).map((m) => typeof m.content === "string"
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content.filter((block) => block?.type === "text").map((block) => block.text ?? "").join("\n")
+          : JSON.stringify(m.content));
       const all = [options.system ?? "", ...texts].join("\n");
       const names = (options.tools ?? []).map((t) => t.name);
+      if (process.env.RALPHFLOW_GRAPH_UI_DEBUG) console.error("[fixture]", JSON.stringify(names), texts.at(-1)?.slice(0, 160).replace(/\n/g, " | "));
       if (texts.at(-1)?.includes("UI_STATUS_APPROVAL") && names.includes("status_approval_probe")) {
         for (const c of tool("status_approval_probe", {})) yield c;
         return;
       }
       if (all.includes("无法启动")) throw new Error("notice fixture workflow start was rejected");
-      const mode = all.includes("UI_NOTICE_PAUSE") ? "pause" : all.includes("UI_NOTICE_GATE") ? "gate" : "loop";
+      const mode = all.includes("UI_DESIGN_GRAPH") ? "design" : all.includes("UI_GRAPH_VIEWER") ? "graph" : all.includes("UI_NOTICE_PAUSE") ? "pause" : all.includes("UI_NOTICE_GATE") ? "gate" : "loop";
+      if (all.includes("## 完整 CHECK") && names.includes("structured_output")) {
+        // Graph CHECK：从提示词抄出判据，返回逐条证据（真实结构化形状）。
+        const section = /## 完整 CHECK[^\n]*\n([\s\S]*?)\n\n/.exec(all)?.[1] ?? "";
+        const criteria = section.split("\n").map((line) => line.replace(/^\d+\.\s*/, "").trim()).filter(Boolean);
+        if (process.env.RALPHFLOW_GRAPH_UI_DEBUG) console.error("[graph-verifier] criteria=", criteria.length, JSON.stringify(criteria.slice(0, 2)), "section=", JSON.stringify(section.slice(0, 120)));
+        // 受控挂起：让「CHECK 验证中」这一阶段在页面上真实存在，供查看器阶段断言取证。
+        if (process.env.RALPHFLOW_GRAPH_UI_HOLD) { const d = Promise.withResolvers(); holds.push(d.resolve); await d.promise; }
+        for (const c of tool("structured_output", { passed: true, reason: "真机 Graph CHECK：通过", evidence: criteria.map((criterion) => ({ criterion, passed: true, evidence: "真机受控证据" })) })) yield c;
+        return;
+      }
       if (names.includes("structured_output")) {
         const d = Promise.withResolvers();
         pending.push({ mode, resolve: d.resolve });
@@ -54,17 +71,35 @@ export function apply(ctx) {
         for (const c of tool("structured_output", { passed, reason: passed ? "真机受控票：通过" : "真机受控票：未通过，需要返工" })) yield c;
         return;
       }
+      const graphDo = texts.filter((t) => t.includes("Graph 节点执行")).at(-1);
+      if (graphDo) console.error("[graph-fixture] tools=", JSON.stringify(names), "wrote=", graphWrote.has(graphDo));
+      if (graphDo && names.includes("ralphflow_artifact_write")) {
+        if (!graphWrote.has(graphDo)) {
+          graphWrote.add(graphDo);
+          for (const c of tool("ralphflow_artifact_write", { content: "真机 Graph 节点产物" })) yield c;
+          return;
+        }
+        if (names.includes("ralphflow_submit")) {
+          // 受控挂起：让「DO 执行中」这一阶段在页面上真实存在，供查看器阶段断言取证。
+          if (process.env.RALPHFLOW_GRAPH_UI_HOLD) { const d = Promise.withResolvers(); holds.push(d.resolve); await d.promise; }
+          for (const c of tool("ralphflow_submit", { unfinished: [] })) yield c;
+          return;
+        }
+      }
       const doText = texts.filter((t) => t.includes("本步要做什么")).at(-1);
       if (doText && !submitted.has(doText) && names.includes("ralphflow_submit")) {
         submitted.add(doText);
         if (doText.includes("上一轮验证未通过")) {
           const d = Promise.withResolvers(); holds.push(d.resolve); await d.promise;
         }
-        for (const c of tool("ralphflow_submit", { summary: "真机交卷" })) yield c;
+        for (const c of tool("ralphflow_submit", { summary: "真机交卷", unfinished: [] })) yield c;
         return;
       }
-      if (!doText && names.includes("ralphflow_start") && all.includes("UI_NOTICE_")) {
-        for (const c of tool("ralphflow_start", { workflow: mode === "loop" ? "loop" : `ui-${mode}`, task: `UI_NOTICE_${mode.toUpperCase()}` })) yield c;
+      if (!doText && names.includes("ralphflow_start") && (all.includes("UI_NOTICE_") || (mode === "graph" && !graphStarted))) {
+        const workflow = mode === "graph" ? "status-graph" : mode === "loop" ? "loop" : `ui-${mode}`;
+        const task = mode === "graph" ? "UI_GRAPH_VIEWER" : `UI_NOTICE_${mode.toUpperCase()}`;
+        if (mode === "graph") graphStarted = true;
+        for (const c of tool("ralphflow_start", { workflow, task })) yield c;
         return;
       }
       for (const c of say("本轮已交卷，等待独立验证。" + (process.env.RALPHFLOW_STATUS_LONG_CHAT ? "\n" + Array.from({ length: 70 }, (_, i) => `验收上下文 ${i + 1}：工作流仍由引擎推进。`).join("\n") : ""))) yield c;
@@ -112,7 +147,7 @@ export function apply(ctx) {
         if (!blocked) for (const callback of statusCallbacks) callback();
         result = { blocked, subscriptions: statusCallbacks.size };
       } else if (url.pathname === "/__notice/empty") {
-        result = await ctx.sessionController.create({ cwd: process.env.RALPHFLOW_WORKSPACE });
+        result = await ctx.sessionController.create({ cwd: process.cwd() });
         await ctx.sessionController.prompt({ sessionId: result.sessionId, requestId: `empty-${++serial}`, mode: "queue", content: [{ type: "text", text: "UI_STATUS_EMPTY" }] }, new AbortController().signal);
         await ctx.sessionController.rename({ sessionId: result.sessionId, title: "UI_STATUS_EMPTY" });
       } else if (url.pathname === "/__notice/fork") {
@@ -126,9 +161,15 @@ export function apply(ctx) {
       } else if (url.pathname === "/__notice/ui") {
         const agent = ctx.agents.get(url.searchParams.get("sid"));
         result = await ctx.get("ralphflowStatus").reader.read(agent.session);
+      } else if (url.pathname === "/__notice/graph") {
+        const { sessionId } = await ctx.sessionController.create({ cwd: process.cwd() });
+        await ctx.sessionController.selectModel({ sessionId, provider: "notice-fixture", model: "notice" });
+        await ctx.sessionController.prompt({ sessionId, requestId: `graph-${++serial}`, mode: "queue", content: [{ type: "text", text: "UI_GRAPH_VIEWER" }] }, new AbortController().signal);
+        await ctx.sessionController.rename({ sessionId, title: "UI_GRAPH_VIEWER" });
+        result = { sessionId };
       } else if (url.pathname === "/__notice/start") {
         const mode = url.searchParams.get("mode") ?? "loop";
-        const { sessionId } = await ctx.sessionController.create({ cwd: process.env.RALPHFLOW_WORKSPACE });
+        const { sessionId } = await ctx.sessionController.create({ cwd: process.cwd() });
         await ctx.sessionController.selectModel({ sessionId, provider: "notice-fixture", model: "notice" });
         await ctx.sessionController.prompt({ sessionId, requestId: `notice-${++serial}`, mode: "queue", content: [{ type: "text", text: `完成 UI_NOTICE_${mode.toUpperCase()}` + (process.env.RALPHFLOW_STATUS_LONG_CHAT ? "\n" + Array.from({ length: 70 }, (_, i) => `验收上下文 ${i + 1}：检查长 Chat 中的固定状态入口。`).join("\n") : "") }] }, new AbortController().signal);
         result = { sessionId };

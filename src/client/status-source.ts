@@ -1,17 +1,18 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-api-gateway/client";
 import { RemoteSnapshotStream } from "@deepseek-ai/dsh-api-gateway/client";
-import { parseStatusFrame, type StatusFrame, type WorkflowStatus } from "../status-contract.js";
+import { parseStatusFrame, type PauseResult, type StatusFrame, type ViewerAsset, type WorkflowStatus } from "../status-contract.js";
 
 export interface ClientStatus {
   status: WorkflowStatus | null;
   connection: "connecting" | "live" | "offline";
   error: string | null;
+  catalog: ViewerAsset[];
 }
 
 /** One lazy stream per Session, shared by the header and dock. Last unsubscribe releases it. */
 export function createStatusSource(ctx: Context, sessionId: string) {
-  let snapshot: ClientStatus = { status: null, connection: "connecting", error: null };
+  let snapshot: ClientStatus = { status: null, connection: "connecting", error: null, catalog: [] };
   const listeners = new Set<() => void>();
   let stream: RemoteSnapshotStream<StatusFrame, StatusFrame> | undefined;
   let token = 0;
@@ -30,7 +31,7 @@ export function createStatusSource(ctx: Context, sessionId: string) {
       if (incarnation !== token) return;
       const frame = parseStatusFrame(raw);
       if (frame.sessionId !== sessionId) throw new Error("status stream crossed Session binding");
-      publish({ status: frame.status, connection: "live", error: frame.error });
+      publish({ status: frame.status, connection: "live", error: frame.error, catalog: frame.catalog });
     };
     const carrier = ctx.remote.$stream<StatusFrame>({
       name: `ralphflow status ${sessionId}`,
@@ -51,6 +52,7 @@ export function createStatusSource(ctx: Context, sessionId: string) {
   };
   return {
     getSnapshot: () => snapshot,
+    pause: (): Promise<PauseResult> => ctx.remote.ralphflowStatus.pause(sessionId),
     subscribe(listener: () => void) {
       listeners.add(listener);
       if (listeners.size === 1) start();

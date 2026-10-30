@@ -17,7 +17,9 @@ const frame = (kind, failures, sessionId = "owner") => ({ kind, sessionId, statu
 let latest = frame("snapshot", 0);
 const ctx = { remote: {
   $stream: (options) => new RemoteStream({ generation: { getSnapshot: () => "host", subscribe: () => () => {} } }, options),
-  ralphflowStatus: { async *watch(sid, signal) {
+  ralphflowStatus: {
+  async pause(sid) { assert.equal(sid, "owner"); return { ok: true, text: "paused" }; },
+  async *watch(sid, signal) {
     assert.equal(sid, "owner"); assert(signal instanceof AbortSignal); lastSignal = signal;
     opened++;
     let wake; const pending = [];
@@ -35,6 +37,7 @@ const ctx = { remote: {
   } },
 } };
 const source = createStatusSource(ctx, "owner");
+assert.deepEqual(await source.pause(), { ok: true, text: "paused" });
 const tick = () => new Promise((r) => setTimeout(r, 15));
 assert.equal(opened, 0, "getSnapshot does not start IO");
 source.getSnapshot(); assert.equal(opened, 0);

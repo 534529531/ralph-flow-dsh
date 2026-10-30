@@ -29,6 +29,9 @@ const RUN = Math.random().toString(36).slice(2, 8);
 const SUMMARY_MAX = 120;
 
 function mkEnv(ws, sid) {
+
+  // 插件按加载目录解析默认项目根（真实 dsh 就从工作区目录启动）；测试也必须同形。
+  process.chdir(ws);
   const ctx = new Context();
   const registered = { tools: [], commands: [], skills: [] };
   /** 捕获插件实际投递的消息对象（不只看文本，要看 source） */
@@ -42,10 +45,11 @@ function mkEnv(ws, sid) {
   ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
-    getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
-    start: async () => ({ id: "c", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) }),
+    getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
+    startActivation: async () => ({ childId: "c", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) }),
   });
-  ctx.provide("agents", { get: (id) => agents.get(id) });
+    ctx.provide("agentPresets", { register: async () => async () => {} });
+ctx.provide("agents", { get: (id) => agents.get(id) });
   ctx.provide("sessions", { list: () => [], get: (id) => (id === sid ? session : undefined) });
   ctx.provide("logger", { info() {}, warn() {}, error() {} });
   return { ctx, registered, sent, sid };
@@ -75,7 +79,6 @@ function assertAllVisible(label, sent, allowOpaque = 0) {
 console.log("U1 启动：DO 提示词随 tool result 返回（本身即用户可见），且无不可见投递");
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-vis1-"));
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const sid = `vis1-${RUN}`;
   const { ctx, registered, sent } = mkEnv(ws, sid);
   plugin.apply(ctx);
@@ -94,7 +97,6 @@ console.log("U1 启动：DO 提示词随 tool result 返回（本身即用户可
 console.log("\nU2 交卷 → 验证播报 → 完成：每一步都对用户可见");
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-vis2-"));
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const sid = `vis2-${RUN}`;
   const { ctx, registered, sent } = mkEnv(ws, sid);
   plugin.apply(ctx);
@@ -104,7 +106,7 @@ console.log("\nU2 交卷 → 验证播报 → 完成：每一步都对用户可�
   await sleep();
   sent.length = 0;
 
-  await submitTool.execute({ summary: "做完了" }, { agent: { session: { id: sid } } });
+  await submitTool.execute({ summary: "做完了", unfinished: [] }, { agent: { session: { id: sid } } });
   await sleep(200);
   assertAllVisible("U2 交卷后", sent);
   const verifyNote = sent.find((m) => textOf(m).includes("独立验证者"));
@@ -129,7 +131,6 @@ console.log("\nU2 交卷 → 验证播报 → 完成：每一步都对用户可�
 console.log("\nU3 暂停 / 审查门 / 返工：都必须对用户可见");
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-vis3-"));
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const sid = `vis3-${RUN}`;
   // 验证者返回 infra → 触发 infra 暂停
   const ctx = new Context();
@@ -143,8 +144,8 @@ console.log("\nU3 暂停 / 审查门 / 返工：都必须对用户可见");
   ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
-    getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
-    start: async () => ({ id: "c", result: Promise.resolve({ output: [], stopReason: "aborted" }) }),
+    getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
+    startActivation: async () => ({ childId: "c", result: Promise.resolve({ output: [], stopReason: "aborted" }) }),
   });
   ctx.provide("agents", { get: (id) => (id === sid ? agent : undefined) });
   ctx.provide("sessions", { list: () => [], get: (id) => (id === sid ? session : undefined) });
@@ -156,7 +157,7 @@ console.log("\nU3 暂停 / 审查门 / 返工：都必须对用户可见");
   await startTool.execute({ workflow: "loop", task: "暂停可见性" }, { agent: { session: { id: sid } }, signal: new AbortController().signal });
   await sleep();
   sent.length = 0;
-  await submitTool.execute({ summary: "x" }, { agent: { session: { id: sid } } });
+  await submitTool.execute({ summary: "x", unfinished: [] }, { agent: { session: { id: sid } } });
   await sleep(250);
 
   assertAllVisible("U3 暂停", sent);
@@ -168,7 +169,6 @@ console.log("\nU3 暂停 / 审查门 / 返工：都必须对用户可见");
 console.log("\nU4 命令触发词：投递的指令不应伪装成用户可见通知（保持管道语义）");
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-vis4-"));
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const sid = `vis4-${RUN}`;
   const { ctx, registered, sent } = mkEnv(ws, sid);
   plugin.apply(ctx);
@@ -186,7 +186,6 @@ console.log("\nU4 命令触发词：投递的指令不应伪装成用户可见�
 console.log("\nU5 默认可见的只有 summary（notice 行默认折叠）→ summary 必须自带「该干啥」");
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-vis5-"));
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const sid = `vis5-${RUN}`;
   const { ctx, registered, sent } = mkEnv(ws, sid);
   plugin.apply(ctx);
@@ -201,7 +200,7 @@ console.log("\nU5 默认可见的只有 summary（notice 行默认折叠）→ s
   check("DO prompt 说明「不需要用户做任何操作」", /不需要用户做任何操作/.test(doOut));
   check("DO prompt 给出期间可做什么（status/cancel）", /ralphflow-status/.test(doOut) && /ralphflow-cancel/.test(doOut));
 
-  await submitTool.execute({ summary: "做完了" }, { agent: { session: { id: sid } } });
+  await submitTool.execute({ summary: "做完了", unfinished: [] }, { agent: { session: { id: sid } } });
   await sleep(200);
   const verifyNote = sent.find((m) => textOf(m).includes("独立验证者"));
   check("验证中 notice 可见", !!verifyNote && visible(verifyNote));

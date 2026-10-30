@@ -1,10 +1,11 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { Session } from "@deepseek-ai/dsh-session";
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
-import type { StatusFrame, WorkflowStatus } from "./status-contract.js";
+import type { PauseResult, StatusFrame, ViewerAsset, WorkflowStatus } from "./status-contract.js";
 
 export interface StatusReader {
-  read(session: Session): Promise<{ status: WorkflowStatus | null; error: string | null }>;
+  read(session: Session): Promise<{ status: WorkflowStatus | null; error: string | null; catalog: ViewerAsset[] }>;
+  pause(session: Session): Promise<PauseResult> | PauseResult;
   subscribe(listener: () => void): () => void;
 }
 
@@ -14,6 +15,12 @@ export class WorkflowStatusService extends TypertRemoteService {
   constructor(ctx: Context, private readonly reader: StatusReader) {
     super(ctx, "ralphflowStatus");
     ctx.effect(() => () => this.lifetime.abort(), "ralphflow status stream lifetime");
+  }
+
+  /** 用户主动暂停：状态面按钮走这里，不依赖主会话是否有在飞的回合。 */
+  @Remote("pause")
+  async pause(session: Session): Promise<PauseResult> {
+    return this.reader.pause(session);
   }
 
   @Remote({ mode: "stream" })
@@ -33,7 +40,7 @@ export class WorkflowStatusService extends TypertRemoteService {
         pending = false;
         const next = await this.reader.read(session);
         if (signal.aborted) return;
-        yield { kind: first ? "snapshot" : "update", sessionId: session.id, ...next };
+        yield { kind: first ? "snapshot" : "update", sessionId: session.id, ...next, catalog: next.catalog ?? [] };
         first = false;
       }
     } finally {

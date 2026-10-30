@@ -1,18 +1,20 @@
 import { useId, useRef, useState } from "react";
 import { StateDot, useDismissOnOutsidePointer } from "@deepseek-ai/dsh-client-ui-primitives";
 import type { Context } from "@deepseek-ai/cordis";
+import { registerViewerTab } from "./viewer.js";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
-import { statusRemote, type WorkflowStage, type WorkflowStatus } from "../status-contract.js";
+import { statusRemote, type PauseResult, type WorkflowStage, type WorkflowStatus } from "../status-contract.js";
 import { createStatusSource, type ClientStatus } from "./status-source.js";
 
 const labels: Record<WorkflowStage, string> = {
   executing: "待交卷", verifying: "独立验证中", gate: "等待你放行", paused: "已暂停",
-  switching: "切换步骤中", done: "已完成", cancelled: "已取消", unavailable: "状态不可用",
+  switching: "切换步骤中", done: "已完成", cancelled: "已取消", failed: "失败", unavailable: "状态不可用",
 };
 const votes = { pending: "等待验证", running: "验证中", passed: "通过", failed: "未通过", infra: "验证者故障" };
+const checks: Record<string, string> = { passed: "已通过", failed: "未通过", infra: "验证未跑成", pending: "待验证", skipped: "已跳过" };
 /** The only stages that need the user to act. The input-area prompt appears for these and only these. */
 const actionStages: ReadonlySet<WorkflowStage> = new Set(["gate", "paused"]);
-const terminalStages: ReadonlySet<WorkflowStage> = new Set(["done", "cancelled"]);
+const terminalStages: ReadonlySet<WorkflowStage> = new Set(["done", "cancelled", "failed"]);
 const whole = (s: ClientStatus) => s;
 type Props = { useWorkflowStatus: <T>(selector: (s: ClientStatus) => T) => T };
 
@@ -25,6 +27,7 @@ const css = `
 .ralphflow-status { position: relative; display: inline-flex; align-items: center; gap: 4px; max-width: min(320px, 38vw); min-height: 28px; padding: 3px 2px; border: 0; background: none; color: var(--dsw-alias-label-tertiary); font: inherit; font-size: var(--dsw-font-xxs-12-font-size); line-height: var(--dsw-font-xxs-12-line-height); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .ralphflow-status:hover, .ralphflow-status:focus-visible { color: var(--dsw-alias-label-secondary); }
 .ralphflow-status-dot { flex: none; }
+.ralphflow-status > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ralphflow-status-popover { position: absolute; right: 0; top: calc(100% + 8px); width: min(380px, calc(100vw - 32px)); max-height: min(480px, 100vh - 140px); z-index: 100; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 12px; overflow: auto; --dsw-elevation-stroke-color: var(--dsw-alias-border-l1); border: 0; border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-bg-layer-2); box-shadow: var(--dsw-elevation-prominent); color: var(--dsw-alias-label-primary); font-size: var(--dsh-content-font-size-secondary); line-height: var(--dsw-font-xs-13-line-height); }
 .ralphflow-status-popover-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
 .ralphflow-status-popover-title { min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -38,6 +41,7 @@ const css = `
 .ralphflow-status-steps li { overflow-wrap: anywhere; }
 .ralphflow-status-votes { margin: 4px 0; padding-left: 20px; }
 .ralphflow-status-votes li { overflow-wrap: anywhere; }
+.ralphflow-status-vote-check { color: var(--dsw-alias-label-tertiary); }
 .ralphflow-status-recent { margin: 4px 0; padding-left: 20px; }
 .ralphflow-status-recent li { overflow-wrap: anywhere; }
 .ralphflow-status-report { margin: 0; overflow-wrap: anywhere; }
@@ -45,6 +49,9 @@ const css = `
 .ralphflow-status-action-dock { width: calc(100% - 2 * var(--dsh-composer-side-clearance) - 4 * var(--dsh-composer-dock-inset)); margin: 0 auto; }
 .ralphflow-status-action { box-sizing: border-box; width: 100%; max-width: calc(var(--dsh-composer-card-max-width) - 4 * var(--dsh-composer-dock-inset)); margin: 0 auto; display: flex; align-items: center; gap: 8px; padding: 4px 12px; border: 0; border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-2); box-shadow: var(--dsw-elevation-panel); color: var(--dsw-alias-label-primary); font-size: var(--dsh-content-font-size-secondary); line-height: var(--dsw-font-xs-13-line-height); min-height: 36px; --dsw-elevation-stroke-color: var(--dsw-alias-border-l1); }
 .ralphflow-status-action-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ralphflow-status-pause { flex: none; margin-left: auto; padding: 3px 10px; border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; cursor: pointer; }
+.ralphflow-status-pause:hover:not(:disabled) { background: var(--dsw-alias-bg-module-platform); }
+.ralphflow-status-pause:disabled { opacity: .6; cursor: default; }
 /* The timeline broadcast row keeps its record role; only its radius/font move to tokens. */
 .ralphflow-notice { margin: 8px 0; padding: 8px 12px; border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-bg-module-platform); color: inherit; font-size: var(--dsh-content-font-size-secondary); line-height: 1.6; overflow-wrap: anywhere; }
 .ralphflow-notice > summary { cursor: pointer; }
@@ -62,7 +69,7 @@ injectStatusCss();
 
 function StatusDot({ stage }: { stage: WorkflowStage }) {
   const state = stage === "done" ? "done" : stage === "gate" || stage === "paused" ? "warning"
-    : stage === "unavailable" ? "error" : stage === "cancelled" ? "idle" : "ongoing";
+    : stage === "unavailable" || stage === "failed" ? "error" : stage === "cancelled" ? "idle" : "ongoing";
   return <StateDot state={state} className="ralphflow-status-dot" />;
 }
 
@@ -80,9 +87,11 @@ function WorkflowStatusControl({ useWorkflowStatus }: Props) {
   return <div ref={root} style={{ position: "relative" }} onKeyDown={(e) => { if (e.key === "Escape") { setOpened(false); trigger.current?.focus(); } }}>
     <button ref={trigger} type="button" className="ralphflow-status" data-ralphflow-status={status.id} data-stage={status.stage} data-connection={connection}
       aria-expanded={opened} aria-controls={opened ? id : undefined} aria-label="查看工作流状态" onClick={() => setOpened((v) => !v)}
-      title={`${status.workflow} · ${status.step} · ${label}`}>
+      title={`${status.workflow} · ${status.kind === "graph" ? (status.graph?.current?.name ?? status.graph?.phase ?? "Graph") : status.step} · ${label}`}>
       <StatusDot stage={status.stage} />
-      <span>{terminal ? `${label} · 报告` : `${status.step} · ${status.stage === "paused" ? `失败 ${status.failures} 次` : `第 ${status.failures + 1} 轮`} · ${label}`}{connection === "live" ? "" : " · 同步中"}</span>
+      <span>{status.kind === "graph"
+        ? `${status.graph?.phase ?? label}${status.graph?.counts ? ` · ${status.graph.counts.completed}/${status.graph.counts.total}` : ""}${connection === "live" ? "" : " · 同步中"}`
+        : terminal ? `${label} · 报告` : `${status.step} · ${status.stage === "paused" ? `返工 ${status.failures} 次` : `第 ${status.failures + 1} 轮`} · ${label}`}{connection === "live" ? "" : " · 同步中"}</span>
     </button>
     {opened ? <WorkflowStatusPopover id={id} useWorkflowStatus={useWorkflowStatus} /> : null}
   </div>;
@@ -102,11 +111,21 @@ function WorkflowStatusPopover({ id, useWorkflowStatus }: { id: string } & Props
     </div>
     {error ? <div className="ralphflow-status-banner" data-kind="error" role="status">Ralph Flow · {error}</div> : null}
     {connection !== "live" && !error ? <div className="ralphflow-status-banner" role="status">正在重新同步，显示最后状态。</div> : null}
-    {!terminal && nearLimit ? <div className="ralphflow-status-banner" role="status">本步失败接近上限 · {status.failures}/{status.maxFailures}</div> : null}
+    {!terminal && nearLimit ? <div className="ralphflow-status-banner" role="status">本步返工接近上限 · {status.failures}/{status.maxFailures}</div> : null}
     {!terminal && status.hint ? <div className="ralphflow-status-hint">{status.hint}</div> : null}
     {!terminal ? <p className="ralphflow-status-task">{status.task}</p> : null}
-    {!terminal ? <div className="ralphflow-status-label">本步失败 {status.failures} 次</div> : null}
-    {!terminal && status.steps.length ? <div>
+    {status.kind === "graph" && status.graph ? <div>
+      <div className="ralphflow-status-label">节点 · {status.graph.counts.completed}/{status.graph.counts.total} 已完成{status.graph.counts.running ? ` · ${status.graph.counts.running} 在飞` : ""}</div>
+      <ol className="ralphflow-status-steps" aria-label="Graph 节点">
+        {status.graph.nodes.map((node) => <li key={node.id} aria-current={node.current ? "step" : undefined}>
+          {node.current ? "→ " : ""}<strong>{node.id}</strong> · {node.name} · {node.label}{node.check.mode !== "disabled" ? ` · CHECK ${checks[node.check.status] ?? node.check.status}` : ""}{node.check.reworks ? ` · 返工 ${node.check.reworks} 次` : ""}
+        </li>)}
+      </ol>
+      {status.graph.integration ? <div className="ralphflow-status-label">集成分支 {status.graph.integration.branch} · 已接纳 {status.graph.integration.accepted}</div> : null}
+      <div className="ralphflow-status-label">交付 · 已交付 {status.graph.delivery.delivered} · 未接纳 {status.graph.delivery.unaccepted} · 未验证 {status.graph.delivery.unverified} · 未完成 {status.graph.delivery.unfinished}</div>
+    </div> : null}
+    {status.kind !== "graph" && !terminal ? <div className="ralphflow-status-label">本步返工 {status.failures} 次</div> : null}
+    {status.kind !== "graph" && !terminal && status.steps.length ? <div>
       <div className="ralphflow-status-label">步骤</div>
       <ol className="ralphflow-status-steps" aria-label="工作流步骤">
         {status.steps.map((step) => <li key={step.id} aria-current={step.current ? "step" : undefined}>
@@ -114,10 +133,11 @@ function WorkflowStatusPopover({ id, useWorkflowStatus }: { id: string } & Props
         </li>)}
       </ol>
     </div> : null}
-    {!terminal && status.votes.length ? <div>
+    {status.kind !== "graph" && !terminal && status.votes.length ? <div>
       <div className="ralphflow-status-label">本轮验证 · {returned}/{status.votes.length} 已返回</div>
       <ul className="ralphflow-status-votes" aria-label={`本轮验证 · ${returned}/${status.votes.length} 已返回`}>
         {status.votes.map((vote) => <li key={vote.index}>验证者 {vote.index}/{status.votes.length} · {votes[vote.status]}
+          {vote.check ? <div className="ralphflow-status-vote-check">检查依据：{vote.check}</div> : null}
           {vote.reason ? <div>{vote.reason}</div> : null}</li>)}
       </ul>
     </div> : null}
@@ -128,14 +148,37 @@ function WorkflowStatusPopover({ id, useWorkflowStatus }: { id: string } & Props
   </div>;
 }
 
-/** Input-area prompt: present only while the user must act, and it removes itself once handled. */
-function WorkflowStatusAction({ useWorkflowStatus }: Props) {
+/** Input-area prompt: present while the user must act, or while a Graph node is in flight. */
+function WorkflowStatusAction({ useWorkflowStatus, pause }: Props & { pause: () => Promise<PauseResult> }) {
   const { status } = useWorkflowStatus(whole);
-  if (!status || !actionStages.has(status.stage)) return null;
-  const reason = status.stage === "gate" ? "等待你放行" : status.maxFailures > 0 && status.failures >= status.maxFailures ? "失败已到上限" : "已暂停";
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!status) return null;
+  const graph = status.kind === "graph" ? status.graph : undefined;
+  const running = graph?.status === "running" ? graph.nodes.filter((node) => node.status === "running") : [];
+  const backgroundRunning = running.filter((node) => node.execution === "background").length;
+  const mainRunning = running.some((node) => node.execution === "main");
+  // Graph 的常态是后台节点；主会话没有在飞回合，宿主的停止键是灰的。这里给一个
+  // 不依赖主回合的暂停入口，走 status remote 直接落 paused(user_stop)。主节点在飞时
+  // 宿主停止键本身可用，不重复给按钮。
+  if (backgroundRunning > 0 && !mainRunning && !actionStages.has(status.stage)) {
+    return <div className="ralphflow-status-action-dock"><div className="ralphflow-status-action" data-ralphflow-status-pause={status.id}>
+      <StatusDot stage={status.stage} />
+      <span className="ralphflow-status-action-text">Graph 执行中 · {backgroundRunning} 个节点在飞{error ? ` · ${error}` : ""}</span>
+      <button type="button" className="ralphflow-status-pause" disabled={pending} onClick={() => {
+        setPending(true); setError(null);
+        void pause().then((result) => { if (!result.ok) setError(result.text); },
+          (cause) => { setError(cause instanceof Error ? cause.message : String(cause)); }).finally(() => setPending(false));
+      }}>{pending ? "暂停中…" : "暂停"}</button>
+    </div></div>;
+  }
+  if (!actionStages.has(status.stage)) return null;
+  const reason = status.stage === "gate" ? "等待你放行" : status.maxFailures > 0 && status.failures >= status.maxFailures ? "返工已到上限" : "已暂停";
   return <div className="ralphflow-status-action-dock"><div className="ralphflow-status-action" data-ralphflow-status-action={status.id} data-stage={status.stage} role="status">
     <StatusDot stage={status.stage} />
-    <span className="ralphflow-status-action-text">{reason} · 输入 <code>/ralphflow-continue</code> 继续</span>
+    <span className="ralphflow-status-action-text">{reason} · {status.kind === "graph" && status.stage === "gate"
+      ? "直接回复你的决定（“批准此版本”或要改什么）"
+      : <>输入 <code>/ralphflow-continue</code> 继续</>}</span>
   </div></div>;
 }
 
@@ -147,11 +190,15 @@ export async function registerWorkflowStatus(ctx: Context): Promise<void> {
 
 function registerUi(ctx: Context): void {
   const sources = new Map<string, ReturnType<typeof createStatusSource>>();
-  const sourceOf = (sessionId: string) => {
+  const sourceFor = (sessionId: string) => {
     let source = sources.get(sessionId);
     if (!source) { source = createStatusSource(ctx, sessionId); sources.set(sessionId, source); }
-    return { hooks: { workflowStatus: source } };
+    return source;
   };
+  const sourceOf = (sessionId: string) => ({
+    hooks: { workflowStatus: sourceFor(sessionId) },
+    pause: () => sourceFor(sessionId).pause(),
+  });
   ctx.effect(() => () => { for (const source of sources.values()) source.dispose(); sources.clear(); });
   ctx.slots.inject("conversation.input.dock", () => ctx.slots.register({
     name: "conversation.input.dock", id: "ralphflow-status", order: 5, inject: sourceOf,
@@ -159,4 +206,6 @@ function registerUi(ctx: Context): void {
   ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register({
     name: "conversation.session.header.actions", id: "ralphflow-status", order: 15, inject: sourceOf,
   }, WorkflowStatusControl));
+  // 只读查看器：同一个 status source，不新开轮询、不复制下一动作逻辑。
+  registerViewerTab(ctx, sourceFor);
 }

@@ -43,11 +43,29 @@ fs.mkdirSync(workflows, { recursive: true });
 for (const mode of ["pause", "gate"]) fs.writeFileSync(path.join(workflows, `ui-${mode}.yaml`),
   `description: 真机播报验收\n${mode === "gate" ? "manual_step: [only]\n" : ""}steps:\n  - id: only\n    desc: 真机步骤\n    do: 执行任务\n    input: 用户任务\n    output: 验收产物\n    check: 核对任务\n    on_pass: done\n    on_fail: only\n    max_fail_count: 1\n`);
 let host = spawn("dsh", ["web", "--no-open", "--port", "0"], {
-  cwd: workspace, env: { ...process.env, DSH_HOME: root, RALPHFLOW_WORKSPACE: workspace, RALPHFLOW_STATUS_LONG_CHAT: "1" }, stdio: ["ignore", "pipe", "pipe"],
+  cwd: workspace, env: { ...process.env, DSH_HOME: root, RALPHFLOW_STATUS_LONG_CHAT: "1" }, stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "", browser, page;
 host.stdout.on("data", (b) => { log += b; }); host.stderr.on("data", (b) => { log += b; });
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+/** dsh >= 0.2.1-rc.2 layers a preview-version notice and an account onboarding dialog after the welcome notice, and moved "设置" into the account menu; dismiss those and wait for the sidebar itself. */
+async function waitForApp() {
+  for (let i = 0; i < 5; i++) {
+    const cont = page.getByRole("button", { name: "继续", exact: true }).first();
+    if (await cont.isVisible().catch(() => false)) {
+      // A just-clicked notice can linger as a disabled button while it fades out; do not block on it.
+      try { await cont.click({ timeout: 1500 }); await pause(300); continue; } catch {}
+    }
+    const start = page.getByText("开始使用", { exact: true });
+    if (await start.isVisible().catch(() => false)) {
+      await page.keyboard.press("Escape");
+      await start.waitFor({ state: "hidden" });
+      continue;
+    }
+    break;
+  }
+  await page.locator("button").filter({ hasText: "新会话" }).waitFor();
+}
 async function until(fn, label, timeout = 15000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) { const result = await fn(); if (result) return result; await pause(80); }
@@ -81,7 +99,7 @@ try {
   await page.goto(authUrl);
   const welcome = page.getByRole("button", { name: "继续", exact: true });
   await welcome.waitFor(); await welcome.click();
-  await page.getByRole("button", { name: "设置", exact: true }).waitFor();
+  await waitForApp();
   async function select(mode) {
     const group = page.getByRole("treeitem", { name: /^未分组/ });
     if (await group.getAttribute("aria-expanded") === "false") await group.click();
@@ -102,14 +120,57 @@ try {
   }
   const notices = (state) => state.events.filter((e) => e.type === "user/message" && e.surfaceOp === "append"
     && e.data.source.kind === "ralphflow" && e.data.source.form === "notice");
-  async function assertChatNotices(state, timeout = 5000) {
+  async function assertChatNotices(_state, timeout = 5000, sessionId = sid) {
     assert.equal(await page.getByRole("tab", { name: "对话", exact: true }).getAttribute("aria-selected"), "true");
-    for (const event of notices(state)) {
-      const row = page.locator(`[data-ralphflow-notice="${event.seq}"] > summary`);
-      await row.waitFor({ state: "visible", timeout });
-      assert.equal(await row.innerText(), event.data.source.summary);
+    // The status stream can publish the next notice between a state snapshot and the DOM read;
+    // settle on the latest state so the assertion checks content, not a racing count.
+    // Cold loads also page conversation history: scroll the Chat to the top to prepend older pages
+    // until the DOM covers every notice in the Session log.
+    const deadline = Date.now() + Math.max(timeout, 10000);
+    let stalls = 0;
+    for (;;) {
+      const state = await stateOf(sessionId);
+      const expected = notices(state);
+      let count = await page.locator("[data-ralphflow-notice]").count();
+      if (count === expected.length) {
+        for (const event of expected) {
+          const row = page.locator(`[data-ralphflow-notice="${event.seq}"] > summary`);
+          await row.waitFor({ state: "visible", timeout });
+          assert.equal(await row.innerText(), event.data.source.summary);
+        }
+        assert.equal(await page.locator("[data-ralphflow-notice]").count(), expected.length);
+        return;
+      }
+      if (count < expected.length && Date.now() < deadline) {
+        // 0.2.1-rc.2 pages cold history: click the native "load earlier" control until the window
+        // covers every notice. Fall back to scrolling if the control is not exposed.
+        const earlier = page.getByRole("button", { name: "加载更早", exact: true });
+        if (await earlier.count() > 0 && await earlier.first().isVisible() && await earlier.first().isEnabled()) {
+          await earlier.first().click();
+          await pause(250);
+          stalls = 0;
+          continue;
+        }
+        await page.evaluate(() => {
+          const anchor = document.querySelector("[data-ralphflow-notice]");
+          let el = anchor instanceof HTMLElement ? anchor.parentElement : null;
+          while (el && el.scrollHeight <= el.clientHeight + 4) el = el.parentElement;
+          if (!el) el = [...document.querySelectorAll("div")].find((node) => node.scrollHeight > node.clientHeight + 40 && getComputedStyle(node).overflowY !== "visible") ?? null;
+          el?.scrollTo({ top: 0 });
+        });
+        await pause(150);
+        const next = await page.locator("[data-ralphflow-notice]").count();
+        stalls = next > count ? 0 : stalls + 1;
+        if (stalls < 4) continue;
+      }
+      if (Date.now() >= deadline) {
+        const loaded = await page.locator("[data-ralphflow-notice]").evaluateAll((nodes) => nodes.map((n) => n.getAttribute("data-ralphflow-notice")));
+        const earlier = page.getByRole("button", { name: "加载更早", exact: true });
+        const earlierState = `${await earlier.count()}/${await earlier.first().isVisible().catch(() => false)}/${await earlier.first().isEnabled().catch(() => false)}`;
+        throw new Error(`Timeout: chat notices did not settle: dom=${count} state=${expected.length} loaded=${JSON.stringify(loaded)} expected=${JSON.stringify(expected.map((e) => e.seq))} earlier=${earlierState}`);
+      }
+      await pause(80);
     }
-    assert.equal(await page.locator("[data-ralphflow-notice]").count(), notices(state).length);
   }
   // The single persistent location: the header control carrying where / running-or-waiting.
   async function assertStatus(stage, timeout = 5000) {
@@ -341,11 +402,11 @@ try {
     await until(async () => (await stateOf(sessionId)).pending.length === 1, `${mode} voter`);
     await select(mode); await api(`release?pass=${mode === "gate"}`);
     const result = await until(async () => { const s = await stateOf(sessionId); return notices(s).some((e) => mode === "pause" ? /暂停/.test(e.data.source.summary) : /审查门/.test(e.data.source.summary)) && s; }, `${mode} notice`);
-    await assertChatNotices(result); await page.reload(); await assertChatNotices(result);
+    await assertChatNotices(result, 5000, sessionId); await page.reload(); await assertChatNotices(result, 5000, sessionId);
     await assertStatus(mode === "pause" ? "paused" : "gate");
     // Criterion 3: exactly one one-action prompt appears near the focus while the user must act.
     assert.equal(await page.locator("[data-ralphflow-status-action]").count(), 1, `${mode} shows exactly one action prompt`);
-    assert.match(await page.locator("[data-ralphflow-status-action]").innerText(), mode === "pause" ? /失败已到上限/ : /等待你放行/);
+    assert.match(await page.locator("[data-ralphflow-status-action]").innerText(), mode === "pause" ? /返工已到上限/ : /等待你放行/);
     // Criterion 3: a single action, not a manual — one line, no command essay.
     const actionBox = await page.locator("[data-ralphflow-status-action]").boundingBox();
     assert(actionBox && actionBox.height <= 44, "action prompt is a single compact line");
@@ -458,13 +519,13 @@ try {
   await new Promise((resolve) => host.once("exit", resolve));
   log = "";
   host = spawn("dsh", ["web", "--no-open", "--port", "0"], { cwd: workspace,
-    env: { ...process.env, DSH_HOME: root, RALPHFLOW_WORKSPACE: workspace }, stdio: ["ignore", "pipe", "pipe"] });
+    env: { ...process.env, DSH_HOME: root }, stdio: ["ignore", "pipe", "pipe"] });
   host.stdout.on("data", (b) => { log += b; }); host.stderr.on("data", (b) => { log += b; });
   const restartedUrl = await until(() => log.match(/dsh web: (http:\/\/[^\s]+)/)?.[1], "cold host restart", 30000);
   page = await browser.newPage({ locale: "zh-CN", viewport: { width: 1440, height: 1100 } });
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.goto(restartedUrl);
-  await page.getByRole("button", { name: "设置", exact: true }).waitFor();
+  await waitForApp();
   await select("loop"); await assertStatus("done");
   await select("pause"); await assertStatus("paused");
   await page.screenshot({ path: path.join(out, "paused-cold-restart.png") });
@@ -498,7 +559,7 @@ try {
   page.on("pageerror", (e) => errors.push(String(e)));
   // The cold restart spawned a new port; restore the real bundle on that exact host.
   await page.goto(restartedUrl);
-  await page.getByRole("button", { name: "设置", exact: true }).waitFor();
+  await waitForApp();
   await selectSession(cancelledSid);
   await assertStatus("cancelled");
   // Criterion 4: after the persistent location is restored, the terminal form comes back intact.

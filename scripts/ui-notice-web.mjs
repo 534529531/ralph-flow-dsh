@@ -31,11 +31,29 @@ fs.mkdirSync(workflows, { recursive: true });
 for (const mode of ["pause", "gate"]) fs.writeFileSync(path.join(workflows, `ui-${mode}.yaml`),
   `description: 真机播报验收\n${mode === "gate" ? "manual_step: [only]\n" : ""}steps:\n  - id: only\n    desc: 真机步骤\n    do: 执行任务\n    input: 用户任务\n    output: 验收产物\n    check: 核对任务\n    on_pass: done\n    on_fail: only\n    max_fail_count: 1\n`);
 const host = spawn("dsh", ["web", "--no-open", "--port", "0"], {
-  cwd: workspace, env: { ...process.env, DSH_HOME: root, RALPHFLOW_WORKSPACE: workspace }, stdio: ["ignore", "pipe", "pipe"],
+  cwd: workspace, env: { ...process.env, DSH_HOME: root }, stdio: ["ignore", "pipe", "pipe"],
 });
 let log = "", browser, page;
 host.stdout.on("data", (b) => { log += b; }); host.stderr.on("data", (b) => { log += b; });
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+/** dsh >= 0.2.1-rc.2 layers a preview-version notice and an account onboarding dialog after the welcome notice, and moved "设置" into the account menu; dismiss those and wait for the sidebar itself. */
+async function waitForApp() {
+  for (let i = 0; i < 5; i++) {
+    const cont = page.getByRole("button", { name: "继续", exact: true }).first();
+    if (await cont.isVisible().catch(() => false)) {
+      // A just-clicked notice can linger as a disabled button while it fades out; do not block on it.
+      try { await cont.click({ timeout: 1500 }); await pause(300); continue; } catch {}
+    }
+    const start = page.getByText("开始使用", { exact: true });
+    if (await start.isVisible().catch(() => false)) {
+      await page.keyboard.press("Escape");
+      await start.waitFor({ state: "hidden" });
+      continue;
+    }
+    break;
+  }
+  await page.locator("button").filter({ hasText: "新会话" }).waitFor();
+}
 async function until(fn, label, timeout = 15000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) { const result = await fn(); if (result) return result; await pause(80); }
@@ -60,7 +78,7 @@ try {
   await page.goto(authUrl);
   const welcome = page.getByRole("button", { name: "继续", exact: true });
   await welcome.waitFor(); await welcome.click();
-  await page.getByRole("button", { name: "设置", exact: true }).waitFor();
+  await waitForApp();
   async function select(mode) {
     const group = page.getByRole("treeitem", { name: /^未分组/ });
     if (await group.getAttribute("aria-expanded") === "false") await group.click();
@@ -70,14 +88,35 @@ try {
   const notices = (state) => state.events.filter((e) => e.type === "user/message" && e.surfaceOp === "append"
     && e.data.source.kind === "ralphflow" && e.data.source.form === "notice");
   // This single assertion is also used against the SAME Session with the renderer removed.
-  async function assertChatNotices(state, timeout = 5000) {
+  async function assertChatNotices(_state, timeout = 5000, sessionId = sid) {
     assert.equal(await page.getByRole("tab", { name: "对话", exact: true }).getAttribute("aria-selected"), "true");
-    for (const event of notices(state)) {
-      const row = page.locator(`[data-ralphflow-notice="${event.seq}"] > summary`);
-      await row.waitFor({ state: "visible", timeout });
-      assert.equal(await row.innerText(), event.data.source.summary);
+    // Settle on the latest state: the next notice may land between the caller's snapshot and the DOM read.
+    const deadline = Date.now() + Math.max(timeout, 10000);
+    for (;;) {
+      const state = await stateOf(sessionId);
+      const expected = notices(state);
+      const count = await page.locator("[data-ralphflow-notice]").count();
+      if (count === expected.length) {
+        for (const event of expected) {
+          const row = page.locator(`[data-ralphflow-notice="${event.seq}"] > summary`);
+          await row.waitFor({ state: "visible", timeout });
+          assert.equal(await row.innerText(), event.data.source.summary);
+        }
+        assert.equal(await page.locator("[data-ralphflow-notice]").count(), expected.length);
+        return;
+      }
+      if (count < expected.length) {
+        // 0.2.1-rc.2 pages cold history; pull older pages until the window covers every notice.
+        const earlier = page.getByRole("button", { name: "加载更早", exact: true });
+        if (await earlier.count() > 0 && await earlier.first().isVisible() && await earlier.first().isEnabled()) {
+          await earlier.first().click();
+          await pause(250);
+          continue;
+        }
+      }
+      if (Date.now() >= deadline) throw new Error(`Timeout: chat notices did not settle: dom=${count} state=${expected.length}`);
+      await pause(80);
     }
-    assert.equal(await page.locator("[data-ralphflow-notice]").count(), notices(state).length);
   }
   async function stateOf(sid) { return api(`status?sid=${sid}`); }
   function record(state) {
@@ -178,7 +217,7 @@ try {
     await until(async () => (await stateOf(sessionId)).pending.length === 1, `${mode} voter`);
     await select(mode); await api(`release?pass=${mode === "gate"}`);
     const result = await until(async () => { const s = await stateOf(sessionId); return notices(s).some((e) => mode === "pause" ? /暂停/.test(e.data.source.summary) : /审查门/.test(e.data.source.summary)) && s; }, `${mode} notice`);
-    await assertChatNotices(result); await page.reload(); await assertChatNotices(result);
+    await assertChatNotices(result, 5000, sessionId); await page.reload(); await assertChatNotices(result, 5000, sessionId);
     await page.screenshot({ path: path.join(out, `${mode}-refreshed.png`) });
     assert.equal(result.status, "idle"); assert.equal(result.inboxPending, false);
     evidence.runs[mode] = { sessionId, ...record(result) };

@@ -55,7 +55,7 @@ try {
   assert.equal(ui("other").status.stage, "gate");
   assert.equal(ui("other").status.failures, 0, "pass clears the current budget");
   assert.equal(ui("other").status.votes.every((v) => v.status === "passed"), true);
-  const frame = { kind: "snapshot", sessionId: "other", ...ui("other") };
+  const frame = { kind: "snapshot", sessionId: "other", catalog: [], ...ui("other") };
   assert.deepEqual(parseStatusFrame(frame), frame);
   assert.throws(() => parseStatusFrame({ ...frame, status: { ...frame.status, failures: -1 } }));
   assert.throws(() => parseStatusFrame({ ...frame, kind: "made-up" }));
@@ -117,12 +117,15 @@ try {
   const registry = new TypertRegistry(ctx);
   registry.register(TYPERT);
   assert.equal(registry.local.get("ralphflowStatus/watch").mode, "stream");
+  assert.equal(registry.local.get("ralphflowStatus/pause").mode, undefined);
   assert.equal(statusDescriptors[0].parameters[0].codec.typeSymbol, "@deepseek-ai/dsh-session/types#SessionId");
   const listeners = new Set(); let revision = 0, reads = 0;
   const service = new WorkflowStatusService(ctx, {
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
+    pause() { return { ok: true, text: "paused" }; },
     async read() { reads++; return { status: null, error: `revision ${revision}` }; },
   });
+  assert.equal((await service.pause({ id: "bound" })).ok, true);
   const cancellation = new AbortController();
   const stream = service.watch({ id: "bound" }, cancellation.signal);
   assert.equal((await stream.next()).value.kind, "snapshot");
