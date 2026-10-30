@@ -22,6 +22,8 @@
  * `/ralphflow-status`、`/ralphflow-list`、`/ralphflow-doctor`（纯读）、`/ralphflow-create`
  * 保持命令 —— 详见 `docs/v2/skills-vs-commands.md` 的逐条归类。
  */
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Context } from "@deepseek-ai/cordis";
 import type { SkillRegistration } from "@deepseek-ai/dsh-skill";
 
@@ -59,10 +61,12 @@ export const START_SKILL_DESCRIPTION = "Ralph Flow：用户点名 ralphflow，�
 export const SHARED_MECHANISM = `## 工作流机制
 
 1. 启动成功后，按工具返回的当前步 DO 执行；后续步骤由引擎投递。
-2. 本步交付物满足要求、自查有依据后，调用 \`ralphflow_submit\` 交卷。工具调用是交卷事实，回复里的完成声明不推进工作流；该工具会结束当前回合。
+2. 结束本轮前，把还没完成的事项逐条写进 \`unfinished\`；没有就留空。\`unfinished\` 是剩余工作清单，不是完成声明；模型没有本步是否完成的裁判权，完成判定由独立验证者负责。调用 \`ralphflow_submit\` 是交卷事实，回复里的完成声明不推进工作流；该工具会结束当前回合。
+   这一轮先收尾但还有没做完的事：把剩下的事逐条写进 \`unfinished\`（报进度），引擎把清单还给你接着做。
 3. 交卷后等待：有 \`check\` 时委派独立验证者，有 \`check_voting\` 时 N 票并行、全过才放行；没有 \`check\` / \`check_voting\` 时跳过独立验证。
-4. 通过则自动推进；工作成果不通过则收到失败依据并返工，达到失败上限才暂停。基础设施故障自动重验一次，仍故障则暂停，不消耗工作失败次数。
-5. 审查门在交卷并通过验证后等用户放行；免验证的门交卷即停。用户要求修改时，改好产出再交卷；用户明确放行时才调用 \`ralphflow_continue\`。暂停恢复与实例接管也以用户指令为准，按工具实际返回的阶段行动。
+4. 通过则自动推进；工作成果不通过则收到失败依据并返工，达到返工上限才暂停。基础设施故障自动重验一次，仍故障则暂停，不消耗工作返工次数。
+5. 审查门在交卷并通过验证后等用户放行；免验证的门交卷即停。用户要求修改时，改好产出再交卷；用户明确放行时才调用 \`ralphflow_continue\`。**Graph 的人工门**通过 \`ralphflow_respond\` 回答：用户明确批准才提交批准，要求改稿就提交改稿要求，含糊回复不算批准。暂停恢复与实例接管也以用户指令为准，按工具实际返回的阶段行动。用户点发送键旁的方块停止当前回合 = 暂停（\`user_stop\`）：之后不要再调用任何 ralphflow 工具，等用户明确 continue。
+6. Graph 节点由引擎并行调度，不需要逐步催促；Graph 需要 Git 隔离，没有 Git 时先征得用户同意再初始化。
 
 验证者看不到本对话或交卷 summary；把需要它验收的产出与证据留在工具指定的文件位置。步骤重置会移除此前对话，跨步需要的需求、决定与证据应写入已有过程文档。
 阶段通知与状态入口由插件直接向用户展示，无需逐条回应。说明进度以工具结果为准；独立验证没有可承诺的完成时长。`;
@@ -75,9 +79,44 @@ const START_SKILL_CONTENT = `启动用户要求的 Ralph Flow 工作流。请调
 
 - \`workflow\` 与 \`task\` 都从**用户那条消息**里取：\`/ralphflow-start <工作流> <任务描述>\` 的第一段是工作流名，其余整段是任务描述。
 - 有任务而未指定工作流：先用 \`ralphflow_list\` 列出可选项，匹配明确时选择并说明，无法判断时问用户。缺任务：请用户补充任务后再启动。保留用户原始约束，不替用户扩充任务范围。
+- Graph 需要 Git 隔离；没有 Git 时先问用户是否初始化，用户同意后再执行 git init/add/commit 并重新启动。
 - 工具报错就如实转达；成功就按它返回的指示执行，并遵循下面的机制。
 
 ${SHARED_MECHANISM}`;
+
+/** 创建/修改 RalphFlow 资产的技能名与触发器。 */
+export const CREATE_SKILL_NAME = "ralphflow-create";
+
+export const CREATE_SKILL_DESCRIPTION = "创建或修改 RalphFlow 工作流或 DAG：用户想把流程做成工作流、设计多 agent DAG，或修改现有 Flow/Graph 资产时使用。";
+
+const CREATE_SKILL_CONTENT = `# RalphFlow 创建
+
+先判断产物是 Flow 还是 Graph，再走对应分支。两条分支都以「资产已保存、\`ralphflow_doctor\` 通过、没有启动实例」为完成条件。
+
+## Flow
+
+Flow 是顺序状态机，不走 Matt 的 grill/spec/tickets。
+
+1. 问清目标、触发条件、输入、产出和结束条件；只问会改变步骤或验收的决定。
+2. 读 \`workflow-authoring.md\`，按它的字段与写法起草；写 DO/CHECK 前读 \`matt/writing-for-agents.md\`。它只管写法，不引入 Graph 的 grill/spec/tickets。
+3. 把资产写到项目根的 \`.dsh/ralph-flow/workflows/<slug>.yaml\`（项目根 = 从当前目录向上最近的含 \`.git\` 的祖先目录；没有就用当前目录）。
+4. 用 \`ralphflow_doctor\` 校验，修到全部通过。
+5. 把路径和用法交给用户；生成的工作流只在用户明确要求时启动。
+
+完成条件：doctor 通过，文件存在，没有启动实例。
+
+## Graph / DAG
+
+Graph 用 ticket DAG。启动内置 \`create-graph\` Flow，由它承载 grill → spec → tickets → graph，以及 spec/tickets 的独立 CHECK 和人工门：
+
+\`ralphflow_start({ workflow: "create-graph", task: "<用户想法>" })\`
+
+然后按它返回的步骤执行；方法由 create-graph 的步骤从 \`ralphflow-create\` skill 的资源目录读取随包 Matt 参考。
+
+如果你已经在 \`create-graph\` 的某个步骤中，只执行当前步骤，不再启动新的 \`create-graph\`。
+
+完成条件：create-graph 完成并给出 Graph 资产路径；没有启动生成的 Graph。
+`;
 
 /**
  * 某个工作流的快捷技能描述：**直接用该工作流 YAML 里的 `description`**（它本来就是面向人的
@@ -95,7 +134,7 @@ export function workflowSkillDescription(workflowName: string, desc: unknown): s
 export function workflowSkillContent(skillName: string, workflowName: string): string {
   return `用户用 \`/${skillName}\` 启动了 \`${workflowName}\` 工作流。请调用 \`ralphflow_start\` 工具：workflow = \`${workflowName}\`，task = **用户那条消息**里 \`/${skillName}\` 之后的整段任务描述。
 
-用户没带任务描述时**不要调用任何工具**，先用自然语言说明用法 \`/${skillName} <任务描述>\` 并请用户补上要完成的任务。
+用户没带任务描述时**不要调用任何工具**，先用自然语言说明用法 \`/${skillName} <任务描述>\` 并请用户补上要完成的任务。若该工作流是 Graph，启动时按工具返回的 Git 提示处理。
 工具报错就如实转达；成功就按它返回的指示执行，并遵循下面的机制。
 
 ${SHARED_MECHANISM}`;
@@ -123,6 +162,10 @@ export interface SkillContext {
 export interface WorkflowSummary {
   name: string;
   desc: string;
+  /** 资产类别：Flow / Graph。清单与快捷技能共用同一份发现结果。 */
+  kind?: "flow" | "graph";
+  /** 步骤数或节点数（供状态面/列表展示，技能正文不依赖它）。 */
+  count?: number;
 }
 
 /** 技能注册器：把某工作区的工作流补登记成快捷技能（可重复调用，同名先到先得）。 */
@@ -187,6 +230,16 @@ export function registerSkills(deps: SkillContext): SkillRegistrar {
     if (told.has(key)) return;
     if (deps.deliverNotice(sessionId, `[ralphflow] ${reason}`, "⚠️ ralphflow：有工作流没能做成快捷技能")) told.add(key);
   };
+
+  // ── 创建技能（`/ralphflow-create`）：作者知识按需加载，不进任何执行上下文 ──
+  taken.add(CREATE_SKILL_NAME);
+  registerOne({
+    name: CREATE_SKILL_NAME,
+    description: CREATE_SKILL_DESCRIPTION,
+    content: CREATE_SKILL_CONTENT,
+    resourceBase: { kind: "directory", path: fileURLToPath(new URL("../references", import.meta.url)) },
+    source: "custom",
+  });
 
   // ── 通用启动技能（`/ralphflow-start`）：省略 invocation = 模型面与人面都有 ──
   taken.add(START_SKILL_NAME);

@@ -28,17 +28,17 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import { defineTool } from "@deepseek-ai/dsh-tools";
-import type { Engine } from "./engine.js";
-import { CREATE_GUIDE } from "./create.js";
+import type { Facade } from "./facade.js";
+import { graphAgentWorkspace } from "./graph/agent-registry.js";
 
 export interface ToolContext {
   ctx: Context;
   /**
-   * 按工作区取引擎（**一个工作区一个引擎**，见 index.ts 的 engineFor）；缺省用进程工作区。
-   * 第二个参数是发起会话 id（可选）：引擎创建时会把该工作区的工作流补登记成快捷技能，
+   * 按项目根取引擎（**一个项目根一个引擎**，见 index.ts 的 engineFor）；缺省用插件加载目录。
+   * 第二个参数是发起会话 id（可选）：引擎创建时会把该项目根的工作流补登记成快捷技能，
    * 名字不合语法的工作流要**当场说清原因**给这个会话听（见 src/skills.ts）。
    */
-  engineFor: (workspace?: string, sessionId?: string) => Engine;
+  engineFor: (workspace?: string, sessionId?: string) => Facade;
   /**
    * **指令**投递（唤醒）。命令语义 = 触发词：`/ralphflow-*` 的每一条投递都是「要模型接着干活」
    * （调工具、用自然语言转达或追问），因此本文件**只有指令**，没有播报 —— 播报全部由引擎
@@ -46,11 +46,11 @@ export interface ToolContext {
    * 分类审计见 `docs/v2/delivery-classification.md` 与 `scripts/delivery-classification-test.mjs`。
    */
   deliverDirective: (sessionId: string, text: string) => boolean;
-  /** 解析发起会话的工作区（实例资产落点） */
+  /** 解析发起会话的项目根（实例资产落点） */
   workspaceOfSession?: (sessionId: string) => string;
 }
 
-export type ToolHandler = (args: any, agent: Agent | undefined) => Promise<string> | string;
+export type ToolHandler = (args: any, agent: Agent | undefined) => Promise<string | { text: string; conclude?: boolean }> | string | { text: string; conclude?: boolean };
 
 /**
  * 可用**命令**清单 —— 单一事实源：命令被拒绝时给模型转达的「还能用什么」与兜底回执共用同一份，
@@ -59,13 +59,16 @@ export type ToolHandler = (args: any, agent: Agent | undefined) => Promise<strin
  * `/ralphflow-start` 与 `/ralphflow-<工作流>` **不在**这里：它们是技能（人敲同一串字，但落成
  * 普通 `user/message` + 宿主注入技能正文），不是命令。把它们写进「可用命令」会指错面。
  */
-const AVAILABLE_COMMANDS = "`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-reset`、`/ralphflow-rewind`、`/ralphflow-cancel`、`/ralphflow-create`、`/ralphflow-doctor`";
+const AVAILABLE_COMMANDS = "`/ralphflow-list`、`/ralphflow-status`、`/ralphflow-continue`、`/ralphflow-reset`、`/ralphflow-rewind`、`/ralphflow-cancel`、`/ralphflow-doctor`、`/ralphflow-cleanup`";
 
 function sessionIdOf(agent: Agent | undefined): string | null {
   return (agent as { session?: { id?: string } } | undefined)?.session?.id ?? null;
 }
 
 // ─── 工具注册 ────────────────────────────────────────────────────────────────
+
+/** 交卷工具名：注册处与「交卷不算干活」的判定共用同一处，改名不会漏。 */
+export const SUBMIT_TOOL_NAME = "ralphflow_submit";
 
 export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
   const { ctx } = deps;
@@ -75,26 +78,33 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
   /**
    * 会话 → 它所在工作区的引擎。**这是所有「发现面」的唯一入口。**
    *
-   * 引擎的根就是会话工作区，所以列表、历史、doctor、自定义工作流查找天然落在对的地方。
-   * 以前这里是「一个引擎 + 全局索引」：引擎根是 dsh 进程的 cwd，而实例资产落在会话
-   * 工作区——真实 GUI 里两者必然不同（`dsh web` cwd = /home/yj，会话工作区 = 仓库），
-   * 于是自定义工作流加载不到、历史列表永远空、doctor 看不见残留。
+   * 引擎的根就是项目根（会话目录按原生规则归一），所以列表、历史、doctor、自定义
+   * 工作流查找天然落在对的地方。以前这里是「一个引擎 + 全局索引」：引擎根是 dsh 进程的
+   * cwd，而实例资产落在会话目录——真实 GUI 里两者必然不同（`dsh web` 从任意目录启动，
+   * 会话的项目根是另一个仓库），于是自定义工作流加载不到、历史列表永远空、doctor 看不见残留。
    */
-  const engineOf = (agent: Agent | undefined): Engine => {
+  const engineOf = (agent: Agent | undefined): Facade => {
     const sid = sessionIdOf(agent);
-    return deps.engineFor(sid ? deps.workspaceOfSession?.(sid) : undefined, sid ?? undefined);
+    const agentId = (agent as { id?: string } | undefined)?.id;
+    // Graph 节点 agent 的 cwd 是 worktree；必须用登记表回到发起实例的项目根，
+    // 否则工具调用会按子会话 cwd 新建第二个引擎（绑定/状态/报告全部分叉）。
+    const ownerWorkspace = graphAgentWorkspace(agentId);
+    const workspace = ownerWorkspace ?? (sid ? deps.workspaceOfSession?.(sid) : undefined);
+    return deps.engineFor(workspace, sid ?? undefined);
   };
 
-  const startHandler: ToolHandler = (args, agent) => {
+  const startHandler: ToolHandler = async (args, agent) => {
     const sessionId = sessionIdOf(agent);
     if (!sessionId) return "找不到当前会话，无法启动工作流。";
-    return engineOf(agent).start(String(args?.workflow ?? ""), String(args?.task ?? ""), sessionId).text;
+    const result = await engineOf(agent).start(String(args?.workflow ?? ""), String(args?.task ?? ""), sessionId);
+    return result.text;
   };
 
-  const continueHandler: ToolHandler = (args, agent) => {
+  const continueHandler: ToolHandler = async (args, agent) => {
     const sessionId = sessionIdOf(agent);
     if (!sessionId) return "找不到当前会话。";
-    return engineOf(agent).continueInstance(sessionId, args?.instance ? String(args.instance) : undefined).text;
+    const result = await engineOf(agent).continueInstance(sessionId, args?.instance ? String(args.instance) : undefined);
+    return result.text;
   };
 
   const statusHandler: ToolHandler = (args, agent) => {
@@ -105,47 +115,52 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
 
   const listHandler: ToolHandler = (_args, agent) => engineOf(agent).listAll().text;
 
-  const cancelHandler: ToolHandler = (args, agent) => {
+  const cancelHandler: ToolHandler = async (args, agent) => {
     const sessionId = sessionIdOf(agent);
     if (!sessionId) return "找不到当前会话。";
-    return engineOf(agent).cancelInstance(sessionId, args?.instance ? String(args.instance) : undefined, args?.reason ? String(args.reason) : undefined).text;
+    const result = await engineOf(agent).cancelInstance(sessionId, args?.instance ? String(args.instance) : undefined, args?.reason ? String(args.reason) : undefined);
+    return result.text;
   };
 
-  const createHandler: ToolHandler = (args, agent) => {
-    const idea = args?.idea ? String(args.idea).trim() : "";
-    // 写意图：把工作流目录建好，模型随后才写得进 <workspace>/.dsh/ralph-flow/workflows/
-    try { engineOf(agent).ensureLayout(); } catch {}
-    return idea ? `你要创建的工作流：**${idea}**\n\n---\n\n${CREATE_GUIDE}` : CREATE_GUIDE;
+  const doctorHandler: ToolHandler = (args, agent) => {
+    const target = typeof args?.workflow === "string" && args.workflow.trim() ? args.workflow.trim() : undefined;
+    return engineOf(agent).diagnose(target).text;
   };
-
-  const doctorHandler: ToolHandler = (_args, agent) => engineOf(agent).diagnose().text;
 
   /**
    * DO 阶段交卷（dsh 原生方式：工具调用即事实，不靠正则扫自由文本）。
    * `concludeTurn` 由注册处调用，让本次工具结果结束当前回合。
    */
-  const submitHandler: ToolHandler = (args, agent) => {
+  const submitHandler: ToolHandler = async (args, agent) => {
     const sessionId = sessionIdOf(agent);
     if (!sessionId) return "找不到当前会话，无法交卷。";
     const summary = args?.summary !== undefined ? String(args.summary) : undefined;
-    return engineOf(agent).onSubmit(sessionId, summary).text;
+    const unfinished = Array.isArray(args?.unfinished)
+      ? (args.unfinished as unknown[]).map((item) => String(item ?? "").trim()).filter((item) => item.length > 0)
+      : [];
+    const result = await engineOf(agent).onSubmit(agent, summary, unfinished);
+    return { text: result.text, conclude: result.ok };
   };
 
   const toolDefs: Array<{ name: string; description: string; params: Record<string, any>; handler: ToolHandler; concludeTurn?: boolean }> = [
     {
       name: "ralphflow_start",
-      description: "启动用户要求的工作流，返回当前 DO。有 `check` / `check_voting` 才独立取证判定；没有 `check` / `check_voting` 则跳过对抗性验证。",
+      description: "启动 Flow 或 Graph 工作流。Flow 返回当前 DO：有 `check` / `check_voting` 才独立取证判定，没有 `check` / `check_voting` 则跳过对抗性验证。Graph 创建实例并由引擎调度节点；Graph 需要 Git 隔离，没有 Git 时按工具错误里的步骤先征得用户同意再初始化。",
       params: {
-        workflow: { type: "string", required: true, description: "工作流名（loop / spec，或自定义 YAML 名）。" },
-        task: { type: "string", required: true, description: "要完成的任务描述。" },
+        workflow: { type: "string", required: true, description: "工作流名（Flow：loop / spec / create-graph；Graph：codewiki；或自定义 YAML 名）。" },
+        task: { type: "string", description: "任务描述（Flow 必填；Graph 可选，作为任务上下文）。" },
       },
       handler: startHandler,
     },
     {
-      name: "ralphflow_submit",
-      description: "【DO 阶段交卷】本步完成并自查后调用，结束当前回合。有 `check` / `check_voting` 才独立取证判定；没有 `check` / `check_voting` 则跳过对抗性验证。按定义自动推进或停在审查门。",
+      name: SUBMIT_TOOL_NAME,
+      description: "【交卷】Flow 主会话交卷，或 Graph 节点 agent 提交本 attempt 的产物。`unfinished` 列出本轮结束时还没完成的事项；没有就留空。交卷结束本轮；被拒绝时不结束。",
       params: {
         summary: { type: "string", description: "可选：简述本步做了什么。**验证者看不到它**（T1：验证请求不含执行者自述），它仅供审查门重交去重，不是验证证据，也不作持久交接；跨步信息应写入过程文档。" },
+        unfinished: {
+          type: "array", items: { type: "string" }, required: true,
+          description: "本轮结束时还没完成的事项，每条一句话。没有就留空；有就逐条写（报进度：引擎把清单还给你接着做）。",
+        },
       },
       handler: submitHandler,
       concludeTurn: true,
@@ -182,17 +197,11 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
       handler: cancelHandler,
     },
     {
-      name: "ralphflow_create",
-      description: "获取自定义工作流的交互式设计指引（按需澄清 → 步骤图 → 写 YAML → doctor 校验目标定义）。",
-      params: {
-        idea: { type: "string", description: "用户想自动化的流程想法（可选，有则附在指引前）。" },
-      },
-      handler: createHandler,
-    },
-    {
       name: "ralphflow_doctor",
-      description: "诊断工作流定义与实例状态：坏文件说人话、列出阻塞项，修完重跑直到全部 ✅。",
-      params: {},
+      description: "诊断工作流定义与实例状态：坏文件说人话、列出阻塞项，修完重跑直到全部 ✅。可只诊断一个工作流名或工作区资产路径。",
+      params: {
+        workflow: { type: "string", description: "可选：只诊断这个工作流名或工作区资产路径（Flow / Graph）；省略则诊断全部资产与实例。" },
+      },
       handler: doctorHandler,
     },
   ];
@@ -206,12 +215,14 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
       output: { schema: { type: "string" }, render: (_args: unknown, value: string) => [{ type: "text", text: value }] },
       async execute(args: unknown, exec: { agent?: Agent; concludeTurn?: () => void }) {
         const out = await def.handler(args ?? {}, exec?.agent);
-        // 交卷工具用宿主原生的 concludeTurn 结束本回合
-        // （与 dsh-subagent-in-process-driver 的 structured_output 同款机制）。
-        if (def.concludeTurn && typeof exec?.concludeTurn === "function") {
+        const text = typeof out === "string" ? out : out.text;
+        const conclude = typeof out === "string" ? def.concludeTurn === true : out.conclude ?? def.concludeTurn === true;
+        // 交卷工具用宿主原生的 concludeTurn 结束本回合（交卷被拒绝时**不**结束回合：
+        // 节点要留在原地补产物，而不是被机器判成 missing_submission）。
+        if (conclude && typeof exec?.concludeTurn === "function") {
           try { exec.concludeTurn(); } catch {}
         }
-        return out;
+        return text;
       },
     }));
   }
@@ -219,7 +230,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
   // `/ralphflow-rewind` 与 `/ralphflow-reset` 一样**不注册为工具**：注册了就等于给模型一个
   // 可调用、会返回内容的实现，与「命令面固定 + 不给模型可调用的修复入口」的边界冲突
   // （design §10.10）。两者的机械动作都由命令处理器直接驱动引擎完成，见下面的 `run` 分支。
-  // 「未实现」的占位处理函数因此不再需要：命令面从今日起没有任何「只声明不实现」的命令。
+  // 命令面每条都有实际处理器，没有「只声明不实现」的占位。
 
   return handlers;
 }
@@ -289,7 +300,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
         const instance = parts[0] ? `，instance = \`${parts[0]}\`` : "";
         return {
           kind: "directive",
-          text: `用户执行了 /ralphflow-status，想了解工作流进度。请调用 \`ralphflow_status\` 工具${instance}（不带参数时若本会话无实例，应显示项目里所有活跃实例的概览）。然后向用户清晰说明：工作流与当前步骤、状态（执行中/验证中/待放行/暂停及原因）、失败次数，以及**属主会话**——属于其他或已关闭会话的实例可通过 \`/ralphflow-continue <实例ID>\` 接管。若工具说该实例**已结束并销毁**，就把报告路径给用户（历史在报告里，不要在列表里找）。`,
+          text: `用户执行了 /ralphflow-status，想了解工作流进度。请调用 \`ralphflow_status\` 工具${instance}（不带参数时若本会话无实例，应显示项目里所有活跃实例的概览）。然后向用户清晰说明：工作流与当前步骤、状态（执行中/验证中/待放行/暂停及原因）、返工次数，以及**属主会话**——属于其他或已关闭会话的实例可通过 \`/ralphflow-continue <实例ID>\` 接管。若工具说该实例**已结束并销毁**，就把报告路径给用户（历史在报告里，不要在列表里找）。`,
         };
       },
     },
@@ -298,12 +309,12 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       description: "列出可用工作流与活跃实例。示例：/ralphflow-list",
       shim: () => ({
         kind: "directive",
-        text: "用户执行了 /ralphflow-list。请调用 `ralphflow_list` 工具获取数据，然后把「可用工作流」整理成**表格**（列：工作流 | 用途描述），把「活跃实例」按工具返回的字段简要列给用户（实例 id、工作流、任务、步骤、状态、属主），并转达工具给的「已结束的运行」报告目录。数据以工具返回为准，不要编造；没有就直说。工作流解析顺序：工作区自定义 `.dsh/ralph-flow/workflows/` > 全局 `~/.dsh/ralph-flow/workflows/` > 插件内置。",
+        text: "用户执行了 /ralphflow-list。请调用 `ralphflow_list` 工具获取数据，然后把「可用工作流」整理成**表格**（列：工作流 | 用途描述），把「活跃实例」按工具返回的字段简要列给用户（实例 id、工作流、任务、步骤、状态、属主），并转达工具给的「已结束的运行」报告目录。数据以工具返回为准，不要编造；没有就直说。工作流解析顺序：项目根（从当前目录向上最近的含 `.git` 的祖先目录）自定义 `.dsh/ralph-flow/workflows/` > 用户级 > 插件内置。",
       }),
     },
     {
       name: "ralphflow-cancel",
-      description: "取消活跃实例：归档报告并销毁实例目录。示例：/ralphflow-cancel",
+      description: "取消活跃实例：Flow 归档报告并销毁实例目录；Graph 归档报告并保留状态/产物/worktree 供复核。示例：/ralphflow-cancel",
       input: { hint: "[实例ID] [原因]" },
       shim: (inv) => {
         const parts = inv.rawInput.trim().split(/\s+/).filter(Boolean);
@@ -316,21 +327,30 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       },
     },
     {
-      name: "ralphflow-create",
-      description: "交互式创建自定义工作流（模型引导设计 → 写 YAML → doctor 校验）。示例：/ralphflow-create 把 C 代码迁移到 Rust",
-      input: { hint: "[流程想法]" },
+      name: "ralphflow-doctor",
+      description: "诊断工作流定义与实例状态。示例：/ralphflow-doctor",
       shim: (inv) => ({
         kind: "directive",
-        text: `用户想${inv.rawInput.trim() ? `创建一个工作流：${inv.rawInput.trim()}` : "创建自定义 Ralph Flow 工作流"}。请调用 \`ralphflow_create\` 工具，按它返回的创建步骤与按需参考完成定义，交接运行方式。`,
+        text: `用户执行了 /ralphflow-doctor${inv.rawInput.trim() ? `（目标：${inv.rawInput.trim()}）` : ""}，想诊断工作流与实例。请调用 \`ralphflow_doctor\` 工具${inv.rawInput.trim() ? `，workflow = \`${inv.rawInput.trim()}\`` : ""}，然后把诊断为 ❌ 的每一项用通俗语言向用户说明原因与修复建议；同时转达告警；仅在无 ❌ 且无告警时说检查通过。修复动作以用户授权范围为准。`,
       }),
     },
     {
-      name: "ralphflow-doctor",
-      description: "诊断工作流定义与实例状态。示例：/ralphflow-doctor",
-      shim: () => ({
-        kind: "directive",
-        text: "用户执行了 /ralphflow-doctor，想诊断工作流与实例。请调用 `ralphflow_doctor` 工具，然后把诊断为 ❌ 的每一项用通俗语言向用户说明原因与修复建议；同时转达告警；仅在无 ❌ 且无告警时说检查通过。修复动作以用户授权范围为准。",
-      }),
+      name: "ralphflow-cleanup",
+      description: "清理 Graph 实例自己产生且干净的节点 worktree；不动 state、artifacts、reports。示例：/ralphflow-cleanup [实例ID]（Graph only）",
+      input: { hint: "[实例ID]" },
+      run: async (inv) => {
+        const sid = messageSessionId(inv.agent);
+        if (!sid) return { kind: "error", text: "当前会话已离线，无法清理。" };
+        const parts = inv.rawInput.trim().split(/\s+/).filter(Boolean);
+        const facade = deps.engineFor(deps.workspaceOfSession?.(sid));
+        if (facade.activeKindsOfSession(sid).flow && !facade.activeKindsOfSession(sid).graph) {
+          deps.deliverDirective(sid, "[ralphflow] 当前是 Flow 实例：Flow 没有 worktree，cleanup 不适用。**不要调用任何工具**。");
+          return { kind: "success" };
+        }
+        const result = await facade.cleanupInstance(parts[0]);
+        deps.deliverDirective(sid, `[ralphflow] /ralphflow-cleanup：${result.text}\n\n请用自然语言如实转达。`);
+        return { kind: "success" };
+      },
     },
     {
       name: "ralphflow-reset",
@@ -338,9 +358,14 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       run: async (inv) => {
         const sid = messageSessionId(inv.agent);
         if (!sid) return { kind: "error", text: "当前会话已离线，无法重置上下文。请刷新后重试。" };
+        const facade = deps.engineFor(deps.workspaceOfSession?.(sid));
+        if (facade.activeKindsOfSession(sid).graph) {
+          deps.deliverDirective(sid, "[ralphflow] 用户执行了 /ralphflow-reset，但当前是 **Graph 实例**：Graph 没有步骤上下文可重置。用 `/ralphflow-status` 看节点，必要时 `/ralphflow-continue` 恢复暂停/中断，或 `/ralphflow-cancel` 结束。**不要调用任何工具**。");
+          return { kind: "success" };
+        }
         // 机械动作在**命令处理器**里完成（不经过模型调工具）：重置是程序的职责，
         // 「不赦免失败」也只有在程序手里才守得住。失败绝不抛，如实回。
-        const res = deps.engineFor(deps.workspaceOfSession?.(sid)).resetCurrent(sid);
+        const res = facade.resetCurrent(sid);
         if (res.ok) {
           // 成功：引擎已在**空闲窗口**排入整段替换，并会把当前步 DO 重投 + 发一条可见告知。
           // 不给程序化卡片（命令语义 = 触发词，回复由模型/引擎消息承担）。
@@ -361,6 +386,11 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
       run: async (inv) => {
         const sid = messageSessionId(inv.agent);
         if (!sid) return { kind: "error", text: "当前会话已离线，无法回退。请刷新后重试。" };
+        const facade = deps.engineFor(deps.workspaceOfSession?.(sid));
+        if (facade.activeKindsOfSession(sid).graph) {
+          deps.deliverDirective(sid, "[ralphflow] 用户执行了 /ralphflow-rewind，但当前是 **Graph 实例**：Graph 是无环 DAG，不支持回退到前序步骤；节点局部返工由 CHECK 与人工门驱动。需要换方向时取消实例并新建。用 `/ralphflow-status` 向用户说明。**不要调用任何工具**。");
+          return { kind: "success" };
+        }
         // 参数解析：`<步骤> <原因>` 两个都必填；原因是自由文本（可含空格），所以第一段是步骤、
         // 其余整段是原因。
         const parts = inv.rawInput.trim().split(/\s+/).filter(Boolean);
@@ -378,7 +408,7 @@ export function registerCommands(deps: ToolContext & { handlers: Map<string, Too
         const reasonText = parts.slice(1).join(" ");
         // 机械动作在**命令处理器**里完成（不经过模型调工具）：状态机倒退 + 清暂停/失败计数
         // + 强制整段替换上下文 + 重投目标步 DO，必须与机械程序的决定原子发生，不能要求模型记得去调。
-        const res = deps.engineFor(deps.workspaceOfSession?.(sid)).rewindTo(sid, stepId, reasonText);
+        const res = facade.rewindTo(sid, stepId, reasonText);
         if (res.ok) {
           // 成功：引擎已在**空闲窗口**排入整段替换，并会把目标步 DO（带着原因）+ 可见告知投出。
           // 不给程序化卡片（命令语义 = 触发词，回复由模型/引擎消息承担）。

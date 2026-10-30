@@ -1,0 +1,86 @@
+description: 设计 Graph DAG：grill 决定 → spec → tickets → 按 ticket 依赖生成 Graph 资产
+
+# spec 和 tickets 是 DAG 的输入契约：独立 CHECK 后再由用户明确放行。
+manual_step: [spec, tickets]
+
+steps:
+  - id: grill
+    desc: 把设计目标 grill 成可执行决定
+    input: 用户的想法与约束
+    output: .dsh/ralph-flow/designs/<slug>/grill.md
+    do: |
+      加载 `ralphflow-create` skill，按其 Graph 分支工作；如果你已经在 create-graph 中，只执行本步骤，不重新启动实例。
+
+      读 `ralphflow-create` skill 资源目录中的 `matt/grilling.md`，按 design tree 逐轮提问：先问 frontier（不依赖未答问题的一批决定），每问给推荐答案；用户答完再问下一轮。事实由你查，决定交给用户。
+
+      把已决定事项、未决项、非目标和约束写进 grill.md。
+
+      完成条件：每个会改变 spec 或 ticket 边界的决定都有答案或明确待定；grill.md 可独立阅读。
+    check: |
+      1. grill.md 记录每个已决定事项的答案、理由和影响；没有只有问题、没有结论的条目。
+      2. 每个未决项都标为待定并说明它阻塞哪个决定；没有隐含假设。
+      3. 非目标与约束已写明，且与用户回答一致。
+    on_pass: spec
+    on_fail: grill
+    max_fail_count: 2
+
+  - id: spec
+    desc: 把 grill 决定写成可执行 spec
+    input: grill.md
+    output: .dsh/ralph-flow/designs/<slug>/spec.md
+    do: |
+      按 `ralphflow-create` skill 资源目录中的 `matt/to-spec.md` 和 `ralphflow-authoring.md` 的本地文件模式写 spec；不运行 `/setup-matt-pocock-skills`，不创建 issue。
+
+      以 grill.md 为唯一需求来源写 spec.md，按 to-spec 的模板组织：问题、方案、用户故事、实现决定、测试决定、范围外、补充说明。每条验收写成可观察结果。
+
+      完成条件：spec 覆盖 grill 的每个决定，没有待定项；每条验收都能映射到未来的 ticket。
+    check: |
+      1. grill 的每个决定都在 spec 中有对应条目；未决项已解决或写成明确的非目标。
+      2. spec 的目标、非目标、约束、实现决定、测试决定和验收都可执行、可验证，没有“待定”或空章节。
+      3. 每条验收都能在未来 ticket 中被单独验证，没有把实现细节写成不可验收的愿望。
+      4. spec 中面向 agent 的文本符合 `matt/writing-for-agents.md`：完成条件清晰、指针带触发条件、正面表述、单一事实来源。
+    on_pass: tickets
+    on_fail: spec
+    max_fail_count: 2
+
+  - id: tickets
+    desc: 把 spec 拆成带依赖的垂直切片
+    input: spec.md
+    output: .dsh/ralph-flow/designs/<slug>/tickets/
+    do: |
+      按 `ralphflow-create` skill 资源目录中的 `matt/to-tickets.md` 和 `ralphflow-authoring.md` 的本地文件模式拆分 ticket。
+
+      先向用户展示 ticket 列表与阻塞边（标题、Blocked by、交付的端到端行为），问粒度与依赖是否正确；用户确认后再落盘。
+
+      每个 ticket 写到 `.dsh/ralph-flow/designs/<slug>/tickets/<NN>-<slug>.md`，同时写 `tickets.json`。ticket 的 `do` 要能独立执行，acceptance 要可观察；依赖只保留真正阻塞的关系。
+
+      完成条件：tickets.json 与 ticket 文件一一对应，依赖无环，每个 spec 验收都有 ticket 覆盖。
+    check: |
+      1. 每个 spec 验收项至少被一个 ticket 覆盖；没有重复覆盖或计划外 ticket。
+      2. 每个 ticket 是垂直切片，依赖完成后可独立实现；写明 What to build、Blocked by、acceptance 和涉及面。
+      3. tickets.json 与 ticket 文件一一对应，依赖都存在且无环；没有悬空依赖。
+      4. ticket 的 `do` 与 acceptance 符合 `matt/writing-for-agents.md`：完成条件可核查、动作具体、正面表述。
+    on_pass: graph
+    on_fail: tickets
+    max_fail_count: 2
+
+  - id: graph
+    desc: 按 ticket 依赖生成 Graph 资产并校验
+    input: tickets.json 与 tickets/
+    output: .dsh/ralph-flow/graphs/<slug>.yaml
+    do: |
+      按 `ralphflow-create` skill 资源目录中的 `graph-authoring.md`、`ralphflow-authoring.md` 和 `matt/writing-for-agents.md` 生成资产。
+
+      按 tickets.json 生成 `.dsh/ralph-flow/graphs/<slug>.yaml`：一个 ticket 一个步骤，`id` 用 ticket id，`depends_on` 来自 ticket 依赖，`do` 指向 spec 与 ticket 的绝对路径，`check` 来自 ticket acceptance。资产只写任务与验收，不复制 Matt 参考正文。
+
+      用 `ralphflow_doctor` 校验；修到全部通过。把资产路径、ticket 图和下一步写进交付消息；不启动生成的 Graph。
+
+      完成条件：资产通过 doctor，ticket 与步骤一一对应，交付消息给出路径和用户下一步。
+    check: |
+      1. 每个 ticket 恰好对应一个 Graph 步骤；id、depends_on 与 tickets.json 一致，依赖无环。
+      2. 每个步骤的 do 指向 spec 与 ticket，动作具体，完成条件可核查；check 来自 ticket acceptance，可观察、可复核。
+      3. 生成的 DO/CHECK 符合 `matt/writing-for-agents.md`；资产自包含，不引用插件内部 `references/`。
+      4. `ralphflow_doctor` 对保存的资产全部通过；交付声明没有启动生成的 Graph。
+    on_pass: done
+    on_fail: graph
+    max_fail_count: 1

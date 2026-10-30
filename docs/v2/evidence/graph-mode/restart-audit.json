@@ -1,0 +1,20 @@
+{
+  "scope": "exact copy of ~/.dsh/profiles/web (package.json, pnpm-lock, node_modules, cordis.patch.yml, cordis.yml); ralphflow-dsh re-linked to /home/yj/ralph-flow-dsh; reference ralphgraph-dsh present",
+  "additional_run": "3 cold restarts of the same composition (kill dsh web, start again)",
+  "http": 200,
+  "pageErrors": [],
+  "ralphFlowViewerTab": true,
+  "ralphGraphViewerTab": true,
+  "result": "cold restart opens; both plugins coexist; no page errors",
+  "liveProcessUntouched": "PID 2041648 (dsh web, port 3080) was not stopped by the audit",
+  "afterRemovingRalphGraph": {
+    "profileEdit": "~/.dsh/profiles/web/package.json: removed ralphgraph-dsh from dsh.profile.bundles and dependencies",
+    "backup": "~/.dsh/profiles/web/package.json.bak-remove-ralphgraph-20261021-190433",
+    "audit": "copy of edited profile cold start",
+    "http": 200,
+    "pageErrors": [],
+    "onlyRalphFlowTab": true,
+    "missingBundleError": false,
+    "evidence": "restart-without-ralphgraph.png"
+  }
+}

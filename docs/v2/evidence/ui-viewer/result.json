@@ -1,0 +1,54 @@
+{
+  "runtime": "dsh web",
+  "controlled": "local fixture model; real host, real client bundle",
+  "reported": "步骤详情无法下拉",
+  "rootCause": ".rv-inspector overflow:hidden 使 grid auto 轨道塌成面板高度",
+  "fix": ".rv-inspector overflow:clip + 根节点滚动 + 切换时回到顶部",
+  "checks": [
+    "长 DO 详情 scrollHeight > clientHeight",
+    "详情能滚到底",
+    "返回列表后 scrollTop === 0",
+    "npm run verify 33/33",
+    "ui-status-web 通过",
+    "loop 详情逐条显示三票检查依据",
+    "状态弹层每票显示检查依据",
+    "Graph 默认显示列表（画布需手动切换）",
+    "节点 agent 写入 subagent/catalog（顶部监控可见）",
+    "DO 阶段卡片写「DO · 执行中」+「CHECK · 待验证」（不得写 CHECK 验证中）",
+    "CHECK 阶段卡片写「DO · 已交卷」+「CHECK · 验证中」",
+    "Flow loop 三票挂起时写「CHECK · 验证中 0/3」，表头「独立验证中 0/3 票」",
+    "在飞色明暗两套主题都有彩度（rgb(65,118,230) / rgb(122,170,255)）",
+    "npm run verify 35/35",
+    "打开工作图默认落在正在运行的工作流上（上次浏览偏好不得覆盖）",
+    "下拉里恰好一行带「运行中」，且是运行中的那个",
+    "浏览别的资产时表头点明「运行中：<name>」",
+    "刷新页面后重新打开仍回到运行中的工作流",
+    "npm run verify 36/36"
+  ],
+  "phaseChips": {
+    "source": "src/client/phase.ts",
+    "do": [
+      "DO · 执行中",
+      "CHECK · 待验证"
+    ],
+    "check": [
+      "DO · 已交卷",
+      "CHECK · 验证中"
+    ],
+    "done": [
+      "已完成",
+      "CHECK · 已通过"
+    ],
+    "inFlightToken": "--dsw-alias-state-business-primary"
+  },
+  "selection": {
+    "source": "src/client/selection.ts",
+    "priority": [
+      "本次手动选择",
+      "正在运行的工作流",
+      "上次浏览偏好（localStorage）",
+      "目录第一个"
+    ],
+    "runningMarker": "· 运行中"
+  }
+}

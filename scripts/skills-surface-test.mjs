@@ -50,9 +50,9 @@ const tick = () => new Promise((r) => setTimeout(r, 30));
  */
 const START_DESCRIPTION = "Ralph Flow：用户点名 ralphflow，或要求执行后由独立会话的验证者验收时，用它启动工作流。";
 
-/** 命令面的**完整**清单（判据 1/2/6：逐条归类后剩下的就是这 8 条）。 */
+/** 命令面的**完整**清单（create 已迁成 skill）。 */
 const EXPECTED_COMMANDS = [
-  "ralphflow-cancel", "ralphflow-continue", "ralphflow-create", "ralphflow-doctor",
+  "ralphflow-cancel", "ralphflow-cleanup", "ralphflow-continue", "ralphflow-doctor",
   "ralphflow-list", "ralphflow-reset", "ralphflow-rewind", "ralphflow-status",
 ];
 
@@ -71,7 +71,9 @@ const catalogLine = (e) => `- \`${e.name}\`: ${String(e.description).replaceAll(
  */
 async function mkSurfaceEnv(entryUrl, label) {
   const ws = mkTmp(`skills-${label}`);
-  process.env.RALPHFLOW_WORKSPACE = ws;
+  // 插件按「加载时的项目根」做一次默认登记；这个用例要断言的是 ws 自己的资产，
+  // 所以把进程目录也切到 ws（真实 GUI 里 dsh 就以工作区目录启动）。
+  process.chdir(ws);
 
   // 自定义工作流：一个合语法（必须登记成 ralphflow-my-flow）+ 一个不合语法（必须被如实拒绝）
   const wfDir = path.join(ws, ".dsh", "ralph-flow", "workflows");
@@ -94,11 +96,12 @@ async function mkSurfaceEnv(entryUrl, label) {
   ctx.provide("tools", { register: (d) => registered.tools.push(d), schemas: () => [] });
   ctx.provide("subagents", {
     list: () => [],
-    getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
-    start: async () => ({ id: "child", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) }),
+    getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
+    startActivation: async () => ({ childId: "child", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) }),
   });
   ctx.provide("sessions", { list: () => [...sessions.values()], get: (id) => sessions.get(id) });
-  ctx.provide("agents", { get: (id) => (id === sid ? agent : undefined) });
+    ctx.provide("agentPresets", { register: async () => async () => {} });
+ctx.provide("agents", { get: (id) => (id === sid ? agent : undefined) });
   ctx.provide("logger", { info() {}, warn() {}, error() {} });
 
   // 真服务：技能面 / 命令面 / 标题面。SessionTitleService 声明了 inject（sessions + sessionProjections），
@@ -134,23 +137,23 @@ console.log("T1 真 SkillRegistry：注册了什么、哪一面看得见（判�
 {
   check("registry 合并完成（真 provider 收集，不是替身）", snapshot.complete === true, JSON.stringify(snapshot.complete));
 
-  check("模型目录里与 ralphflow 相关的条目**只有一条**，且就是 ralphflow-start",
-    modelVisible.length === 1 && modelVisible[0].name === "ralphflow-start",
+  check("模型目录里与 ralphflow 相关的条目是 start 与 create 两条",
+    modelVisible.length === 2 && modelVisible.some((s) => s.name === "ralphflow-start") && modelVisible.some((s) => s.name === "ralphflow-create"),
     `modelVisible=${modelVisible.map((s) => s.name).join(",")}`);
 
   const start = ralphflowSkills.find((s) => s.name === "ralphflow-start");
   check("ralphflow-start 的描述**逐字**等于当前触发描述",
     start?.description === START_DESCRIPTION, JSON.stringify(start?.description));
 
-  check("模型目录里那一行逐字是 `- \\`ralphflow-start\\`: <触发词>`（renderCatalogEntries 形态）",
-    modelVisible.map(catalogLine).join("\n") === `- \`ralphflow-start\`: ${START_DESCRIPTION}`,
+  check("模型目录里包含逐字的 start 触发行（renderCatalogEntries 形态）",
+    modelVisible.map(catalogLine).includes(`- \`ralphflow-start\`: ${START_DESCRIPTION}`),
     JSON.stringify(modelVisible.map(catalogLine)));
 
   check("ralphflow-start 两面都有（invocation 省略 ⇒ modelInvocable + userInvocable）",
     !!start && isModelInvocable(start) && isUserInvocable(start), JSON.stringify(start?.invocation));
 
-  const userOnly = ["ralphflow-loop", "ralphflow-spec", "ralphflow-my-flow"];
-  check("ralphflow-<工作流> 三条都在（loop / spec / 自定义 my-flow），且都只给人看",
+  const userOnly = ["ralphflow-loop", "ralphflow-spec", "ralphflow-create-graph", "ralphflow-my-flow"];
+  check("ralphflow-<工作流> 四条都在（loop / spec / create-graph / my-flow），且都只给人看",
     userOnly.every((n) => {
       const s = ralphflowSkills.find((x) => x.name === n);
       return s !== undefined && isUserInvocable(s) && !isModelInvocable(s);
@@ -163,6 +166,20 @@ console.log("T1 真 SkillRegistry：注册了什么、哪一面看得见（判�
   check("ralphflow-<工作流> 的描述直接用工作流 YAML 的 description（loop 那句）",
     ralphflowSkills.find((s) => s.name === "ralphflow-loop")?.description === yaml.load(fs.readFileSync(path.join(REPO, "workflows/loop.yaml"), "utf8")).description,
     JSON.stringify(ralphflowSkills.find((s) => s.name === "ralphflow-loop")?.description));
+
+  const createDef = await fixed.ctx.skills.get("ralphflow-create", { cwd: fixed.ws });
+  check("ralphflow-create 的正文分开 Flow 与 Graph 分支",
+    !!createDef && createDef.content.includes("## Flow") && createDef.content.includes("## Graph / DAG"),
+    createDef?.content.slice(0, 200));
+  const flowSection = (createDef?.content ?? "").split("## Graph / DAG")[0];
+  check("ralphflow-create 的 Graph 分支启动 create-graph，Flow 分支只读 writing-for-agents",
+    !!createDef && createDef.content.includes("create-graph")
+      && flowSection.includes("matt/writing-for-agents.md")
+      && !flowSection.includes("matt/grilling") && !flowSection.includes("matt/to-spec") && !flowSection.includes("matt/to-tickets"),
+    createDef?.content.slice(0, 500));
+  check("ralphflow-create 带随包参考目录",
+    createDef?.resourceBase?.kind === "directory" && /references$/.test(createDef.resourceBase.path),
+    JSON.stringify(createDef?.resourceBase));
 
   const startDef = await fixed.ctx.skills.get("ralphflow-start", { cwd: fixed.ws });
   check("真 registry 能按名字加载正文（get）", !!startDef && startDef.content.length > 0);
@@ -214,7 +231,7 @@ console.log("\nT2 真命令面：启动类**不再**是命令（判据 2；这�
 
   check("`ralphflow_start` 工具仍在（工具面不变）", !!toolOf(fixed.registered, "ralphflow_start"));
   check("没有把启动类做成工具（工具面保持固定：不给模型新的可调用入口）",
-    !toolOf(fixed.registered, "ralphflow_start_shortcut") && fixed.registered.tools.length === 8,
+    !toolOf(fixed.registered, "ralphflow_start_shortcut") && fixed.registered.tools.length === 7,
     fixed.registered.tools.map((t) => t.name).join(","));
 }
 

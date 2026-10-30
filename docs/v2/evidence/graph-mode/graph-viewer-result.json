@@ -1,0 +1,44 @@
+{
+  "runtime": "dsh web",
+  "controlled": "local fixture model; real host, real Graph engine, real client bundle",
+  "checks": [
+    "DO 阶段在卡片上可分辨：[\"当前 · DO · 执行中\",\"CHECK · 待验证\"]",
+    "运行中：下拉标出唯一运行中的工作流；手动可以切走；表头点明运行中的是哪个",
+    "重开页面后工作图回到运行中的工作流（不被上次浏览偏好覆盖）",
+    "CHECK 阶段在卡片上可分辨：[\"当前 · DO · 已交卷\",\"CHECK · 验证中\"]",
+    "在飞色明暗都有彩度：rgb(65, 118, 230) / rgb(122, 170, 255)",
+    "Graph 状态面在真实页面上到达 done",
+    "节点 agent 出现在宿主子智能体 catalog（顶部监控可见）",
+    "状态弹层显示 Graph 节点与完成计数",
+    "完成节点芯片：[\"已完成\",\"CHECK · 已通过\"]",
+    "长 DO 详情能滚动到底，返回后回到顶部",
+    "loop 的 3 票检查依据在步骤详情里逐条可见",
+    "右侧只读查看器显示 Graph 资产、节点 DO 与 CHECK",
+    "查看器没有启动/取消控制面",
+    "Flow 步骤在 CHECK 阶段可分辨：[\"DO · 已交卷\",\"CHECK · 验证中 0/3\"]"
+  ],
+  "graphPauseDock": "Graph 执行中 · 1 个节点在飞\n暂停",
+  "phaseDoScreenshot": "viewer-phase-do.png",
+  "runningDefaultScreenshot": "viewer-running-default.png",
+  "phaseCheckScreenshot": "viewer-phase-check.png",
+  "toneProbe": {
+    "light": {
+      "color": "rgb(65, 118, 230)",
+      "spread": 165,
+      "dark": false
+    },
+    "dark": {
+      "color": "rgb(122, 170, 255)",
+      "spread": 133,
+      "dark": true
+    }
+  },
+  "darkScreenshot": "viewer-phase-dark.png",
+  "outlineScreenshot": "viewer-outline.png",
+  "graphScreenshot": "viewer-graph.png",
+  "pickerScreenshot": "viewer-picker.png",
+  "codewikiScreenshot": "viewer-codewiki.png",
+  "flowScreenshot": "viewer-flow.png",
+  "screenshot": "viewer.png",
+  "flowCheckScreenshot": "viewer-flow-check.png"
+}
