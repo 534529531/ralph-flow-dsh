@@ -92,7 +92,7 @@ function mkStubAdapter(log) {
       log?.({ kind: "request", hasDo: doText !== null, tools: toolNames.length });
       if (doText && doText !== lastSubmittedDo && toolNames.includes("ralphflow_submit")) {
         lastSubmittedDo = doText;
-        for (const c of toolChunks("ralphflow_submit", { summary: "这一步做完了" })) yield c;
+        for (const c of toolChunks("ralphflow_submit", { summary: "这一步做完了", unfinished: [] })) yield c;
         return;
       }
       if (doText === null && toolNames.includes("ralphflow_start") && all.includes("完成任务")) {
@@ -107,7 +107,7 @@ function mkStubAdapter(log) {
 /** 真实宿主 + 真实插件装配 + 一段脚本化回合。返回本轮的观察结果。 */
 async function runScenario(entryUrl, label) {
   const ws = mkTmp(`real-${label}`);
-  process.env.RALPHFLOW_WORKSPACE = ws;
+  process.chdir(ws);
 
   const ctx = new Context();
   ctx.provide("logger", { info() {}, warn() {}, error() {}, debug() {} });
@@ -127,16 +127,18 @@ async function runScenario(entryUrl, label) {
   const votes = [];
   ctx.provide("subagents", {
     list: () => ["spawn"],
-    getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
-    start: async () => {
+    getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
+    startActivation: async () => {
       const d = Promise.withResolvers();
       votes.push(d);
-      return { id: `verifier-${votes.length}`, result: d.promise };
+      return { childId: `verifier-${votes.length}`, result: d.promise };
     },
   });
   ctx.provide("commands", { register: () => () => {} });
   ctx.provide("skills", { register: () => () => {} });
 
+  // 0.2.1-rc.2+：验证者 preset 注册所需的宿主服务；测试只关心注册被调用与委派发生。
+  ctx.provide("agentPresets", { register: async () => async () => {} });
   const plugin = await import(entryUrl + (label === "fixed" ? "" : `?${label}-${RUN}`));
   plugin.apply(ctx);
 

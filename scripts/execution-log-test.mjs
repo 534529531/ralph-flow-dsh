@@ -134,10 +134,10 @@ console.log("L1 运行期 JSONL → 归档 → 报告指路 → 可复盘（验�
   const REASON = `验收判定原文：逐条核对通过 ✓\n第二行必须原样保留-${"长".repeat(400)}-END`;
   ctx.provide("subagents", {
     list: () => ["spawn"],
-    getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
-    start: async (_n, req) => {
-      sentPrompts.push(req.prompt?.[0]?.text ?? null);
-      return { id: "child", result: Promise.resolve({ structured: { passed: true, reason: REASON }, output: [], stopReason: "completed" }) };
+    getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
+    startActivation: async (spec) => {
+      sentPrompts.push(spec.request.prompt?.[0]?.text ?? null);
+      return { childId: "child", result: Promise.resolve({ structured: { passed: true, reason: REASON }, output: [], stopReason: "completed" }) };
     },
   });
   ctx.provide("tools", { schemas: () => [] });
@@ -520,6 +520,8 @@ steps:
   // 039f2f6 基线的 InstanceState 落盘键全集（新增任何键都会在这里报出来）
   const BASELINE_KEYS = ["active", "artifacts_dir_name", "current_step", "delegations", "do_submitted", "fail_counts",
     "history", "last_submit_summary", "owner_session", "pause_reason", "paused", "started_at", "updated_at",
+    // 属主租约是原始事实（谁在驱动 + 最后心跳），不是派生相位；没有它就无法跨进程判活。
+    "owner_runtime", "owner_heartbeat_at",
     "user_task", "verdicts", "workflow_name"].sort();
   const extra = keys.filter((k) => !BASELINE_KEYS.includes(k));
   check("验收6：state.json 没有任何基线之外的键", extra.length === 0, `extra=${JSON.stringify(extra)}`);

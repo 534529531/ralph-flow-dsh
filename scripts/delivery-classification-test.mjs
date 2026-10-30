@@ -109,18 +109,24 @@ const runtimeFiles = [...byFile.keys()].filter((f) => f.startsWith("src/")).sort
 const otherFiles = looseFiles.filter((f) => !f.startsWith("src/"));
 
 /**
- * 运行期的**五个载体**（唯五允许出现注入 API 的地方）。频率/位置变了都必须来改这张表。
+ * 运行期的**八个载体**（唯八允许出现注入 API 的地方）。频率/位置变了都必须来改这张表。
  * `directive` = 唤醒（要模型干活）；`notice` = 只记录（不唤醒）。
+ * 指令又分两个边界：`steer` 落 next-step（**收尾中的回合被续上**），`followup` 落 next-turn
+ * （**本回合收尾、提醒成为下一回合的第一条消息**）。引擎的「一轮」必须走后者。
  */
 const RUNTIME_CARRIERS = {
   "src/index.ts": {
     "deliverNotice → session.append!(user/message, msg, …)": "notice",
     "flushNotices → session.append!(user/message, queue[0], …)": "notice",
     "deliverDirective → agent.steer(msg)": "directive",
+    "deliverRound → agent.followup(msg)": "directive",
   },
   "src/reset.ts": {
     "resetSurface → session.append(user/message, notice, …)": "notice",
     "resetSurface → session.append(user/message, handoff, …)": "directive",
+  },
+  "src/graph/engine.ts": {
+    "节点 DO → agent.followup(…)": "directive",
   },
 };
 
@@ -131,19 +137,22 @@ const LEDGER = {
   "scripts/visibility-test.mjs": "用例替身：真 Session + steer 记录 + append 记录（captureAppends）",
   "scripts/voting-test.mjs": "用例替身：真 Session + steer 记录 + append 记录（captureAppends）",
   "scripts/submit-flow-test.mjs": "用例替身：真 Session + steer 记录 + append 记录（captureAppends）",
+  "scripts/incomplete-gate-test.mjs": "用例替身：真 Session + steer 记录 + append 记录（captureAppends），验证未完成项闸门不启动验证",
   "scripts/notice-delivery-test.mjs": "用例替身：真 Session + steer 记录（播报走真实 append 载体）",
   "scripts/reset-surface-test.mjs": "用例夹具：真 Session 上种旧对话 / 模拟驱动器把收件箱 drain 成 user/message",
   "scripts/rewind-test.mjs": "用例夹具：真 Session 上种旧对话 / 模拟驱动器把收件箱 drain 成 user/message",
   "e2e-harness/index.js": "e2e 夹具：followup 把任务喂给真实 agent（驱动真实回合）",
   "scripts/real-loop-wake-test.mjs": "真实运行用例：真实 AgentLoop + 真实 Session；stub 模型用真工具链交付，替身 subagents 只决定判定",
+  "scripts/round-turn-test.mjs": "真实运行用例：真实 AgentLoop + 真实 Session；stub 模型在 DO 之后主动结束回合，验提醒落 next-turn（一轮=一个回合）；负对照把载体还原成 steer",
   "scripts/skills-surface-test.mjs": "技能面用例替身：真 SkillRegistry/CommandRuntime/SessionTitleService + `steer` 空实现（只记技能注册与命令解析，不投递）",
+  "scripts/stop-pause-test.mjs": "停止按钮=暂停用例替身：真 Session + steer/append 记录，模拟宿主 turn/end aborted/user",
   "smoke-client.mts": "历史客户端冒烟：cordis ctx 替身的 `inject:` 属性，不是会话投递",
 };
 
 console.log("S1 运行期：注入会话的调用点只允许出现在五个载体上，且每个都带 @delivery 标记");
 {
   const carriers = Object.keys(RUNTIME_CARRIERS).sort();
-  check("S1a 运行期出现注入调用点的文件恰好是两个载体文件",
+  check("S1a 运行期出现注入调用点的文件恰好是三个载体文件",
     JSON.stringify(runtimeFiles) === JSON.stringify(carriers),
     `扫描到 ${JSON.stringify(runtimeFiles)}，期望 ${JSON.stringify(carriers)}`);
 
@@ -160,8 +169,8 @@ console.log("S1 运行期：注入会话的调用点只允许出现在五个载�
     .filter((f) => f.startsWith(path.join(REPO, "src")))
     .filter((f) => /createUserMessage\s*\(/.test(fs.readFileSync(f, "utf-8").replace(/^\s*(\*|\/\/).*$/gm, "")))
     .map((f) => path.relative(REPO, f)).sort();
-  check("S1d 消息构造（createUserMessage）也只出现在载体里",
-    JSON.stringify(constructors) === JSON.stringify(carriers), JSON.stringify(constructors));
+  check("S1d 消息构造（createUserMessage）只出现在载体里（载体可以只用 raw message，不强制都构造）",
+    constructors.every((file) => carriers.includes(file)), JSON.stringify(constructors));
 
   for (const [f, expected] of Object.entries(RUNTIME_CARRIERS)) {
     const hits = byFile.get(f) ?? [];
@@ -194,34 +203,60 @@ console.log("\nS3 运行期投递调用点清单（改了清单就必须来改�
     census[rel] = {
       deliverDirective: countCalls(text, "deliverDirective"),
       deliverNotice: countCalls(text, "deliverNotice"),
+      deliverRound: countCalls(text, "deliverRound"),
       notify: countCalls(text, "notify"),
     };
   }
   const expected = {
-    "src/client/definition.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
-    "src/client/index.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
-    "src/client/status-source.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
-    "src/client/status.tsx": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
-    "src/create.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
-    "src/engine.ts": { deliverDirective: 6, deliverNotice: 2, notify: 17 },
-    "src/index.ts": { deliverDirective: 1, deliverNotice: 1, notify: 0 },
-    "src/message-source.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
-    "src/reset.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
+    "src/assets.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/client/definition.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/client/index.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    // 阶段投影：纯函数，只把状态翻成芯片，不投递任何东西。
+    "src/client/phase.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    // 资产选择：纯函数，只决定打开时看哪个资产，不投递任何东西。
+    "src/client/selection.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/client/status-source.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/client/status.tsx": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/client/viewer.tsx": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/engine.ts": { deliverDirective: 6, deliverNotice: 2, deliverRound: 0, notify: 19 },
+    "src/facade.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/graph/agent-registry.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/graph/asset.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/graph/assets.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    // 分支命名：纯函数，集成分支与节点分支共用一份定义，不投递任何东西。
+    "src/graph/branches.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/graph/check.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/graph/engine.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 15 },
+    "src/graph/report.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/graph/state.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/graph/workspace.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/index.ts": { deliverDirective: 0, deliverNotice: 1, deliverRound: 1, notify: 0 },
+    "src/message-source.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    // 路径解析：纯函数（项目根 / 用户根），不投递任何东西。
+    // 属主心跳：纯状态函数，不投递任何东西。
+    "src/owner.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/paths.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    // 暂停原因词表：纯映射，不投递任何东西。
+    "src/pause.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/reset.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
     // 技能注册面：名字不合语法的工作流要**当场把原因说清给人听**（播报，不唤醒）—— 唯一的投递点。
-    "src/skills.ts": { deliverDirective: 0, deliverNotice: 1, notify: 0 },
-    "src/status-contract.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
-    "src/status-service.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
-    "src/tools.ts": { deliverDirective: 4, deliverNotice: 0, notify: 0 },
-    "src/typert.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
-    "src/verify.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
-    "src/voting.ts": { deliverDirective: 0, deliverNotice: 0, notify: 0 },
+    "src/skills.ts": { deliverDirective: 0, deliverNotice: 1, deliverRound: 0, notify: 0 },
+    "src/status-contract.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/status-service.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/tools.ts": { deliverDirective: 8, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/typert.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    // 未完成项归一化：纯函数，两个引擎共用，不投递任何东西。
+    "src/unfinished.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/verifier-preset.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/verify.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
+    "src/voting.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
   };
   check("S3a 投递调用点计数与清单一致（新增/删除投递都要来改这里）",
     JSON.stringify(census) === JSON.stringify(expected),
     `实际 ${JSON.stringify(census)}`);
-  const sum = (o) => o.deliverDirective + o.deliverNotice + o.notify;
+  const sum = (o) => o.deliverDirective + o.deliverRound + o.deliverNotice + o.notify;
   const total = Object.values(census).reduce((a, c) => a + sum(c), 0);
-  const directives = Object.values(census).reduce((a, c) => a + c.deliverDirective, 0);
+  const directives = Object.values(census).reduce((a, c) => a + c.deliverDirective + c.deliverRound, 0);
   const notices = Object.values(census).reduce((a, c) => a + c.deliverNotice, 0);
   const viaNotify = Object.values(census).reduce((a, c) => a + c.notify, 0);
   check("S3b 清单非空且两类都在（指令 + 播报）", total > 0 && directives > 0 && notices + viaNotify > 0, JSON.stringify({ total, directives, notices, viaNotify }));

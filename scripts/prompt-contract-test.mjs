@@ -39,6 +39,19 @@ try {
   const propose = delivered.at(-1);
   assert(propose.includes("## 输入"));
   assert(propose.includes("## 本步验收依据（供自查）"));
+  // 交卷的前置条件由引擎统一注入（不靠每个工作流自己写）：
+  assert(propose.includes("还没完成的事项"));
+  assert(propose.includes("没有就留空"));
+  assert(propose.includes("剩余工作清单"));
+  assert(propose.includes("不是完成声明"));
+  assert(propose.includes("每一条都能指出可复核的证据"));
+  assert(propose.includes("把**还没完成的事项**逐条写进 `unfinished`"));
+  assert(propose.includes("调用 `ralphflow_submit` 结束本轮"));
+  assert(propose.includes("被打回会整步返工"));
+  // 不向执行者泄露判定的触发条件：DO 不能再把「没有剩余事项」和「启动验证」绑在一起。
+  assert(!propose.includes("留空 = 做完了") && !propose.includes("完成开关"));
+  assert(!propose.includes("没有剩余事项**") && !propose.includes("还有剩余事项"));
+  assert(!propose.includes("引擎会启动独立验证"));
   assert(propose.indexOf("## 输入") < propose.indexOf("## 本步要做什么"));
   assert(propose.includes("proposal 的每条验收标准都有明确任务承接"));
   assert(propose.includes("proposal.md（本实例产出目录，含需求与已确认决定）"));
@@ -53,6 +66,7 @@ try {
   fs.writeFileSync(`${artifactDir}/tasks.md`, "- [ ] 保留 API 并验证原调用\n");
   assert(engine.continueInstance("owner").ok); await settle();
   const implement = delivered.at(-1);
+  assert(implement.includes("剩余工作清单"));
   assert(implement.includes("先读 proposal.md、tasks.md"));
   assert(implement.includes("proposal.md + tasks.md（+ 已有 design.md）"));
   assert(implement.includes("项目没有某类工具时"));

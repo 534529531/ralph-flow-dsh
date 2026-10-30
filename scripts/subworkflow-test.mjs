@@ -68,6 +68,8 @@ const PRE_CHANGE_PERSISTED_FIELDS = [
   "active", "artifacts_dir_name", "current_step", "delegations", "do_submitted", "fail_counts", "history",
   "last_submit_summary", "owner_session", "paused", "pause_reason", "started_at", "updated_at", "user_task",
   "verdicts", "workflow_name",
+  // 属主租约（原始事实，不是派生相位）：谁在驱动实例 + 最后一次心跳。
+  "owner_runtime", "owner_heartbeat_at",
 ];
 
 /** 造一个隔离工作区 + 引擎（脚本化验证端口；记录每笔委派的 step/model 供取证） */

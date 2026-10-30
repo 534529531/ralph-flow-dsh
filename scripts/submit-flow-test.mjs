@@ -25,6 +25,9 @@ const check = (n, c, e = "") => { if (c) { pass++; console.log(`  ✓ ${n}`); } 
 const sleep = (ms = 60) => new Promise((r) => setTimeout(r, ms));
 
 function mkEnv(ws) {
+
+  // 插件按加载目录解析默认项目根（真实 dsh 就从工作区目录启动）；测试也必须同形。
+  process.chdir(ws);
   const ctx = new Context();
   const registered = { tools: [], commands: [], skills: [] };
   const delivered = [];
@@ -40,10 +43,11 @@ function mkEnv(ws) {
   ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
-    getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
-    start: async () => ({ id: "c", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) }),
+    getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
+    startActivation: async () => ({ childId: "c", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) }),
   });
-  ctx.provide("agents", { get: (id) => agents.get(id) });
+    ctx.provide("agentPresets", { register: async () => async () => {} });
+ctx.provide("agents", { get: (id) => agents.get(id) });
   ctx.provide("sessions", { list: () => [], get: (id) => (id === pid ? session : undefined) });
   ctx.provide("logger", { info() {}, warn() {}, error() {} });
   // 捕获插件注册的监听器（cordis 的 ctx.on）
@@ -56,7 +60,6 @@ const cli = (msg) => JSON.stringify(msg?.content ?? "");
 console.log("S1 工具面：ralphflow_submit 已注册，且带 concludeTurn 行为");
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-flow-"));
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const { ctx, registered } = mkEnv(ws);
   plugin.apply(ctx);
   const names = registered.tools.map((t) => t.name);
@@ -70,7 +73,6 @@ console.log("S1 工具面：ralphflow_submit 已注册，且带 concludeTurn 行
 console.log("\nS2 turn-stopping：未交卷时提醒（且提醒有上限）");
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-flow-remind-"));
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const { ctx, registered, delivered, pid, listeners } = mkEnv(ws);
   plugin.apply(ctx);
   const startTool = registered.tools.find((t) => t.name === "ralphflow_start");
@@ -105,7 +107,6 @@ console.log("\nS2 turn-stopping：未交卷时提醒（且提醒有上限）");
 console.log("\nS3 turn-stopping：已交卷 / 无实例 / 暂停中 都不提醒");
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-flow-quiet-"));
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const { ctx, registered, delivered, pid, listeners } = mkEnv(ws);
   plugin.apply(ctx);
   const startTool = registered.tools.find((t) => t.name === "ralphflow_start");
@@ -118,7 +119,7 @@ console.log("\nS3 turn-stopping：已交卷 / 无实例 / 暂停中 都不提醒
 
   await startTool.execute({ workflow: "loop", task: "安静用例" }, { agent: { session: { id: pid } }, signal: new AbortController().signal });
   // 已交卷：不提醒
-  await submitTool.execute({}, { agent: { session: { id: pid } }, concludeTurn: undefined });
+  await submitTool.execute({ unfinished: [] }, { agent: { session: { id: pid } }, concludeTurn: undefined });
   delivered.length = 0;
   await listeners.get("agent/turn-stopping")({ agent: { id: pid } });
   // 内置 loop 现在是多验证者投票步：交卷后会异步收到**投票进度播报**（每票一行），
@@ -134,7 +135,6 @@ console.log("\nS3 turn-stopping：已交卷 / 无实例 / 暂停中 都不提醒
 console.log("\nS4 交卷工具调用 concludeTurn（宿主原生回合结束）");
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-flow-ct-"));
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const { ctx, registered, pid } = mkEnv(ws);
   plugin.apply(ctx);
   const startTool = registered.tools.find((t) => t.name === "ralphflow_start");
@@ -142,7 +142,7 @@ console.log("\nS4 交卷工具调用 concludeTurn（宿主原生回合结束）"
   await startTool.execute({ workflow: "loop", task: "concludeTurn 用例" }, { agent: { session: { id: pid } }, signal: new AbortController().signal });
 
   let concluded = 0;
-  await submitTool.execute({ summary: "做完了 A/B" }, { agent: { session: { id: pid } }, concludeTurn: () => { concluded++; } });
+  await submitTool.execute({ summary: "做完了 A/B", unfinished: [] }, { agent: { session: { id: pid } }, concludeTurn: () => { concluded++; } });
   check("交卷调用了 concludeTurn（结束本回合）", concluded === 1, `concluded=${concluded}`);
 
   // 非交卷工具不应结束回合
@@ -157,7 +157,6 @@ console.log("\nS4 交卷工具调用 concludeTurn（宿主原生回合结束）"
 console.log("\nS5 工具/命令/技能描述：无 check 的步骤不得被描述成会走独立验证（诚实标注的类级断言）");
 {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-flow-desc-"));
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const { ctx, registered, delivered, pid } = mkEnv(ws);
   plugin.apply(ctx);
   const byName = (n) => registered.tools.find((t) => t.name === n);
@@ -174,15 +173,16 @@ console.log("\nS5 工具/命令/技能描述：无 check 的步骤不得被描�
   const continueText = delivered.map((m) => JSON.stringify(m?.content ?? m)).join("\n");
   check("ralphflow_start 描述限定「有 check 的步骤」才独立验证、无 check 则跳过",
     startDesc.includes("有 `check`") && startDesc.includes("没有 `check`") && startDesc.includes("跳过对抗性验证"), startDesc);
-  check("ralphflow_submit 描述同样限定（不再无条件「独立验证者随后取证判定」）",
-    submitDesc.includes("有 `check`") && submitDesc.includes("没有 `check`"), submitDesc);
+  check("ralphflow_submit 描述只讲交卷/剩余事项，不预告验证或 CHECK",
+    submitDesc.includes("`unfinished`") && submitDesc.includes("没有就留空")
+    && !submitDesc.includes("独立验证") && !submitDesc.includes("CHECK"), submitDesc);
   check("ralphflow-start 已是技能（同名命令不存在），技能正文同样限定（有 check → 独立验证；无 check → 跳过）",
     !registered.commands.some((c) => c.name === "ralphflow-start")
       && startSkillContent.includes("有 `check`") && startSkillContent.includes("没有 `check`"),
     `commands=${registered.commands.map((c) => c.name).join(",")}`);
   check("continue 指令说明手动审查的两种情形（有 check 通过 / 无 check 跳过）",
     continueText.includes("有 `check`") && continueText.includes("没有 `check`") && continueText.includes("跳过对抗性验证"), continueText.slice(0, 220));
-  check("有 check 的语义仍如实保留（描述里仍有「取证判定」）", /取证判定/.test(startDesc) && /取证判定/.test(submitDesc));
+  check("有 check 的语义在 start/continue 描述里如实保留；submit 只讲交卷", /取证判定/.test(startDesc) && !/取证判定/.test(submitDesc) && /跳过对抗性验证/.test(continueText));
   fs.rmSync(ws, { recursive: true, force: true });
 }
 

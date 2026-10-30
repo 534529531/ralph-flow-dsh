@@ -14,7 +14,8 @@ import { deliveryPorts } from "./helpers/ports.mjs";
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
 // 必须在 createEngine / apply 之前设置，因为引擎在创建时解析 os.homedir()。
 process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-home-"));
-fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
+process.env.DSH_HOME = path.join(process.env.HOME, ".dsh");
+fs.mkdirSync(process.env.DSH_HOME, { recursive: true });
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ralphflow-test-"));
 const deliveries = [];
@@ -84,8 +85,10 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     const active = raw.replace(/^\s*#.*$/gm, "");
     check("内置 loop 抄 opencode 的 reset: true（生效键，与 opencode 一致）",
       loopStep.reset === true && /^\s*reset:\s*true\b/m.test(active), JSON.stringify({ reset: loopStep.reset }));
-    check("内置 loop 不抄 timeout_ms（只在注释里说明差异）",
-      !/timeout_ms\s*:/m.test(active) && raw.includes("timeout_ms"), raw);
+    // 工作流资产不写引擎内部说明：timeout_ms 的差异放在 workflow-authoring 参考里。
+    const authoring = fs.readFileSync(new URL("../references/workflow-authoring.md", import.meta.url), "utf-8");
+    check("内置 loop 不抄 timeout_ms（差异说明在 workflow-authoring 参考）",
+      !/timeout_ms\s*:/m.test(active) && /验证超时/.test(authoring), active);
     const loaded = engine.loadWorkflow("loop");
     check("内置 loop 仍然零告警零问题（reset 是生效键，不是注释）",
       loaded.warnings.length === 0 && loaded.problems.length === 0, JSON.stringify(loaded.warnings));
@@ -96,9 +99,9 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   check("投票首步：start 回执写明 N 个独立验证者并行取证（全过才放行）",
     r.text.includes(`接下来：模型执行本步 → 交卷 → **${LOOP_VOTERS} 个独立验证者**（独立会话，看不到本对话）并行取证判定，**全过才放行** → 通过则推进，不通过自动返工。`),
     r.text.slice(0, 320));
-  check("投票首步：DO prompt 写明每票只查一条检查依据、全过才放行",
-    r.text.includes(`${LOOP_VOTERS} 个独立验证者**并行**取证，各自只查一条检查依据，**全过才放行**`)
-    && r.text.includes("交卷工具会结束当前回合"),
+  check("投票首步：DO prompt 只给判据与交卷指令，不预告交卷后的验证",
+    r.text.includes("## 本步验收依据（供自查）") && r.text.includes("交卷工具会结束当前回合")
+    && !r.text.includes("各自只查一条检查依据") && !r.text.includes("引擎会启动独立验证"),
     r.text.slice(-420));
   scripted.push(...votes({ status: "passed", reason: "文件存在且内容正确" }));
   submit(s, "已完成，创建了 hello.html。");
@@ -211,16 +214,22 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   check("通过后报告存在", fs.existsSync(path.join(engine.reportsDir, `${id}.md`)));
 }
 
-// ── 7) 孤儿委派恢复 ──────────────────────────────────────────────────────────
+// ── 7) 属主失联：中断恢复 ────────────────────────────────────────────────────
 {
   const s = S();
-  const { id } = start("loop", "孤儿用例", s);
+  const { id } = start("loop", "中断用例", s);
   const st = engine.readState(id);
+  // 模拟宿主崩溃：心跳停了（委派还在盘上，但已经不可能回来）。
+  st.owner_runtime = "dead-runtime";
+  delete st.owner_heartbeat_at;
   st.delegations.push({ run_id: "orphan-x", check_index: 0, ts: new Date().toISOString() });
   fs.writeFileSync(path.join(engine.instanceDir(id), "state.json"), JSON.stringify(st, null, 2));
   engine.restore();
   const after = engine.readState(id);
-  check("孤儿委派 → fail-safe 暂停 check_infra", after.paused && after.pause_reason === "check_infra" && after.delegations.length === 0);
+  check("属主心跳停了 → 标中断（host_restarted）且清空委派",
+    after.paused && after.pause_reason === "host_restarted" && after.delegations.length === 0
+    && after.history.some((h) => h.event === "interrupted"),
+    JSON.stringify({ p: after.paused, r: after.pause_reason, d: after.delegations.length }));
 }
 
 // ── 8) 引擎按工作区单根：列表 / 历史 / 自定义工作流都在会话工作区里找到 ────────
@@ -673,7 +682,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
       ], {}, new Date("2026-01-01T00:00:30.000Z").getTime()).find((x) => x.step === "a").ms === 20_000,
       JSON.stringify(stepStats([], {}, 0)));
   }
-  check("报告含重试次数（fail_counts 派生）", report.includes("失败 1 轮"), report.slice(0, 600));
+  check("报告含重试次数（fail_counts 派生）", report.includes("返工 1 轮"), report.slice(0, 600));
   check("报告含产出目录（入库可查）", report.includes(`.dsh/ralph-flow/artifacts/${makeArtifactsDirName("报告统计用例", id)}/`), report.slice(0, 600));
 }
 
@@ -862,10 +871,10 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     check("17a 有 check 的步骤 DO 提示词不含「不配置对抗性检查」",
       deliveries.some((t) => t.includes("有验证步")) && !deliveries.filter((t) => t.includes("有验证步")).some((t) => t.includes("不配置对抗性检查")),
       deliveries.filter((t) => t.includes("有验证步")).at(-1)?.slice(-200));
-    // 未交卷提醒（模型可见）在有 check 的步骤上**逐字不变**（回归基线）
+    // 回合收尾检查（模型可见）：问「还有没有剩余事项」，并说明交卷之后才开始独立验证
     const remCheck = engine.remindToSubmit(s);
-    check("17a 有 check 的未交卷提醒仍是原文（回归）",
-      remCheck.remind === true && remCheck.message.includes("独立验证不会自动开始"), remCheck.message);
+    check("17a 有 check 的回合收尾提醒只催剩余事项，不预告验证",
+      remCheck.remind === true && remCheck.message.includes("还有没完成的事项") && !remCheck.message.includes("交卷后引擎才会开始独立验证"), remCheck.message);
     // 诚实标注：任何通知都不得出现「检查通过」
     check("17a 通知里不出现「检查通过」", !deliveries.some((t) => t.includes("检查通过")), deliveries.find((t) => t.includes("检查通过"))?.slice(0, 120));
     // b 步照常验证通过 → 完成并归档
@@ -892,16 +901,19 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     const s = S();
     deliveries.length = 0;
     const { r, id } = start("skip-gate", "纯人工审查用例", s);
-    check("17b 门的 DO 提示词含「不配置对抗性检查」与 continue 放行说明",
+    check("17b 门的提示词含「不配置对抗性检查」与 continue 放行说明",
       r.ok && r.text.includes("不配置对抗性检查") && r.text.includes("/ralphflow-continue")
-      && r.text.includes("交卷即停在审查门") && !r.text.includes("通过后停在审查门"), r.text.slice(-400));
+      && r.text.includes("停在审查门") && !r.text.includes("通过后停在审查门"), r.text.slice(-400));
     // 首步是"无 check 的门"时，start 回执必须说「停在审查门等放行」，不得预告独立验证
     check("17b start 回执不预告独立验证、写明停在审查门",
       !r.text.includes("取证判定") && r.text.includes("停在审查门等你 `/ralphflow-continue` 放行"), r.text.slice(0, 360));
-    // 未交卷提醒（模型可见）不得谎称「独立验证不会自动开始」——本步本来就不验证
+    check("17b 无 check 的 DO 同样注入「剩余事项清单」（不泄露验证触发）",
+      r.text.includes("还没完成的事项") && r.text.includes("没有就留空") && r.text.includes("没有时按「本步要做什么」与「交付物」")
+      && !r.text.includes("引擎会启动独立验证"), r.text.slice(-300));
+    // 回合收尾提醒（模型可见）不得谎称会开始独立验证 —— 本步本来就不验证
     const remGate = engine.remindToSubmit(s);
-    check("17b 无 check 的未交卷提醒写明跳过对抗性验证",
-      remGate.remind === true && remGate.message.includes("跳过对抗性验证") && !remGate.message.includes("独立验证不会自动开始"), remGate.message);
+    check("17b 无 check 的回合收尾提醒写明跳过对抗性验证",
+      remGate.remind === true && remGate.message.includes("跳过对抗性验证") && !remGate.message.includes("交卷后引擎才会开始独立验证"), remGate.message);
     const callsBefore = verifyCalls;
     submit(s, "G 做完了。");
     await settle();
@@ -932,6 +944,8 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
       "active", "artifacts_dir_name", "current_step", "delegations", "do_submitted", "fail_counts", "history",
       "last_submit_summary", "owner_session", "paused", "pause_reason", "started_at", "updated_at", "user_task",
       "verdicts", "workflow_name",
+      // 属主租约是**原始事实**（谁在驱动、最后一次心跳），不是派生相位；不存就无法跨进程判活。
+      "owner_runtime", "owner_heartbeat_at",
     ];
     const rawKeys = Object.keys(JSON.parse(fs.readFileSync(path.join(engine.instanceDir(id), "state.json"), "utf-8")));
     check("17b 零新状态字段：落盘键全属改造前集合", rawKeys.every((k) => PRE_CHANGE_PERSISTED_FIELDS.includes(k)), rawKeys.join(","));

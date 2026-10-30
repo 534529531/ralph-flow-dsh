@@ -240,17 +240,19 @@ let counter = 0;
 /** 全局最后一次 setup 的 verifier deferred（各场景独立使用自己的 H） */
 function setup(workflows, wfName) {
   const ws = mkTmp("reset-ws");
+  process.chdir(ws);
   tmpDirs.push(ws);
   const wfDir = path.join(ws, ".dsh", "ralph-flow", "workflows");
   fs.mkdirSync(wfDir, { recursive: true });
   for (const [name, yaml] of Object.entries(workflows)) fs.writeFileSync(path.join(wfDir, `${name}.yaml`), yaml);
-  process.env.RALPHFLOW_WORKSPACE = ws;
 
   const sid = `session-reset-${++counter}`;
   const ctx = new Context();
   const registered = { tools: [], commands: [], skills: [] };
   const agents = new Map();
   const session = Session.create(sid, [], { version: SESSION_FORMAT_VERSION, id: sid, createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
+  // 「另一个会话」也必须在同一个项目根里：engines 按项目根查，会话表里没有它就会落回加载目录。
+  const otherSession = Session.create("other-session", [], { version: SESSION_FORMAT_VERSION, id: "other-session", createdAt: Date.now(), cwd: ws, isSeeded: false }, 0);
 
   // 相位：'idle' | 'turn' | 'maintenance'。runMaintenance 在非 idle 时**同步抛错** ——
   // 这正是宿主 dsh-agent-loop 的契约（`agent "${id}" already has active work`），
@@ -289,15 +291,16 @@ function setup(workflows, wfName) {
   ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
-    getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
-    start: async () => {
+    getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
+    startActivation: async () => {
       const d = Promise.withResolvers();
       verifierDeferred = d;
-      return { id: "child", result: d.promise };
+      return { childId: "child", result: d.promise };
     },
   });
-  ctx.provide("agents", { get: (id) => agents.get(id) });
-  ctx.provide("sessions", { list: () => [sid], get: (id) => (id === sid ? session : undefined) });
+    ctx.provide("agentPresets", { register: async () => async () => {} });
+ctx.provide("agents", { get: (id) => agents.get(id) });
+  ctx.provide("sessions", { list: () => [sid], get: (id) => (id === sid ? session : id === "other-session" ? otherSession : undefined) });
   ctx.provide("logger", { info() {}, warn() {}, error() {} });
 
   // 捕获插件注册的事件监听器：宿主在「本步结束且 next-step 为空」时会 serial 派发
@@ -438,7 +441,7 @@ async function runToSecondStep(H, { breakBalance = false } = {}) {
     return out;
   });
   const submitText = await H.turn(async () => {
-    const out = await H.call("ralphflow_submit", { summary: "第一步完成" });
+    const out = await H.call("ralphflow_submit", { summary: "第一步完成", unfinished: [] });
     H.appendToolExchange("call-submit", "ralphflow_submit", out);
     return out;
   });
@@ -643,7 +646,7 @@ console.log("\n6) 返工投递（on_fail 回到带 reset 的步）");
   check("首次进入第二步：1 次替换", afterFirst === 1, `count=${afterFirst}`);
   // 第二步交卷 → 验证判失败 → on_fail 回到 second → 应再次替换并再次投递 DO
   await H.turn(async () => {
-    const out = await H.call("ralphflow_submit", { summary: "第二步完成" });
+    const out = await H.call("ralphflow_submit", { summary: "第二步完成", unfinished: [] });
     H.appendToolExchange("call-submit-2", "ralphflow_submit", out);
     return out;
   });
@@ -717,7 +720,7 @@ console.log("\n9) 审查门放行进入 implement（spec 的第二行 reset）")
 
   // propose 交卷 → 验证通过 → 停在审查门（不推进）
   await H.turn(async () => {
-    const out = await H.call("ralphflow_submit", { summary: "提案完成" });
+    const out = await H.call("ralphflow_submit", { summary: "提案完成", unfinished: [] });
     H.appendToolExchange("call-submit-2", "ralphflow_submit", out);
     return out;
   });
@@ -778,7 +781,7 @@ console.log("\n10) 等空闲窗口期间实例被取消：不替换、不投递 
     const startOut = await H.call("ralphflow_start", { workflow: "rf2", task: "取消窗口用例" });
     H.appendToolExchange("call-start", "ralphflow_start", startOut);
     // a 无 check → 交卷即推进到 b（b 带 reset）；推进在**工具调用内部**，替换在等 whenIdle
-    const submitOut = await H.call("ralphflow_submit", { summary: "a 完成" });
+    const submitOut = await H.call("ralphflow_submit", { summary: "a 完成", unfinished: [] });
     H.appendToolExchange("call-submit", "ralphflow_submit", submitOut);
     await sleep(20);
     duringReps = replacementEventsOf(H.session).length;
@@ -811,7 +814,7 @@ console.log("\n11) DO 延迟投递期间：turn-stopping 不得误判「忘了�
   check("插件确实注册了 agent/turn-stopping 监听（本用例有意义）", H.hasListener("agent/turn-stopping"));
   await runToSecondStep(H); // explore → propose
   await H.turn(async () => {
-    const out = await H.call("ralphflow_submit", { summary: "提案完成" });
+    const out = await H.call("ralphflow_submit", { summary: "提案完成", unfinished: [] });
     H.appendToolExchange("call-submit-2", "ralphflow_submit", out);
     return out;
   });
@@ -847,11 +850,11 @@ console.log("\n11) DO 延迟投递期间：turn-stopping 不得误判「忘了�
     replacementEventsOf(H.session).length === 2 && H.session.deriveMessages().length === 3,
     JSON.stringify({ reps: replacementEventsOf(H.session).length, msgs: H.session.deriveMessages().length }));
 
-  // 反向：DO 已送达后，turn-stopping 必须**恢复**提醒（护栏不能把真「忘了交卷」也吞掉）
+  // 反向：DO 已送达后，turn-stopping 必须**恢复**提醒（护栏不能把正常路径也吞掉）
   H.inbox.length = 0;
   await H.turnStopping();
-  check("DO 送达之后：真「忘了交卷」仍会被提醒（护栏没有把正常路径也吞掉）",
-    H.inbox.some((m) => textOf(m).includes("还没交卷")),
+  check("DO 送达之后：回合收尾提醒仍会发出（护栏没有把正常路径也吞掉）",
+    H.inbox.some((m) => textOf(m).includes("还没结束")),
     JSON.stringify(H.inbox.map((m) => textOf(m).slice(0, 60))));
   cleanupTmp(H.ws);
 }
@@ -878,7 +881,7 @@ console.log("\n12) 工作流级 auto_reset: true（每步推进恰一次替换�
 
   // a → b：推进恰一次替换
   await H.turn(async () => {
-    const out = await H.call("ralphflow_submit", { summary: "a 完成" });
+    const out = await H.call("ralphflow_submit", { summary: "a 完成", unfinished: [] });
     H.appendToolExchange("auto-sub-a", "ralphflow_submit", out);
     return out;
   });
@@ -899,7 +902,7 @@ console.log("\n12) 工作流级 auto_reset: true（每步推进恰一次替换�
 
   // b → c：再恰一次替换（累计 2）
   await H.turn(async () => {
-    const out = await H.call("ralphflow_submit", { summary: "b 完成" });
+    const out = await H.call("ralphflow_submit", { summary: "b 完成", unfinished: [] });
     H.appendToolExchange("auto-sub-b", "ralphflow_submit", out);
     return out;
   });
@@ -936,7 +939,7 @@ console.log("\n13) 手动 /ralphflow-reset（重做当前步）");
 
   // 先制造一次真实失败：第二步交卷 → 验证不过 → 返工回本步（fail_count=1，未到 max=2 不暂停）
   await H.turn(async () => {
-    const out = await H.call("ralphflow_submit", { summary: "第二步完成" });
+    const out = await H.call("ralphflow_submit", { summary: "第二步完成", unfinished: [] });
     H.appendToolExchange("manual-sub-1", "ralphflow_submit", out);
     return out;
   });
@@ -981,7 +984,7 @@ console.log("\n13) 手动 /ralphflow-reset（重做当前步）");
 
   // 再失败一次到 max_fail_count=2 → 暂停；此时 reset 必须拒绝并指向 /ralphflow-continue
   await H.turn(async () => {
-    const out = await H.call("ralphflow_submit", { summary: "第二步再交卷" });
+    const out = await H.call("ralphflow_submit", { summary: "第二步再交卷", unfinished: [] });
     H.appendToolExchange("manual-sub-2", "ralphflow_submit", out);
     return out;
   });
@@ -1072,7 +1075,7 @@ console.log("\n15) auto_reset：失败重试（同步骤重进）也触发重置
     `count=${replacementEventsOf(H.session).length}`);
   // 第二步交卷 → 验证不过 → on_fail 回本步（**同步骤重进**）→ 必须再次替换
   await H.turn(async () => {
-    const out = await H.call("ralphflow_submit", { summary: "b 完成" });
+    const out = await H.call("ralphflow_submit", { summary: "b 完成", unfinished: [] });
     H.appendToolExchange("auto2-sub-b", "ralphflow_submit", out);
     return out;
   });
@@ -1127,7 +1130,7 @@ console.log("\n16) 嵌套 auto_reset：启动回执按来源措辞（绝不说�
     return out;
   });
   await H3.turn(async () => {
-    const out = await H3.call("ralphflow_submit", { summary: "父第一步完成" });
+    const out = await H3.call("ralphflow_submit", { summary: "父第一步完成", unfinished: [] });
     H3.appendToolExchange("nested-sub-1", "ralphflow_submit", out);
     return out;
   });
@@ -1172,7 +1175,7 @@ console.log("\n17) 手动 /ralphflow-reset：空闲窗口复查发现已交卷 �
   let resetOut = null;
   await H.turn(async () => {
     resetOut = await invokeReset();
-    const out = await H.call("ralphflow_submit", { summary: "第二步完成（在 reset 排队期间）" });
+    const out = await H.call("ralphflow_submit", { summary: "第二步完成（在 reset 排队期间）", unfinished: [] });
     H.appendToolExchange("drop-sub", "ralphflow_submit", out);
     return out;
   });
@@ -1312,7 +1315,7 @@ steps:
   check("首步（父级普通步 a）不触发替换", replacementEventsOf(H.session).length === 0,
     `count=${replacementEventsOf(H.session).length}`);
   await H.turn(async () => {
-    const out = await H.call("ralphflow_submit", { summary: "a 完成" });
+    const out = await H.call("ralphflow_submit", { summary: "a 完成", unfinished: [] });
     H.appendToolExchange("call-reset-sub-a", "ralphflow_submit", out);
     return out;
   });

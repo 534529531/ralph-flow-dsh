@@ -47,13 +47,12 @@ const dump = (hits) => hits.slice(0, 6).map((h) => `${h.label}@${h.line}：${h.m
  */
 async function collectVisibleTexts(entryUrl, suffix) {
   const ws = mkTmp("promise");
-  process.env.RALPHFLOW_WORKSPACE = ws;
   const sid = `promise-${RUN}${suffix}`;
   const texts = [];
   const push = (label, s) => { if (typeof s === "string" && s.trim()) texts.push({ label, text: s }); };
 
   let resolveVerify;
-  const A = mkEnv(ws, sid, { start: () => ({ id: "child", result: new Promise((r) => { resolveVerify = r; }) }) });
+  const A = mkEnv(ws, sid, { start: () => ({ childId: "child", result: new Promise((r) => { resolveVerify = r; }) }) });
   const plugin = await import(entryUrl + (suffix ? `?${suffix}` : ""));
   plugin.apply(A.ctx);
 
@@ -72,14 +71,13 @@ async function collectVisibleTexts(entryUrl, suffix) {
   A.sent.length = 0;
 
   // CHECK 阶段：交卷回执 + 验证中播报（正文与 summary）
-  push("ralphflow_submit 返回", await execTool(toolOf(A.registered, "ralphflow_submit"), { summary: "做完了" }, sid));
+  push("ralphflow_submit 返回", await execTool(toolOf(A.registered, "ralphflow_submit"), { summary: "做完了", unfinished: [] }, sid));
   await sleep(150);
   for (const m of A.sent) push(`投递播报(summary=${m?.source?.summary ?? ""})`, textOf(m));
 
   for (const name of ["ralphflow_status", "ralphflow_list", "ralphflow_doctor"]) {
     push(`${name} 返回`, await execTool(toolOf(A.registered, name), {}, sid));
   }
-  push("ralphflow_create 返回", await execTool(toolOf(A.registered, "ralphflow_create"), { idea: "示例流程" }, sid));
 
   // 命令触发词：注入给模型的指令（启动类入口已是技能，这里只剩边界上的那几条命令）
   for (const cname of ["ralphflow-continue", "ralphflow-status", "ralphflow-cancel"]) {

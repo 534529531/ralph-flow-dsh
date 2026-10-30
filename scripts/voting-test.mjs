@@ -19,7 +19,7 @@ import path from "node:path";
 import {
   createEngine, stepHasCheck, stepHasVerification, voterCountOf, expectedVerdicts, MAX_VOTERS,
 } from "../lib/engine.js";
-import { buildCheckPrompt } from "../lib/verify.js";
+import { buildCheckPrompt, VERIFIER_PRESET_ID } from "../lib/verify.js";
 import {
   decideVotingOutcome, formatVotingFailureReason, formatVotingPassReason, voterProgressLine, voterStatusLabel,
 } from "../lib/voting.js";
@@ -525,7 +525,7 @@ console.log("== M. fail-closed：票数不齐绝不能放行 + 投票步的孤�
   check("3 票步只有 1 张 passed 判定 → 拒绝推进（票数不齐，fail-closed）", cont.ok === false && after.current_step === "a" && after.active, cont.text);
   check("拒绝理由说清判定未全部通过", cont.text.includes("未全部通过"), cont.text.slice(0, 120));
 
-  // 投票步的孤儿恢复：心跳全停 = 属主已失联 → 暂停 check_infra（不计失败）；
+  // 投票步的属主失联：实例心跳过期 → 标中断（不计失败）；
   // continue 只补跑**未通过**的票，已通过的保留。
   const s3 = S();
   reset();
@@ -536,16 +536,17 @@ console.log("== M. fail-closed：票数不齐绝不能放行 + 投票步的孤�
   await tick(20);
   const st3 = engine.readState(id3);
   check("（前置）1 票已过、2 票在飞", st3.verdicts.length === 1 && st3.delegations.length === 2);
-  for (const d of st3.delegations) d.heartbeat_at = Date.now() - 120_000; // 心跳全停（> TTL 60s）
+  st3.owner_runtime = "dead-runtime";
+  st3.owner_heartbeat_at = Date.now() - 120_000; // 属主心跳过期（> TTL 60s）
   fs.writeFileSync(path.join(engine.instanceDir(id3), "state.json"), JSON.stringify(st3, null, 2));
   engine.restore();
   const orphaned = engine.readState(id3);
-  check("投票步孤儿恢复：暂停 check_infra、清空在飞委派", orphaned.paused && orphaned.pause_reason === "check_infra" && orphaned.delegations.length === 0, JSON.stringify({ p: orphaned.paused, r: orphaned.pause_reason, d: orphaned.delegations.length }));
-  check("孤儿恢复不计失败次数", orphaned.fail_count === 0, String(orphaned.fail_count));
+  check("投票步属主失联：标中断（host_restarted）、清空在飞委派", orphaned.paused && orphaned.pause_reason === "host_restarted" && orphaned.delegations.length === 0, JSON.stringify({ p: orphaned.paused, r: orphaned.pause_reason, d: orphaned.delegations.length }));
+  check("属主失联不计失败次数", orphaned.fail_count === 0, String(orphaned.fail_count));
   const before3 = calls.length;
   const cont3 = engine.continueInstance(s3);
   await tick(30);
-  check("孤儿恢复后 continue：只补跑未通过的 2 票", cont3.ok && calls.length === before3 + 2 && calls.slice(before3).map((c) => c.checkIndex).sort().join(",") === "1,2", cont3.text);
+  check("属主失联恢复后 continue：只补跑未通过的 2 票", cont3.ok && calls.length === before3 + 2 && calls.slice(before3).map((c) => c.checkIndex).sort().join(",") === "1,2", cont3.text);
   check("已通过的票不重跑（票一仍只有 1 次委派）", calls.filter((c) => c.checkIndex === 0).length === 1);
   check("已通过的判定保留", engine.readState(id3).verdicts.some((v) => v.check_index === 0 && v.status === "passed"));
   answer(1, { status: "passed", reason: "过" });
@@ -561,7 +562,7 @@ console.log("== N. 插件级端到端：真实链路（工具 → 引擎 → ver
   const { pathToFileURL, fileURLToPath } = await import("node:url");
   const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), "rf-voting-plugin-"));
-  process.env.RALPHFLOW_WORKSPACE = ws;
+  process.chdir(ws);
   const sid = `voting-plugin-${Date.now().toString(36)}`;
   const starts = [];
   const sent = [];
@@ -573,16 +574,18 @@ console.log("== N. 插件级端到端：真实链路（工具 → 引擎 → ver
   ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
-    getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
-    start: async (_name, req) => {
-      starts.push(req);
-      return { id: `child-${starts.length}`, result: Promise.resolve({ structured: { passed: true, reason: `第 ${starts.length} 票通过` }, output: [], stopReason: "completed" }) };
+    getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
+    startActivation: async (spec) => {
+      starts.push(spec.request);
+      return { childId: `child-${starts.length}`, result: Promise.resolve({ structured: { passed: true, reason: `第 ${starts.length} 票通过` }, output: [], stopReason: "completed" }) };
     },
   });
   ctx.provide("agents", { get: (id) => (id === sid ? { id: sid, session, steer: (m) => sent.push(m), followup: (m) => sent.push(m) } : undefined) });
   captureAppends(session, sent); // 播报载体是 append 到可见面（不唤醒），替身按真实形状一并记录
   ctx.provide("sessions", { list: () => [], get: (id) => (id === sid ? session : undefined) });
   ctx.provide("logger", { info() {}, warn() {}, error() {} });
+  // 0.2.1-rc.2+：验证者的 persona/只读工具面经 Agent Preset 注册；测试替身只验证注册被调用。
+  ctx.provide("agentPresets", { register: async () => async () => {} });
   const wfDir = path.join(ws, ".dsh", "ralph-flow", "workflows");
   fs.mkdirSync(wfDir, { recursive: true });
   fs.writeFileSync(path.join(wfDir, "vplugin.yaml"), [
@@ -599,13 +602,13 @@ console.log("== N. 插件级端到端：真实链路（工具 → 引擎 → ver
   const call = (tool, args) => tool.execute(args, { agent: { session: { id: sid } }, signal: new AbortController().signal });
   const receipt = await call(startTool, { workflow: "vplugin", task: "插件级投票任务" });
   check("插件级：启动回执预告 N 个验证者并行、全过才放行", receipt.includes("2 个独立验证者") && receipt.includes("全过才放行"), receipt.slice(0, 300));
-  await call(submitTool, { summary: "做完了" });
+  await call(submitTool, { summary: "做完了", unfinished: [] });
   await tick(150);
   check("插件级：真实链路委派了 2 个子代理（各一票）", starts.length === 2, String(starts.length));
   const prompts = starts.map((r) => (r.prompt ?? []).map((b) => b.text).join("\n"));
   check("插件级：每票提示词含「你是 2 个验证者之一」", prompts.every((t) => t.includes("## 你是 2 个验证者之一")), prompts.map((t) => t.slice(0, 40)).join(" | "));
   check("插件级：各票只看到自己的检查依据", prompts.some((t) => t.includes("需求逐条落实") && !t.includes("行为真实可用")) && prompts.some((t) => t.includes("行为真实可用") && !t.includes("需求逐条落实")));
-  check("插件级：验证者身份走 persona 通道（单一来源）", starts.every((r) => typeof r.persona === "string" && r.persona.includes("独立验证者") && r.persona.includes("默认不通过")));
+  check("插件级：验证者身份经 ralphflow-verifier preset 选择（单一来源）", starts.every((r) => r.agentPreset === VERIFIER_PRESET_ID && !("persona" in r) && !("toolFilter" in r)));
   check("插件级：结构化判定契约仍启用（outputSchema）", starts.every((r) => r.outputSchema?.properties?.passed?.type === "boolean"));
   const progressNotes = sent.filter((m) => /验证者 \d+\/2 (通过|不通过|重试)/.test(m.source?.summary ?? ""));
   check("插件级：每票各推一条可见进度（含 summary）", progressNotes.length === 2 && progressNotes.every((m) => m.source?.form === "notice"), JSON.stringify(progressNotes.map((m) => m.source?.summary)));

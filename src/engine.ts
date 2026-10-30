@@ -9,10 +9,13 @@
  *   交卷了吗（do_submitted）/ 判定落地了吗（verdicts）/ 有在飞委派吗（delegations）/ 暂停了吗（paused）
  */
 import fs from "node:fs";
+import { normalizeUnfinished } from "./unfinished.js";
 import path from "node:path";
-import os from "node:os";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
+import { userRalphFlowDir } from "./paths.js";
+import { pauseLabel, type PauseReason } from "./pause.js";
+import { OWNER_HEARTBEAT_REFRESH_MS, ownerAlive, ownerRecheckMs, runtimeId, stampOwner } from "./owner.js";
 import type { WorkflowStatus } from "./status-contract.js";
 import type { WorkflowUiRef } from "./message-source.js";
 import {
@@ -32,15 +35,13 @@ export { MAX_VOTERS };
 export { formatVotingFailureReason, formatVotingPassReason, formatVotingInfraReason, voterProgressLine, voterStatusLabel };
 
 /**
- * 工作区内的运行时根目录。**工作区 dot-dir**（§1.8）：与 opencode `.opencode/ralph-flow/`、
- * claude `.claude/ralph-flow/` 形状一致；全局命名空间 `~/.dsh/ralph-flow/` 由
- * {@link RALPH_FLOW_NAME} 拼出，两个作用域里的插件命名空间都叫 `ralph-flow`。
+ * 项目内的运行时根目录。**项目根 dot-dir**（§1.8）：项目根 = 最近的含 `.git` 的祖先目录，
+ * 与原生 Skill 的 `<projectRoot>/.dsh/skills` 用同一条规则；用户级命名空间
+ * `<DSH_HOME>/ralph-flow/` 由 `paths.ts` 解析。
  *
- * 注意：这里是**工作区相对路径**（含 `/`），`path.join(workspace, RALPH_FLOW_DIR)` 仍成立。
+ * 注意：这里是**项目根相对路径**（含 `/`），`path.join(projectRoot, RALPH_FLOW_DIR)` 仍成立。
  */
 export const RALPH_FLOW_DIR = ".dsh/ralph-flow";
-/** 插件命名空间名（全局 `~/.dsh/<name>/...`）——与工作区内 `.dsh/<name>/` 对称 */
-export const RALPH_FLOW_NAME = "ralph-flow";
 /** 每实例产出目录的目录名（§1.7，与 opencode 同名） */
 const ARTIFACTS_DIRNAME = "artifacts";
 
@@ -369,8 +370,8 @@ export function stepHasCheck(step: Pick<StepDef, "check">): boolean {
 /**
  * 本步是否配置了**任何**对抗性检查：单 `check` 或多验证者投票（`check_voting`）。
  *
- * 这是「本步是否需要独立验证」的**唯一判据**（取代原先只看 `check` 的写法）：
- * 两者都不写 → 跳过对抗性验证（manual 步骤 = 纯人工审查）。
+ * 这是「本步是否需要独立验证」的**唯一判据**：单 `check` 与 `check_voting` 任一存在
+ * 就委派验证者；两者都不写 → 跳过对抗性验证（manual 步骤 = 纯人工审查）。
  */
 export function stepHasVerification(step: Pick<StepDef, "check" | "check_voting">): boolean {
   return stepHasCheck(step) || voterCountOf(step) > 0;
@@ -707,6 +708,11 @@ export interface Verdict {
   agent_id?: string;
   step_id: string;
   ts: string;
+  /** Graph CHECK：逐条判据的取证（Flow 不用）。 */
+  evidence?: Array<{ criterion: string; passed: boolean; evidence: string }>;
+  /** Graph CHECK：判定属于哪个节点 / attempt（一套判定账本，靠 scope 区分）。 */
+  node_id?: string;
+  attempt_id?: string;
 }
 
 export interface Delegation {
@@ -722,70 +728,28 @@ export interface Delegation {
    */
   attempt?: number;
   ts: string;
-  /**
-   * 属主运行时 id（`<pid>-<装载时刻>-<rand>`）：**只作诊断**，不参与判活。
-   *
-   * 为什么不用 pid 判活（第一版就是这么写的，被实测打回）：本部署里各 agent 进程跑在
-   * 各自的 sandbox 里，有**独立的 PID namespace 与 /proc 视图** —— 实测宿主进程
-   * `pid 919449` 明明活着，另一个进程（验证者的沙箱）`kill(919449, 0)` 拿到 `ESRCH`、
-   * `/proc/uptime` 也对不上，于是把活着的属主判成死的，照样把在飞验证清掉。
-   * 跨沙箱唯一可靠共享的是**文件系统**，所以判活改用心跳（见下）。
-   */
-  owner_runtime?: string;
-  /**
-   * 属主心跳时刻（epoch ms）—— **判孤儿的唯一依据**：属主在等判定期间每
-   * {@link DELEGATION_HEARTBEAT_REFRESH_MS} 刷一次；超过 {@link DELEGATION_HEARTBEAT_TTL_MS}
-   * 没刷 = 属主已经不在了（进程崩溃/被重启），判定永远回不来。
-   *
-   * 缺这个字段 = 来源不可考的老 `state.json`（或旧版插件落的账）→ 按孤儿兜底。
-   */
-  heartbeat_at?: number;
+  // 判活不在委派上：属主心跳是**实例级**的（见 `owner.ts` 与 `InstanceState.owner_*`）。
+  // 一笔委派是否还有属主，看的是实例心跳 —— 同一个运行时既驱动 DO 也等判定。
 }
 
-// ─── 孤儿委派的判据：属主运行时是否还活着 ────────────────────────────────────
-//
-// 「孤儿委派」= 发起这笔验证的**运行时已经不在了**（进程退出 / 宿主重启），判定永远
-// 回不来，所以 `restore()` 必须兜住它（暂停 check_infra 等用户定夺，不隐式继续）。
-//
-// 反面同样重要：属主**还活着**的委派绝不是孤儿。这里曾经无条件清空所有 `delegations`
-// —— 于是**别的会话**碰一下 ralphflow（哪怕是 `/ralphflow-list` 这种只读的：新建引擎
-// → restore）就会把正在飞的验证连根拔掉并暂停实例，验证白烧、用户被迫手动 resume
-// （实测两次，state.json 里 15:59:45 / 16:18:24 的 orphan_delegation_recovered）。
-//
-// 判活必须跨进程、跨 sandbox 都成立 —— 只有文件系统是共享的，所以用**心跳**：
-// 属主在等在飞判定期间按周期刷新 `delegations[i].heartbeat_at`，别的运行时（别的会话、
-// 别的 sandbox、插件重载后的新实例）看到心跳还新鲜就绝不碰它；心跳停了才是真孤儿。
-//
-// 判据与「谁在调用 restore」无关，所以同一进程里多少会话、跨多少沙箱、重载多少次，
-// 都不会互相踩；而真正死掉的属主留下的委派照样兜得住（TTL 之后由下一个 restore 触发点，
-// 或用户显式 /ralphflow-continue 兜住）。
-
-/** 在飞委派的心跳周期：属主每隔这么久把 `heartbeat_at` 刷新一次 */
-export const DELEGATION_HEARTBEAT_REFRESH_MS = 5_000;
+// 属主判活见 `owner.ts`：心跳是**实例级**的，委派不再单独记一份。
+// 这样 DO 阶段（没有委派）与验证阶段共用同一个事实，恢复逻辑也只有一条。
 
 /**
- * 心跳多久没刷就算属主失联（= 真孤儿）。
+ * 回合收尾检查的两道上限。**两道都只在「这一轮没干活」时才算数** —— 模型每轮都在动手就是
+ * 在推进，不该被次数上限掐断（opencode 版同形：`MAX_DO_REINJECT` 只在 `!hasToolUse` 时生效）。
  *
- * 取 12 倍刷新周期：既容忍属主事件循环偶发卡顿（一次两次没刷上不算死），又让崩溃留下的
- * 孤儿在一个 TTL 之内被兜住 —— 崩溃恢复没有缩水，只是判据从「pid 还在吗」换成「心跳还在吗」。
+ * `STALL` 只在**空回合**上累计：一次提醒之后模型一个工具都没调用，又停了一次 —— 连续这么多次，
+ * 多半是在等人或卡住了，先暂停让用户处理。
+ *
+ * `TOTAL` 是本步的提醒预算（与 opencode 的 `MAX_DO_REINJECT = 5` 对齐）：累计到这个数之后，
+ * **再出现空回合**就暂停。它兜的是「反复收尾又反复被叫回来」的消耗，而不是「一直在干活」的消耗
+ * —— 真在干活的循环没有天花板（RA2 那种月级任务本来就要跑很久；用户能随时停）。
+ *
+ * 预算只该消耗在空回合上：`worked` 的回合不累计，一直在动手的循环不设天花板。
  */
-export const DELEGATION_HEARTBEAT_TTL_MS = 60_000;
-
-/** 本进程的运行时 id（**只作诊断**，不参与判活；pid 在跨沙箱场景里没有可比性） */
-let cachedRuntimeId: string | undefined;
-export function runtimeId(): string {
-  if (cachedRuntimeId === undefined) {
-    cachedRuntimeId = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  }
-  return cachedRuntimeId;
-}
-
-/** 一笔委派是否仍有存活属主 —— `restore()` 的唯一判据（导出供测试直接取证）。 */
-// ralphflow:orphan-liveness
-export function delegationOwnerAlive(d: Delegation): boolean {
-  return typeof d.heartbeat_at === "number" && Number.isFinite(d.heartbeat_at)
-    && Date.now() - d.heartbeat_at <= DELEGATION_HEARTBEAT_TTL_MS;
-}
+export const SUBMIT_REMINDER_STALL_LIMIT = 2;
+export const SUBMIT_REMINDER_TOTAL_LIMIT = 5;
 
 export interface HistoryEntry {
   ts: string;
@@ -801,10 +765,8 @@ export interface HistoryEntry {
  * 耗时区间 = 属于某步的**第一条**历史事件 → 下一条属于其它步骤的事件（或 `endTs`）；
  * 同一被反复进入的步骤（返工/回退）累计总时长。
  *
- * ⚠️ 这里曾经有一个只在「步骤切换」时才结算的实现：最后一步的耗时被算成
- * `endTs - 该步最后一条事件`，而最后一条事件（`complete`）与 `endTs` 只差几毫秒
- * —— 于是**每一步都显示 `耗时 0s`**（实测：6m22s 的一轮报告成 0s，历史上每一份
- * 归档报告都是 0s）。区间起点必须是该步的**首条**事件，不是末条。
+ * 区间起点必须是该步的**首条**事件：取末条事件时，最后一步只剩 `complete` 与
+ * `endTs` 之间几毫秒，报告会显示 `耗时 0s`。
  *
  * 重试次数 = `max(fail_counts[step], 该步 verdict_failed 条数)`：
  * 通过时 `clearFailCount` 会把该步计数清零、恢复暂停时也会清零，所以单看
@@ -861,10 +823,17 @@ export interface InstanceState {
    */
   fail_count: number;
   paused: boolean;
-  pause_reason?: "max_failures" | "check_infra" | "user_cancelled" | "no_submit";
+  pause_reason?: PauseReason;
   /** 本轮 DO 是否已交卷（引擎观测到的事实） */
   do_submitted: boolean;
   owner_session?: string;
+  /**
+   * 属主运行时与心跳（原始事实，落盘）。心跳只在「有运行时在推进」时刷新：
+   * DO 中或验证中；暂停/审查门不刷新（它们本来就该被任何 host 接管）。
+   * 判活规则见 `owner.ts`；缺字段 = 旧状态，按已死处理。
+   */
+  owner_runtime?: string;
+  owner_heartbeat_at?: number;
   /** 交卷时的助手回复摘要（验证者 prompt 用） */
   last_submit_summary?: string;
   /**
@@ -916,6 +885,8 @@ export interface WorkflowEntry {
   invalid: boolean;
   problems: string[];
   warnings: string[];
+  /** 步骤数（加载成功时的 steps.length；失败为 0）。统一资产清单用。 */
+  steps?: number;
 }
 
 export interface ToolResult {
@@ -991,6 +962,23 @@ export interface EnginePorts {
   /** Observe committed facts only; failures of this observer never affect the engine. */
   statusChanged?: () => void;
   /**
+   * 本会话**最近一次工具调用**的时间（epoch ms）。回合收尾检查用它区分「在干活」和「空回合」：
+   * 上次提醒之后有工具调用 = 有动作，不累计空回合，也就不会被 `SUBMIT_REMINDER_STALL_LIMIT` 暂停。
+   *
+   * 这是**进程内**的观察值，不落盘：宿主重启后第一条提醒会按空回合计（最多多催一次）。
+   * 缺省（未装配）时一律按空回合处理 —— 与只按次数计数的老行为一致。
+   */
+  lastActionAt?: (sessionId: string) => number | undefined;
+  /**
+   * 引擎自己报一次「有动作」（进度记录 = 一次实质交卷），写回同一个观察值。
+   *
+   * 为什么模型侧要能写这条：宿主只在 `tool/call` 上报动作，而 `ralphflow_submit` 被**排除**在外
+   * （否则连续空交卷会把空回合计数清零）。但「带未完成项的进度记录」不是空交卷 —— 模型确实
+   * 交了一次本轮结论，回执也让它接着做。不记这一笔，紧接着的提醒就会说「上次提醒之后没有任何
+   * 工具调用」，那是**假话**，而且会把这一轮算成空回合。
+   */
+  noteAction?: (sessionId: string, time: number) => void;
+  /**
    * 把该会话**挂起的播报**在安全边界补齐（可见面尾部工具配对平衡时才落）。
    *
    * reset 门在整段替换**之前**先调一次：让先前因工具调用在飞而挂起的播报也被这次替换一并
@@ -1015,6 +1003,24 @@ export interface EnginePorts {
    * 它不是状态、不落盘到 `state.json`——只影响 append 前的轮转判据。
    */
   logMaxBytes?: number;
+}
+
+/**
+ * Graph CHECK 的事实输入。**执行者自述仍然不进来**（T1）：这里只有任务、判据、冻结产物、
+ * 声明输入与工作区变更快照。判定由 `verify.ts` 的同一条验证者运行时产生。
+ */
+export interface GraphVerifyScope {
+  nodeId: string;
+  attemptId: string;
+  doInstruction: string;
+  artifact: { path: string; sha256: string; size: number } | null;
+  inputs: Array<{ label: string; path: string }>;
+  workspacePath?: string;
+  workspaceChangesPath?: string;
+  criteriaText: string;
+  criteria: string[];
+  checkMode: "custom";
+  checkVersion: string;
 }
 
 export interface VerifyRequest {
@@ -1046,6 +1052,11 @@ export interface VerifyRequest {
    */
   model?: { providerID: string; modelID: string };
   /**
+   * Graph CHECK 的事实范围。有它时验证者提示词走 Graph 变体（判据逐条取证），
+   * 判定仍由 `ports.verify` 返回；Flow 请求不写它，行为逐字不变。
+   */
+  graph?: GraphVerifyScope;
+  /**
    * 取消句柄（dsh 委派契约要求的 "caller's cancellation"；不是超时预算）
    *
    * 注意这里**没有** `submitSummary`：执行者的交卷自述**不进验证者视野**（T1）。
@@ -1074,7 +1085,7 @@ export interface VerifyRequest {
  *
  * 这些是「引擎只在运行时才暴露、甚至永远不暴露」的问题：
  *   · 不可达步骤静默不执行；
- *   · 没有可达步骤能到 `done` → 工作流永远不完成（旧版 doctor 还报 ✅，运行时无限循环）；
+ *   · 没有可达步骤能到 `done` → 工作流永远不完成；
  *   · 未解析的 `{{...}}` 原样进入提示词；
  *   · 非 manual 步没写 check → 该步**跳过对抗性验证**、直接推进（必须让作者知道）。
  */
@@ -1198,25 +1209,23 @@ export function builtinWorkflowPath(name: string): string | undefined {
   return candidates.find((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } });
 }
 
-/** 全局工作流目录：`<DSH_HOME|~/.dsh>/ralph-flow/workflows` */
+/** 用户级工作流目录：`<DSH_HOME|~/.dsh>/ralph-flow/workflows` */
 export function globalWorkflowsDirOf(): string {
-  const configured = process.env.DSH_HOME;
-  const dshHome = configured && path.isAbsolute(configured) ? path.resolve(configured) : path.join(os.homedir(), ".dsh");
-  return path.join(dshHome, RALPH_FLOW_NAME, "workflows");
+  return userRalphFlowDir("workflows");
 }
 
 /**
- * 只读某个工作区（+ 全局目录 + 内置）里**全部工作流的名字与描述** —— 不建引擎、不建任何目录。
+ * 只读某个项目根（+ 用户级目录 + 内置）里**全部工作流的名字与描述** —— 不建引擎、不建任何目录。
  *
  * 动态快捷命令 `/ralphflow-<名字>` 在插件加载时登记，而引擎是按工作区**惰性**创建的
- * （首个工具调用才建）。只靠引擎的话，用户在新工作区里第一次打开会话时，自己建的工作流
+ * （首个工具调用才建）。只靠引擎的话，用户在新项目里第一次打开会话时，自己建的工作流
  * 还没有快捷命令。这个函数让登记可以在 `session/created` 时廉价完成（纯读目录）。
  *
  * **必须包含内置工作流**（`loop`/`spec`）——它们不落盘，只存在于插件目录，漏掉就会让
- * `/ralphflow-loop`、`/ralphflow-spec` 消失。工作区里的同名文件遮蔽内置（有意行为）。
+ * `/ralphflow-loop`、`/ralphflow-spec` 消失。项目根里的同名文件遮蔽内置（有意行为）。
  */
 export function listWorkflowsIn(workspace: string): Array<{ name: string; desc: string }> {
-  const found = new Map<string, string>(); // name → 文件路径（工作区优先，其次全局，最后内置）
+  const found = new Map<string, string>(); // name → 文件路径（项目根优先，其次用户级，最后内置）
   for (const dir of [path.join(workspace, RALPH_FLOW_DIR, "workflows"), globalWorkflowsDirOf()]) {
     let files: string[] = [];
     try { files = fs.readdirSync(dir); } catch { continue; }
@@ -1247,7 +1256,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   const workflowsDir = path.join(root, "workflows");
   const reportsDir = path.join(root, "reports");
   const artifactsDir = path.join(root, ARTIFACTS_DIRNAME);
-  // 全局工作流目录仍是 `~/.dsh/ralph-flow/workflows`（插件命名空间在全局与工作区同名）
+  // 用户级工作流目录：`<DSH_HOME|~/.dsh>/ralph-flow/workflows`（与项目根同名命名空间）
   const globalWorkflowsDir = globalWorkflowsDirOf();
   /**
    * 实例 → 在飞取消信号集合（取消/重开/暂停时中止验证者，不白烧 token）。
@@ -1277,71 +1286,63 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return n;
   }
 
-  // ─── 在飞委派的心跳（跨 sandbox 的判活机制，见 delegationOwnerAlive）──────────
+  // ─── 属主心跳（跨进程判活，见 owner.ts）────────────────────────────────────
   //
-  // 属主在等判定期间每 DELEGATION_HEARTBEAT_REFRESH_MS 把 `state.json` 里的
-  // `heartbeat_at` 刷一次。别处（别的会话 / 别的沙箱进程 / 重载后的新实例）据此判断
-  // 「这笔委派还有人在等判定」还是「属主已经不在了」。跨进程唯一共享的是文件系统，
-  // 所以心跳写在实例的 state.json 里，不引入第二个事实源。
-  /** 定时器：key = `instId\0runId` */
-  const heartbeats = new Map<string, ReturnType<typeof setInterval>>();
-  const beatKey = (instId: string, runId: string) => `${instId}\u0000${runId}`;
+  // 只由**正在驱动实例**的运行时刷新：DO 中 / 验证中。暂停、审查门、等待人工处理不需要
+  // 属主 —— 它们本来就该由任何 host 接管，也绝不能因为属主没了被误判成中断。
+  /** 本进程正在驱动的实例（心跳的刷新范围）。 */
+  const driving = new Set<string>();
+  let drivingTimer: ReturnType<typeof setInterval> | undefined;
+
+  /** 这个实例当前是否需要一个属主（决定心跳是否继续）。 */
+  function needsOwner(s: InstanceState): boolean {
+    return s.active && !s.paused && (!s.do_submitted || s.delegations.length > 0);
+  }
 
   /**
-   * 让一笔在飞委派保持「活着」。每次刷新前**重读 state**：委派没了（判定落地/作废/取消/
-   * 推进）或实例没了（已销毁）就自行停表 —— 绝不在实例销毁后把目录写回来。
+   * 开始/继续驱动一个实例。定时器每次**重读 state**：实例结束、暂停、到了审查门，或已被
+   * 另一个运行时接管，就自行移除 —— 绝不在实例销毁后把目录写回来。
    */
-  function startHeartbeat(instId: string, runId: string): void {
-    const key = beatKey(instId, runId);
-    if (heartbeats.has(key)) return;
-    const timer = setInterval(() => {
-      // 心跳与「判定落账」写的是**同一份 state.json**（读-改-写）。本进程内这两段都是
-      // 同步块（readFileSync/writeFileSync），不会交错；共用实例锁是**按构造的护栏**：
-      // 多验证者投票时 N 份心跳 + N 笔判定同时活跃，将来任何一处引入 await（异步落盘、
-      // 重试）都不会退化成互相覆盖（判定被旧快照写回去 = 票凭空消失、卡在「验证中」）。
-      void withStateLock(instId, () => {
-        try {
-          const fresh = readState(instId);
-          const d = fresh?.delegations.find((x) => x.run_id === runId);
-          if (!fresh || !fresh.active || !d) { stopHeartbeat(instId, runId); return; }
-          d.heartbeat_at = Date.now();
-          writeState(fresh, instId);
-        } catch (e) {
-          log("warn", "delegation_heartbeat_failed", { instId, runId, error: msg(e) });
-        }
-      });
-    }, DELEGATION_HEARTBEAT_REFRESH_MS);
-    // 心跳不该拖住进程退出
-    (timer as unknown as { unref?: () => void }).unref?.();
-    heartbeats.set(key, timer);
+  function startDriving(instId: string): void {
+    driving.add(instId);
+    if (drivingTimer) return;
+    drivingTimer = setInterval(() => {
+      for (const id of [...driving]) {
+        // 心跳与判定落账写同一份 state.json；共用实例锁，避免读-改-写互相覆盖。
+        void withStateLock(id, () => {
+          try {
+            const fresh = readState(id);
+            if (!fresh || !needsOwner(fresh) || (fresh.owner_runtime && fresh.owner_runtime !== runtimeId())) {
+              driving.delete(id);
+              return;
+            }
+            fresh.owner_runtime = runtimeId();
+            fresh.owner_heartbeat_at = Date.now();
+            writeState(fresh, id);
+          } catch (e) {
+            log("warn", "owner_heartbeat_failed", { instId: id, error: msg(e) });
+          }
+        });
+      }
+    }, OWNER_HEARTBEAT_REFRESH_MS);
+    (drivingTimer as unknown as { unref?: () => void }).unref?.();
   }
 
-  function stopHeartbeat(instId: string, runId: string): void {
-    const key = beatKey(instId, runId);
-    const t = heartbeats.get(key);
-    if (t) { clearInterval(t); heartbeats.delete(key); }
-  }
-
-  /** 把某实例下所有在飞委派的心跳停掉（兜底清理：判定落地、孤儿恢复、取消…） */
-  function stopHeartbeatsOf(instId: string, delegations: readonly Delegation[]): void {
-    for (const d of delegations) stopHeartbeat(instId, d.run_id);
-  }
-
-  // ─── 单根：一个引擎只服务一个工作区 ────────────────────────────────────────
+  // ─── 单根：一个引擎只服务一个项目根 ────────────────────────────────────────
   //
   // 这里曾有一个「全局实例索引」（`~/.dsh/ralphflow-instances-index.json`）把 instId
   // 映射到工作区，好让**一个**引擎服务多个工作区。那是 dsh 版独有的复杂度，也正是
-  // 「写入看会话工作区、读取看进程 cwd」这类缺陷的来源：引擎的 `projectDir` 是 dsh
-  // 进程的 cwd，而实例资产落在会话工作区，真实 GUI 里两者必然不同（实测 `dsh web`
-  // 的 cwd = `/home/yj`，会话工作区 = `/home/yj/ralph-flow-dsh`）—— 于是自定义工作流
+  // 「写入看会话目录、读取看进程 cwd」这类缺陷的来源：引擎的 `projectDir` 曾是 dsh
+  // 进程的 cwd，而实例资产落在会话目录，真实 GUI 里两者必然不同（实测 `dsh web`
+  // 的 cwd = `/home/yj`，会话的项目根 = `/home/yj/ralph-flow-dsh`）—— 于是自定义工作流
   // 加载不到、历史列表永远是空的、doctor 看不见残留。
   //
-  // 现在引擎**按工作区实例化**（见 `index.ts` 的 `engineFor`），这正是 opencode 版的
+  // 现在引擎**按项目根实例化**（见 `index.ts` 的 `engineFor`），这正是 opencode 版的
   // 形状（它的插件是「每个项目目录一个实例」，见其 `engine.ts:9`）。所有路径只有一根，
-  // 索引、`workspaceOf()` 的回落、跨工作区联合扫描一并删除。
+  // 索引、`workspaceOf()` 的回落、跨项目根联合扫描一并删除。
 
   /**
-   * 每实例产出目录（§1.7）：`<workspace>/.dsh/ralph-flow/artifacts/<artifacts_dir_name>/`。
+   * 每实例产出目录（§1.7）：`<项目根>/.dsh/ralph-flow/artifacts/<artifacts_dir_name>/`。
    *
    * 目录名来自 `state.artifacts_dir_name`（缺省回退 `instId`，兼容老 `state.json`）。
    * 注意：销毁流程必须**先**解析出这个路径，再删实例目录（不变量 3）。
@@ -1483,8 +1484,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
     // 内置工作流**有意不落盘**（对齐 opencode/claude 的 ensureProjectWorkflows）：
     // loadWorkflow 会回落到插件目录，所以内置始终解析到**随插件发布的最新版本**。
-    // 播种副本会遮蔽插件目录、并在插件升级后变成陈旧副本——实测踩过：工作区里那份
-    // 7 步 spec 副本把新版 4 步内置整个挡住了，改了内置却"没生效"。
+    // 工作区里的同名副本会遮蔽插件目录，并在插件升级后变成陈旧副本；
     // 用户要定制，就在本目录放同名文件（遮蔽是有意的，也是唯一的定制入口）。
   }
 
@@ -1499,10 +1499,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 不写就继承父级任务 —— 与 `reset` 一样是「零新概念：同一个键、同一个意思，只是层级不同」）。
    */
   const CALL_POINT_KEYS = new Set(["id", "desc", "do", "input", "output", "workflow", "on_pass", "on_fail", "max_fail_count", "reset"]);
-  const KNOWN_WF_KEYS = new Set(["description", "manual_step", "adversarial_check", "auto_reset", "steps"]);
+  const KNOWN_WF_KEYS = new Set(["kind", "description", "manual_step", "adversarial_check", "auto_reset", "steps"]);
 
   function knownWorkflowDirs(): string[] {
-    // 单根：本工作区的工作流目录 + 全局目录（内置工作流不落盘，由 builtinWorkflowPath 回落）
+    // 单根：本项目根的工作流目录 + 用户级目录（内置工作流不落盘，由 builtinWorkflowPath 回落）
     return [workflowsDir, globalWorkflowsDir];
   }
 
@@ -1525,7 +1525,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
     return [...names].sort().map((n) => {
       const { def, problems, warnings } = loadWorkflow(n);
-      return { name: n, desc: def?.description ?? "", invalid: !def, problems, warnings };
+      return { name: n, desc: def?.description ?? "", invalid: !def, problems, warnings, steps: def?.steps.length ?? 0 };
     });
   }
 
@@ -1597,15 +1597,24 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     for (const k of Object.keys(doc)) {
       if (!KNOWN_WF_KEYS.has(k)) warnings.push(`顶层键 \`${k}\` 本版本未支持，已忽略。`);
     }
+    // ── kind / 目录一致性（design §2.1；目录分派在加载器，这里兜住直接按名字加载的路径）──
+    if (Object.prototype.hasOwnProperty.call(doc, "nodes")) {
+      problems.push(`${usedPath} 含有 \`nodes\`：Graph 资产只放 graphs/ 目录，且必须用 Graph 校验器加载。`);
+      return { def: null, problems, warnings };
+    }
+    if (doc.kind !== undefined && doc.kind !== null && doc.kind !== "flow") {
+      problems.push(`${usedPath} 的 \`kind\` 是 ${describeValueKind(doc.kind)}：workflows/ 目录只接受 Flow 资产（\`kind: flow\` 或省略）。Graph 资产请放到 graphs/。`);
+      return { def: null, problems, warnings };
+    }
     const stepsRaw = doc.steps;
     if (!Array.isArray(stepsRaw) || stepsRaw.length === 0) {
       problems.push(`${usedPath} 缺少非空的 steps 列表。`);
       return { def: null, problems, warnings };
     }
     // ── adversarial_check 容错（design §8 Q13 口径：自己不兑现的键一律 warn+ignore）──
-    // 公开契约只允许 `model` 一个字段。其余字段（含已删除的 agent / system_prompt /
-    // timeout_ms）与「整个值不是对象」都在**加载期**告警并忽略：不拒收、不静默、
-    // 不改作别的含义。告警必须在这里出现，不能拖到验证阶段。
+    // 公开契约只允许 `model` 一个字段。其余字段（agent / system_prompt / timeout_ms）
+    // 与「整个值不是对象」都在**加载期**告警并忽略：不拒收、不静默、不改作别的含义。
+    // 告警必须在这里出现，不能拖到验证阶段。
     //
     // 解析提前到步骤之前：**展开子工作流时要拿它当「逐字段继承」的父级模型**
     // （opencode 的 `adversarial_check` 沿调用链继承，见 sinkVerificationModel）。
@@ -1680,14 +1689,14 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         if (isCall) continue;
         if (!KNOWN_STEP_KEYS.has(k)) warnings.push(`步骤 \`${s.id}\` 的键 \`${k}\` 本版本未支持，已忽略。`);
       }
-      // ── 步骤级 `manual_step` 已删除（只保留工作流级列表）──────────────────
-      // 两种写法在本引擎里曾语义相同、纯冗余；但 opencode/pi 只认**工作流级列表**，
-      // 步骤级写法在那边只是「不认识的步骤键」→ 警告忽略 → **人工审查门静默消失**。
-      // 静默跳过审查门比报错严重得多，故这里不论值是什么（true/false/null）都硬错误，
-      // 并在文案里直接给出正确写法。键存在与否用 hasOwnProperty 判（`manual_step:` 空值也算写了）。
+      // ── 步骤级 `manual_step` 是加载期硬错误（人工门只认工作流级列表）──────────
+      // opencode/pi 只认**工作流级列表**；步骤级写法在那边只是「不认识的步骤键」→
+      // 警告忽略 → **人工审查门静默消失**。静默跳过审查门比报错严重得多，故这里
+      // 不论值是什么（true/false/null）都硬错误，并在文案里直接给出正确写法。
+      // 键存在与否用 hasOwnProperty 判（`manual_step:` 空值也算写了）。
       if (Object.prototype.hasOwnProperty.call(s, "manual_step")) {
         problems.push(
-          `步骤 \`${s.id}\` 写了步骤级 \`manual_step\`：该写法已删除，不论值是什么（true/false/空值）都不再有效。`
+          `步骤 \`${s.id}\` 写了步骤级 \`manual_step\`：这个键不是本版本的写法，不论值是什么（true/false/空值）都无效。`
           + `正确写法是把该步 id 列进工作流级 \`manual_step:\` 列表（顶层，与 \`steps\` 同级），即 \`manual_step: [${s.id}]\`（或写成 \`manual_step:\` 下的列表项 \`- ${s.id}\`）。`
           + `步骤级写法在 opencode 那边只是「不认识的步骤键」，会被忽略——人工审查门静默消失，因此这里硬错误而不是告警忽略。`,
         );
@@ -1950,7 +1959,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
     if (problems.length > 0) return { def: null, problems, warnings };
     // manual_step 方言：**只有工作流级（顶层）一种写法**，列表与逗号字符串都接受（对齐 opencode）。
-    // 步骤级 `manual_step` 已删除 = 上面的加载期硬错误——绝不静默放过（审查门会静默消失）。
+    // 步骤级 `manual_step` 由上面的加载期硬错误拦下（审查门不能静默消失）。
     const manual: string[] = [];
     if (Array.isArray(doc.manual_step)) {
       manual.push(...doc.manual_step
@@ -2017,6 +2026,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     try {
       const s = JSON.parse(fs.readFileSync(statePath(instId), "utf-8"));
       if (!s || typeof s !== "object") return null;
+      // 一个 instances/ 目录装两类实例（design §3.1）：Flow 引擎只读自己这一类。
+      // Graph 状态由 graph/state.ts 读；这里返回 null 让 listInstances/uiStatus 自然跳过。
+      if (s.kind === "graph") return null;
       s.delegations ??= [];
       s.verdicts ??= [];
       s.history ??= [];
@@ -2252,7 +2264,6 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
     state.do_submitted = false;
     state.verdicts = [];
-    stopHeartbeatsOf(instId, state.delegations);
     state.delegations = [];
     state.last_submit_summary = undefined;
     pushHistory(state, "gate_reopened", reason, step.id);
@@ -2268,7 +2279,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * §1.7：每个 DO 提示词**各注入一节**「产出目录」（工作区相对路径），写明**过程文档**与
    * **产物**的落点边界（过程文档裸文件名 → 该目录；明确路径 → 按写的路径；工作目录只放产物、
    * 不留副本）。`## 交付物` 一节随后补一句「落点由产出目录决定」，保证**拼装后**两节不打架 ——
-   * 仅靠「各文件单独看没错」会漏掉这种跨节矛盾（loop 曾经的 `+ summary.md` 正是如此）。
+   * 仅靠「各文件单独看没错」会漏掉这种跨节矛盾。
    *
    * 「## 任务」= {@link effectiveTaskOf}：子工作流调用点写了 `do` 时，这里给的是**那段子工作流
    * 要做什么**（加载期下沉到 `step.task`）；否则仍是发起会话的任务描述（向后兼容）。
@@ -2291,7 +2302,6 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const hasCheck = stepHasVerification(step);
     const voters = voterCountOf(step);
     // 本步是不是审查门：无检查依据 + 门 = 纯人工审查，交卷后停在门等用户放行（不是「自动进入下一步」）。
-    const gate = isGate(wf, step);
     const parts = [
       `[ralphflow] 工作流 \`${wf.name}\` · 步骤 ${idx}/${wf.steps.length}：**${step.id}**${step.desc ? ` — ${step.desc}` : ""}`,
       "",
@@ -2317,9 +2327,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       `工作目录只放本步的**产物**（代码、资源、可执行文件）；过程文档除「写了明确路径」外不进工作目录，同一份过程文档只写一处、不要留副本（例如产出目录已有 \`summary.md\`、工作目录根又出现一份，那是落点错误）。`,
     ];
     // 「交付物」与「产出目录」必须拼装后自洽：`output` 说的是**产出什么**，落点由上面
-    // 「产出目录」一节决定。少了这句，`output` 里写进过程文档名（如 loop 曾经的
-    // `+ summary.md（执行摘要）`）就会被读成「和代码并列的工作目录交付物」，
-    // 与紧邻的「产出目录」直接打架 —— 模型两边都写、并行维护、开始漂移。
+    // 「产出目录」一节决定。少了这句，`output` 里写进过程文档名就会被读成
+    // 「和代码并列的工作目录交付物」，与紧邻的「产出目录」直接打架 ——
+    // 模型两边都写、并行维护、开始漂移。
     if (step.output) {
       parts.push(
         "",
@@ -2354,22 +2364,13 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           : "⚠️ **本步是工作流顺序上的最后一步**：它自己的既有产出仍在盘上、基于旧方向，重做时以新方向为准；交卷时请说明旧产出里哪些已不再适用。",
       );
     }
-    const afterSubmit = hasCheck
-      ? (voters > 0
-        ? `${voters} 个独立验证者**并行**取证，各自只查一条检查依据，**全过才放行**。`
-        : "独立验证者取证判定。")
-      : "本步未配置 check / check_voting，跳过对抗性验证。";
-    const nextAction = gate
-      ? `${hasCheck ? "通过后" : "交卷即"}停在审查门，等用户 \`/ralphflow-continue\` 放行。`
-      : (hasCheck ? "由引擎自动推进或投递失败依据。" : "交卷后由引擎自动推进。");
     parts.push(
       "",
       "## 交卷方式",
-      "1. 对照本步要求核验交付物。将跨步需要的用户决定、验证方法与结果写入本步已有过程文档；需要用户补充信息时说明阻塞项，等信息齐全再完成本步。",
-      "2. 面向用户简短说明本步交付内容及自查结果，然后**调用 `ralphflow_submit` 工具交卷**。验证者看不到 summary 参数：需要验收的证据应能从文件或命令结果独立取得。",
-      `交卷后：${afterSubmit}${nextAction}`,
-      ...(hasCheck ? ["独立验证期间不需要用户做任何操作；可用 `/ralphflow-status` 查进度或 `/ralphflow-cancel` 中止。保持已交付产出稳定，新增修改等返工或用户指令后再做；不要给任何时长预估。"] : []),
-      "交卷工具会结束当前回合，随后等待引擎或用户的下一条指令。通知与状态入口由插件展示，不需要重复播报。",
+      "1. 结束本轮前，把**还没完成的事项**逐条写进 `unfinished`；没有就留空。`unfinished` 是剩余工作清单，不是完成声明。留空之前，逐条核对本步的完成条件（有验收依据时按上面每一条判据；没有时按「本步要做什么」与「交付物」），每一条都能指出可复核的证据（文件位置、命令与结果）；被打回会整步返工，并占用一次返工预算。调用 `ralphflow_submit` 结束本轮。",
+      "2. 把跨步需要的用户决定、验证方法与结果写进本步已有过程文档；过程文档里把计划与完成分开写，无法验证的事项标成未验证；需要用户补充信息时说明阻塞项，等信息齐全再完成本步。",
+      "3. 面向用户简短说明本步交付内容及自查结果，然后**调用 `ralphflow_submit` 工具交卷**。验证者看不到 summary 参数：需要验收的证据应能从文件或命令结果独立取得。不要给任何时长预估。",
+      "交卷后由引擎处理；期间不需要用户做任何操作，可用 `/ralphflow-status` 查进度或 `/ralphflow-cancel` 中止。交卷工具会结束当前回合，随后等待引擎或用户的下一条指令。通知与状态入口由插件展示，不需要重复播报。",
     );
     return parts.join("\n");
   }
@@ -2437,13 +2438,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const startedAt = Date.now();
     state.delegations.push({
       run_id: runId, check_index: checkIndex, attempt, ts: new Date().toISOString(),
-      // 属主运行时（诊断）+ 心跳起点（判活的唯一依据）：心跳只要还在刷新，别的会话 /
-      // 别的沙箱进程 / 重载后的新实例就不得把这笔在飞委派当孤儿清掉。
-      owner_runtime: runtimeId(), heartbeat_at: Date.now(),
     });
+    // 验证中也需要属主：实例心跳继续刷，别的 host 才知道这笔判定还有人在等。
+    stampOwner(state);
+    startDriving(instId);
     pushHistory(state, "verify_start", `check_index=${checkIndex},attempt=${attempt}`, step.id);
     writeState(state, instId);
-    startHeartbeat(instId, runId);
     log("info", "verify_start", { instId, step: step.id, checkIndex, attempt });
     // 阶段播报：验证是**异步**的（委派独立子代理，不阻塞主会话回合）。
     // 这段静默窗口必须讲清三件事：正在发生什么 / 要不要你操作 / 去哪看进度。
@@ -2452,7 +2452,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     // （见 verify.ts：生命周期跟随宿主原生能力）—— 猜一个「通常 1–5 分钟」就是编。
     // 能诚实说的只有「它在读文件、跑命令取证，你（用户）看得到」。
     notify(state, attempt > 1 ? [
-      `🔍 步骤 \`${step.id}\` 验证发生基础设施故障，正在**自动重新验证一次**（不计失败次数）。`,
+      `🔍 步骤 \`${step.id}\` 验证发生基础设施故障，正在**自动重新验证一次**（不计返工次数）。`,
       "无需操作；重试仍故障会暂停，等你修复后继续。",
     ].join("\n") : [
       `🔍 步骤 \`${step.id}\` 已交卷，独立验证者（独立会话，看不到本对话）正在取证判定。`,
@@ -2507,11 +2507,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         : fresh.current_step !== step.id ? "step_changed"
         : "run_superseded";
       log("warn", "verdict_discarded", { instId, reason: why, status: verdict.status, step: step.id, runId });
-      stopHeartbeat(instId, runId); // 本笔已作废：心跳没有任何意义了
       dropAbort(instId, controller); // 取消句柄同样作废，避免集合里堆积死句柄
       return;
     }
-    stopHeartbeat(instId, runId);
     fresh.delegations = fresh.delegations.filter((d) => d.run_id !== runId);
     fresh.verdicts.push(verdict);
     dropAbort(instId, controller);
@@ -2539,7 +2537,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   //   · **全部终态才聚合**：任何单票完成都不碰状态机（多票同时落账会互相覆盖读-改-写）；
   //   · 聚合优先级 `failed > infra > 全过`（`decideVotingOutcome`）——工作问题绝不被故障遮蔽；
   //   · infra **自动重试一次**，只重跑故障票（已通过的保留）；重试仍 infra 且无 failed →
-  //     `check_infra` 暂停（不计失败次数），`/ralphflow-continue` 只重跑未通过的票；
+  //     `check_infra` 暂停（不计返工次数），`/ralphflow-continue` 只重跑未通过的票；
   //   · 跨轮（DO 返工后重新交卷）**全部重投**：上一轮的票一律不复用（工作已经变了）。
   //
   // 进度不另立文件：每票状态就是 `state.json` 的 `verdicts[]`（终态）+ `delegations[]`（在飞）
@@ -2617,10 +2615,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           : fresh.current_step !== step.id ? "step_changed"
           : "run_superseded";
         log("warn", "verdict_discarded", { instId, reason: why, status: verdict.status, step: step.id, runId, voter: index + 1 });
-        stopHeartbeat(instId, runId); // 本笔已作废：心跳没有任何意义了
         return { roundComplete: false };
       }
-      stopHeartbeat(instId, runId);
       fresh.delegations = fresh.delegations.filter((d) => d.run_id !== runId);
       fresh.verdicts.push(verdict);
       // 每票一条轨迹。**刻意不用 `verdict_*` 事件名**：报告里的「失败轮数」按 `verdict_failed`
@@ -2677,7 +2673,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           void launchVotingRound(instId, fresh, wf, step, retry, attempt + 1);
           return;
         }
-        // 重试仍失败 → 基础设施故障暂停（不计失败次数）；continue 只重跑未通过的票。
+        // 重试仍失败 → 基础设施故障暂停（不计返工次数）；continue 只重跑未通过的票。
         const reason = formatVotingInfraReason(asVotes, entries, count);
         pushHistory(fresh, "verdict_infra", reason.slice(0, 300), step.id);
         applyRoundOutcome(instId, fresh, wf, step, { kind: "infra", reason }, startedAt);
@@ -2706,15 +2702,14 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       const runId = `v-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}-${index}`;
       state.delegations.push({
         run_id: runId, check_index: index, attempt, ts: stamp,
-        // 属主运行时（诊断）+ 心跳起点（判活的唯一依据）：N 票各有独立心跳，
-        // 只要还有一笔在刷，别的会话 / 别的沙箱进程就不得把在飞委派当孤儿清掉。
-        owner_runtime: runtimeId(), heartbeat_at: Date.now(),
       });
       return { runId, index, controller };
     });
+    // 投票也是「验证中」：属主心跳继续，别让别的 host 把这一轮当孤儿。
+    stampOwner(state);
+    startDriving(instId);
     pushHistory(state, "verify_start", `voters=${indices.map((i) => i + 1).join(",")}/${count}${attempt > 1 ? "（infra 自动重试）" : ""}`, step.id);
     writeState(state, instId);
-    for (const r of runs) startHeartbeat(instId, r.runId);
     log("info", "verify_start", { instId, step: step.id, voters: indices, count, attempt });
     // 阶段播报：与单 check 同一套「正在发生什么 / 要不要你操作 / 去哪看进度」，
     // 只把「一个验证者」换成「N 个验证者并行」这层事实。**依旧绝不给时长预估**。
@@ -2794,7 +2789,6 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       }
       state.do_submitted = false;
       state.verdicts = [];
-      stopHeartbeatsOf(instId, state.delegations);
       state.delegations = [];
       if (target.id !== step.id) {
         state.current_step = target.id;
@@ -2844,7 +2838,6 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     state.current_step = next.id;
     state.do_submitted = false;
     state.verdicts = [];
-    stopHeartbeatsOf(instId, state.delegations);
     state.delegations = [];
     state.last_submit_summary = undefined;
     // 不在这里清 fail_counts：通过时已 `clearFailCount`（该步失败史了结）。
@@ -3003,7 +2996,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       else if (cur.do_submitted === true) why = `步骤 \`${stepId}\` 已经交卷（独立验证者正在取证，或已停在审查门）`;
     } catch { /* 读不到就退回通用说法 */ }
     return {
-      text: `[ralphflow] 你执行了 \`/ralphflow-reset\`，但**这次重置没有生效**：${why}。\n\n重置只换干净上下文（失败计数原样保留），且只能落在**当前步 DO 阶段的空闲窗口**里 —— 否则会打断在飞验证、把已有判定变成孤儿。用 \`/ralphflow-status\` 看进度；等本步失败返工、或进入下一步的 DO 之后，再执行一次 \`/ralphflow-reset\`。`,
+      text: `[ralphflow] 你执行了 \`/ralphflow-reset\`，但**这次重置没有生效**：${why}。\n\n重置只换干净上下文（返工计数原样保留），且只能落在**当前步 DO 阶段的空闲窗口**里 —— 否则会打断在飞验证、把已有判定变成孤儿。用 \`/ralphflow-status\` 看进度；等本步返工、或进入下一步的 DO 之后，再执行一次 \`/ralphflow-reset\`。`,
       summary: `⚠️ /ralphflow-reset 未生效：${why}`,
     };
   }
@@ -3056,7 +3049,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       notice: trigger === "manual"
         ? {
           summary: `♻️ 已按 /ralphflow-reset 重置上下文，重投步骤 ${step.id} 的 DO`,
-          text: `[ralphflow] 用户执行了 \`/ralphflow-reset\`：当前步（\`${step.id}\`）的上下文已整段替换为一条交接稿，本步 DO 随即重投。此前对话已移出模型上下文；**失败计数原样保留**（重置只换干净上下文，不赦免失败）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。`,
+          text: `[ralphflow] 用户执行了 \`/ralphflow-reset\`：当前步（\`${step.id}\`）的上下文已整段替换为一条交接稿，本步 DO 随即重投。此前对话已移出模型上下文；**返工计数原样保留**（重置只换干净上下文，不赦免失败）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。`,
         }
         : trigger === "rewind"
           ? {
@@ -3108,6 +3101,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     rework?: string,
     opts?: { manual?: boolean; rewind?: { from: string; reason: string } },
   ): void {
+    // 新的 DO 开始 = 实例重新需要属主（可能刚从审查门/暂停回来，心跳曾被定时器丢弃）。
+    startDriving(instId);
     const text = doPrompt(instId, wf, state, step, rework, opts?.rewind);
     const sid = state.owner_session;
     const trigger: ResetTrigger | undefined = opts?.rewind ? "rewind" : opts?.manual ? "manual" : resetCauseOf(wf, step);
@@ -3136,11 +3131,11 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const stillLive = (): boolean => {
       try {
         const cur = readState(instId);
-        return !!cur && cur.active === true && cur.current_step === step.id && cur.do_submitted === false;
+        return !!cur && cur.active === true && cur.current_step === step.id && cur.do_submitted === false && cur.paused === false;
       } catch { return false; }
     };
     req.canProceed = stillLive; // 载体在 append 之前同步复查一次（关掉「等窗口期间被取消」的竞态）
-    // 从这一刻起「本步 DO 还没送达」——期间 turn-stopping 的「忘了交卷」提醒必须闭嘴
+    // 从这一刻起「本步 DO 还没送达」——期间 turn-stopping 的回合收尾提醒必须闭嘴
     pendingDoDelivery.add(instId);
     publishStatus();
     const releasePending = () => { pendingDoDelivery.delete(instId); publishStatus(); };
@@ -3190,7 +3185,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   }
 
   /**
-   * 归档最终报告到 `<workspace>/.dsh/ralph-flow/reports/<instId>.md`。
+   * 归档最终报告到 `<项目根>/.dsh/ralph-flow/reports/<instId>.md`。
    *
    * 返回**绝对路径**；写失败返回 `null`（**绝不吞掉失败**）：调用方
    * {@link destroyInstance} 依赖这个 `null` 决定「不销毁实例」——宁可留一个
@@ -3226,7 +3221,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         "## 步骤耗时与重试",
         "",
         ...(stats.length > 0
-          ? stats.map((d) => `- \`${d.step}\`：耗时 ${formatDuration(d.ms)} · 失败 ${d.retries} 轮`)
+          ? stats.map((d) => `- \`${d.step}\`：耗时 ${formatDuration(d.ms)} · 返工 ${d.retries} 轮`)
           : ["- （无步骤记录）"]),
         "",
         "## 轨迹",
@@ -3255,10 +3250,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 否则部分删除失败（Windows EBUSY 等）会留下一个「列表里看不到、磁盘上还在」的幽灵；
    * 反过来先除名，实例在任何失败下都不会复活成幽灵。
    *
-   * **路径必须在除名之前解析并固定**（曾经的缺陷）：早期 `instanceDir()` / `statePath()` 都经
-   * `workspaceOf(instId) = registry[instId] ?? projectDir`，先除名会让它们回落到引擎的
-   * `projectDir`，跨工作区时删除静默打空（报告有了、目录还在）。索引已随「引擎按工作区
-   * 实例化」一并删除，路径现在由单根目录直接给出；「先解析、后动手」的顺序仍保留。
+   * **路径必须在除名之前解析并固定**：实例目录与状态路径都从单根目录直接给出；
+   * 先除名再解析路径会让删除落到错误的工作区，留下「报告有了、目录还在」。
    *
    * 返回 `{ reportPath, instanceDirRemoved }`；归档失败返回 `null` 且**不销毁**
    * （见不变量 3 与边界 2）。`state` 缺省从磁盘读；调用方（complete/cancel）传内存里的 state，
@@ -3335,7 +3328,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     if (mine) {
       return { ok: false, text: `当前会话已有活跃实例 \`${mine.id}\`（${mine.state.workflow_name} · ${mine.state.current_step}）。用 \`/ralphflow-continue\` 继续，或 \`/ralphflow-cancel\` 取消。` };
     }
-    try { ensureLayout(); } catch {}
+    ensureLayout();
     const { def: wf, problems, warnings } = loadWorkflow(workflowName.trim());
     if (!wf) return { ok: false, text: `工作流 \`${workflowName}\` 无法启动：\n${problems.map((p) => `- ${p}`).join("\n")}` };
     const first = wf.steps[0]!;
@@ -3350,8 +3343,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       delegations: [], verdicts: [], history: [], started_at: now, updated_at: now,
       artifacts_dir_name: artifactsDirName,
     };
+    stampOwner(state);
     pushHistory(state, "start", `workflow=${wf.name}`, first.id);
     writeState(state, instId);
+    startDriving(instId);
     // 执行日志：启动 + 首步 step_start（首步也给 step_start，机器才能只靠该事件枚举步骤）
     logEvent(instId, "info", "start", { workflow: wf.name, step: first.id });
     logEvent(instId, "info", "step_start", { step: first.id, index: 1 });
@@ -3423,7 +3418,38 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 返回 ToolResult：把「已受理 / 不能重复交卷 / 没有活跃实例」直接回给模型，
    * 而不是像文本标记那样静默失败。
    */
-  function onSubmit(sessionId: string, summary?: string): ToolResult {
+  /** 进度记录的 detail 形状；`lastCheckpointOf` 按同一形状读回条数（两个函数放在一起，改一处就够）。 */
+  function checkpointDetail(items: string[]): string {
+    return `未完成 ${items.length} 项：${items.join("；")}`;
+  }
+
+  /**
+   * 本步最近的「报进度」（`submit_incomplete`）：本轮仍是 DO 阶段、且最后一条记录之后
+   * 没有重新进入本步（step_start / 返工 / 恢复 / 已交卷）。只用来换催促的口径，不参与判定。
+   *
+   * 同时带回**条目原文**：上下文被压缩后，光说「还有 3 项」等于没说 —— 催促消息必须
+   * 能独立恢复出"到底还剩什么"。
+   */
+  function lastCheckpointOf(state: InstanceState, stepId: string): { count: number; items: string[] } | null {
+    const boundaries = new Set(["step_start", "rework_rewind", "resume", "do_submitted"]);
+    let from = -1;
+    let entry = -1;
+    for (let i = 0; i < state.history.length; i++) {
+      const h = state.history[i]!;
+      if (h.step !== stepId) continue;
+      if (boundaries.has(h.event)) from = i;
+      if (h.event === "submit_incomplete") entry = i;
+    }
+    if (entry <= from) return null;
+    const detail = state.history[entry]?.detail ?? "";
+    const count = Number(/^未完成 (\d+) 项/.exec(detail)?.[1] ?? 0);
+    if (count <= 0) return null;
+    const raw = detail.replace(/^未完成 \d+ 项：/, "");
+    const items = raw ? raw.split("；").map((item) => item.trim()).filter(Boolean) : [];
+    return { count, items };
+  }
+
+  function onSubmit(sessionId: string, summary?: string, unfinished?: string[]): ToolResult {
     const info = activeInstanceOfSession(sessionId);
     if (!info) {
       const others = listInstances().filter((i) => i.state.active);
@@ -3436,7 +3462,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
     const { id: instId, state } = info;
     if (state.paused) {
-      return { ok: false, text: `实例 \`${instId}\` 处于暂停状态（${state.pause_reason}），交卷未被受理。先按提示处理，再用 \`/ralphflow-continue\` 恢复。` };
+      return { ok: false, text: `实例 \`${instId}\` 处于暂停状态（${pauseLabel(state.pause_reason)}），交卷未被受理。先按提示处理，再用 \`/ralphflow-continue\` 恢复。` };
     }
     const { def: wf } = loadWorkflow(state.workflow_name);
     if (!wf) {
@@ -3445,6 +3471,22 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
     const step = stepOf(wf, state.current_step);
     if (!step) return { ok: false, text: `实例状态损坏：当前步骤 \`${state.current_step}\` 不在工作流里。用 \`/ralphflow-cancel\` 结束。` };
+
+    // 未完成项非空 = 本轮进度记录，**不是**完成声明：不设 do_submitted、不委派验证者、不占返工预算。
+    // 这一条是「没做完就先交卷」的机械闸门：模型自己知道还剩什么，把它的自述变成引擎可执行的判断。
+    const remaining = normalizeUnfinished(unfinished);
+    if (!state.do_submitted && remaining.length > 0) {
+      pushHistory(state, "submit_incomplete", checkpointDetail(remaining), step.id);
+      writeState(state, instId);
+      logEvent(instId, "info", "submit_incomplete", { step: step.id, count: remaining.length });
+      // 进度记录也是一次动作（见 noteAction 的注释）：宿主把 ralphflow_submit 排除在
+      // 「在干活」之外，引擎在这里补记自己受理过的那一次。
+      try { ports.noteAction?.(sessionId, Date.now()); } catch {}
+      return {
+        ok: true,
+        text: `已记下这轮进度：本步还有 ${remaining.length} 项没完成。\n\n${remaining.map((item) => `- ${item}`).join("\n")}\n\n继续做这些；做完后再交卷。\n需要我决定的事：直接说明并结束回合，不必交卷。`,
+      };
+    }
 
     const text = (summary ?? noteTextFor(sessionId) ?? "").slice(-4000).trim();
     if (state.do_submitted) {
@@ -3490,9 +3532,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       }
       writeState(state, instId);
       void launchVerification(instId, state, wf, step);
-      return { ok: true, text: voterCountOf(step) > 0
-        ? `🔍 已受理重新交卷，正在重新委派 ${voterCountOf(step)} 个独立验证者并行检查步骤 \`${step.id}\`（全过才放行）。`
-        : `🔍 已受理重新交卷，正在重新委派独立验证者检查步骤 \`${step.id}\`。` };
+      return { ok: true, text: "🔍 已受理重新交卷，本轮结束；不要重复交卷。" };
     }
 
     state.do_submitted = true;
@@ -3510,9 +3550,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
     writeState(state, instId);
     void launchVerification(instId, state, wf, step);
-    return { ok: true, text: voterCountOf(step) > 0
-      ? `🔍 交卷已受理，${voterCountOf(step)} 个独立验证者（独立会话）正在并行取证判定，全过才放行。等它们返回即可，不要重复交卷。`
-      : `🔍 交卷已受理，独立验证者（独立会话）正在取证判定。等它返回即可，不要重复交卷。` };
+    return { ok: true, text: "🔍 交卷已受理，本轮结束；不要重复交卷。" };
   }
 
   // ─── 交卷上下文捕获（**只**服务审查门重交去重；不落盘、不触发任何状态迁移）──────
@@ -3539,43 +3577,99 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     return lastText.get(sessionId);
   }
 
-  // ─── DO 阶段「忘了交卷」兜底（原生 agent/turn-stopping 驱动）─────────────────
-  /**
-   * 回合即将关闭时的判定：该不该提醒模型交卷。
-   *
-   * 文本标记时代这件事是静默的（模型忘了写标记 → 什么都没发生）。
-   * 这里由原生 `agent/turn-stopping`（serial、可 await）在回合关闭前发问：
-   * 有活跃实例、本步未交卷、未暂停、无在飞委派 → 模型干完了却没交卷。
-   *
-   * 提醒次数从 history 派生（不新增状态字段，宪法 §10.4）；达到上限则暂停等用户，
-   * 绝不死循环催促。
-   *
-   * **次数按「本次进入该步」起算**：`step_start` 就是那条边界（回退也会记一条）。
-   * 若统计整段 history，回退到一个已经用光提醒预算的步骤会**立刻** `no_submit` 暂停 ——
-   * 用户刚换了方向，工作流却一步没跑就停下。同理，返工（`rework_rewind` 换步、
-   * `do_submitted` 开启本步新一轮）与 `/ralphflow-continue` 恢复（`resume` 后重投 DO）
-   * 也都是新一轮的边界；只有**同一轮里**的提醒才累积。
-   */
-  function submitReminderCount(state: InstanceState, stepId: string): number {
+  // ─── 回合收尾检查（原生 agent/turn-stopping 驱动）──────────────────────────
+  //
+  // 它问的是「还有没有剩余事项」，不是「你怎么还没交卷」：
+  //   没有剩余 → 交卷；还有剩余 → 接着做；在等用户 → 直说。
+  // 目标驱动（goal-round-driver）判定「做完没做完」的方式也是模型自报，没有独立评估器；
+  // 我们不需要接它 —— 交卷之后由独立验证者判定，比自报更强。
+
+  function reminderStateOf(
+    state: InstanceState,
+    stepId: string,
+    lastActionAt: number | undefined,
+  ): { stalls: number; total: number; worked: boolean } {
+    // **次数按「本次进入该步」起算**：`step_start` 就是那条边界（回退也会记一条）。
+    // 若统计整段 history，回退到一个已经用光预算的步骤会**立刻** `no_submit` 暂停 ——
+    // 用户刚换了方向，工作流却一步没跑就停下。同理，返工（`rework_rewind` 换步、
+    // `do_submitted` 开启本步新一轮）与 `/ralphflow-continue` 恢复（`resume` 后重投 DO）
+    // 也都是新一轮的边界；只有**同一轮里**的提醒才累积。
     const boundaries = new Set(["step_start", "rework_rewind", "do_submitted", "resume"]);
     let from = -1;
     for (let i = 0; i < state.history.length; i++) {
       const h = state.history[i]!;
       if (h.step === stepId && boundaries.has(h.event)) from = i;
     }
-    let n = 0;
+    // 两种提醒分开记（都从 history 派生，不新增落盘字段）：
+    //   · submit_reminder = 空回合（上次提醒之后没有任何工具调用），累计到 STALL 上限；
+    //   · submit_activity = 有动作的提醒（模型干过活又停下来），清零空回合累计，只计入总上限。
+    let stalls = 0;
+    let total = 0;
+    let last = -1;
     for (let i = from + 1; i < state.history.length; i++) {
       const h = state.history[i]!;
-      if (h.event === "submit_reminder" && h.step === stepId) n++;
+      if (h.step !== stepId) continue;
+      if (h.event === "submit_activity") { stalls = 0; total++; last = i; }
+      else if (h.event === "submit_reminder") { stalls++; total++; last = i; }
     }
-    return n;
+    const anchor = last >= 0 ? state.history[last]!.ts : from >= 0 ? state.history[from]!.ts : undefined;
+    const anchorMs = anchor ? Date.parse(anchor) : Number.NaN;
+    const worked = lastActionAt !== undefined && Number.isFinite(anchorMs) && lastActionAt > anchorMs;
+    return { stalls, total, worked };
+  }
+
+  /**
+   * 催促消息里的**自包含步骤卡**。
+   *
+   * 为什么需要：长程任务里原始 DO 会随上下文压缩而不可见；只发「你还没交卷」或
+   * 「还有 N 项」等于让模型猜要做什么。这里只带恢复方向必需的事实（任务 / 输入 /
+   * 要做什么 / 产出目录 / 交付物 / 自查依据 / 回退原因 / 未完成清单），
+   * **不重复 DO 里「交卷方式」那段长文** —— 催促本来就是低频的（≤2 次空回合 / 20 次总上限）。
+   */
+  function stepRecap(
+    instId: string,
+    wf: WorkflowDef,
+    state: InstanceState,
+    step: StepDef,
+    checkpoint?: { count: number; items: string[] } | null,
+  ): string {
+    const idx = wf.steps.findIndex((s) => s.id === step.id) + 1;
+    const hasCheck = stepHasVerification(step);
+    const checks = voterCountOf(step) > 0
+      ? (step.check_voting ?? []).map((voter, index) => `${index + 1}. ${voter.check.trim()}`)
+      : step.check ? [step.check.trim()] : [];
+    const rewind = [...state.history].reverse().find((h) => h.event === "rewind" && h.step === step.id);
+    const detail = rewind?.detail ?? "";
+    const cut = detail.indexOf("：");
+    const rewindReason = cut >= 0 ? detail.slice(cut + 1).trim() : "";
+    const failed = state.verdicts.filter((verdict) => verdict.step_id === step.id && verdict.status === "failed");
+    const lines = [
+      "## 本步回顾（上下文可能已被压缩，以这里为准）",
+      `- 工作流：\`${wf.name}\` · 步骤 ${idx}/${wf.steps.length}：**${step.id}**${step.desc ? ` — ${step.desc}` : ""}`,
+      `- 任务：${effectiveTaskOf(step, state.user_task)}`,
+      ...(step.input ? [`- 输入：${step.input}`] : []),
+      `- 本步要做什么：${(step.do || step.desc || step.id).trim()}`,
+      `- 产出目录：\`${artifactsRelDirOf(instId)}/\``,
+      `- 交付物：${String(step.output ?? "").trim() || "（未声明）"}`,
+      ...(rewindReason ? [`- 用户要求换方向的原因：${rewindReason}`] : []),
+      ...(hasCheck
+        ? ["- 自查依据（独立验证者按这些判据验收）：", ...checks.map((check) => `  ${check}`)]
+        : ["- 本步未配置 `check` / `check_voting`：交卷后跳过对抗性验证。"]),
+      ...(failed.length > 0
+        ? ["- 上一轮检查未通过（只修本步；原因）：", ...failed.map((verdict) => `  - ${verdict.reason.trim() || "（未给出原因）"}`)]
+        : []),
+      ...(checkpoint && checkpoint.items.length > 0
+        ? [`- 上一轮记下的未完成项（${checkpoint.count} 项）：`, ...checkpoint.items.map((item, index) => `  ${index + 1}. ${item}`)]
+        : []),
+    ];
+    return lines.join("\n");
   }
 
   function remindToSubmit(sessionId: string): { remind: boolean; message?: string; summary?: string } {
     const info = activeInstanceOfSession(sessionId);
     if (!info) return { remind: false };
     const { id: instId, state } = info;
-    // 本步的 DO 还没送达（`reset: true` 的步骤要等空闲窗口做完替换才投递）：此刻催交卷是**错的**
+    // 本步的 DO 还没送达（`reset: true` 的步骤要等空闲窗口做完替换才投递）：此刻提醒是**错的**
     // —— 模型还不知道这一步存在。不拦的话，两轮提醒后会把实例暂停（pause_reason=no_submit），
     // 而 DO 随后落在一个已暂停的实例上（第二轮验证者 2/4 实测）。
     if (pendingDoDelivery.has(instId)) return { remind: false };
@@ -3584,37 +3678,82 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const step = wf ? stepOf(wf, state.current_step) : undefined;
     if (!wf || !step) return { remind: false };
 
-    const max = 2;
-    const used = submitReminderCount(state, step.id);
-    if (used >= max) {
-      // 反复提醒仍不交卷 → 停下来让用户处理，不再自动催（避免死循环）
+    const { stalls, total, worked } = reminderStateOf(state, step.id, ports.lastActionAt?.(sessionId));
+
+    // 空回合暂停只在**这一轮也是空回合**时生效：模型中途干过活，连续计数就被打破，
+    // 不该因为「历史上有过两次空回合」在它回来干活的这一轮把它停掉。
+    const stalledOut = !worked && stalls >= SUBMIT_REMINDER_STALL_LIMIT;
+    // 预算只在**这一轮也是空回合**时才触发：干着活被「次数到顶」掐停是另一种缺陷（见上）。
+    const budgetOut = !worked && total >= SUBMIT_REMINDER_TOTAL_LIMIT;
+    if (stalledOut || budgetOut) {
+      // 连续空回合够多，或总提醒次数到顶 → 停下来让用户处理，不再自动催（避免死循环）
+      const why = stalledOut
+        ? `连续 ${stalls} 次回合结束都没有任何动作`
+        : `已提醒 ${total} 次仍未交卷`;
       state.paused = true;
       state.pause_reason = "no_submit";
-      pushHistory(state, "reminder_exhausted", `${used} 次提醒后仍未交卷`, step.id);
-      logPause(instId, state, "no_submit", { used, max });
+      pushHistory(state, "reminder_exhausted", why, step.id);
+      logPause(instId, state, "no_submit", { stalls, total });
       writeState(state, instId);
-      log("warn", "submit_reminder_exhausted", { instId, step: step.id, used });
+      log("warn", "submit_reminder_exhausted", { instId, step: step.id, stalls, total });
       return {
         remind: false,
-        summary: `⏸ 步骤 ${step.id} 反复未交卷，已暂停等你处理`,
-        message: `⏸ 步骤 \`${step.id}\` 已提醒 ${used} 次仍未收到交卷，已暂停等你处理。\n\n如果工作其实做完了：先用 \`/ralphflow-continue\` 恢复，再让模型调用 \`ralphflow_submit\` 交卷。\n如果它卡住了：说明情况或 \`/ralphflow-cancel\` 结束。`,
+        summary: `⏸ 步骤 ${step.id} ${why}，已暂停等你处理`,
+        message: `⏸ 步骤 \`${step.id}\` ${why}，已暂停等你处理。\n\n- 它其实做完了：先 \`/ralphflow-continue\` 恢复，再让它调用 \`ralphflow_submit\`。\n- 它在等你：直接回复它要的信息，再 \`/ralphflow-continue\` 恢复。\n- 它卡住了：\`/ralphflow-cancel\` 结束。`,
       };
     }
-    pushHistory(state, "submit_reminder", `第 ${used + 1} 次`, step.id);
+
+    // 上次提醒之后有工具调用 = 模型在干活：不累计空回合，只记一条「有动作」的提醒。
+    pushHistory(state, worked ? "submit_activity" : "submit_reminder", worked ? `第 ${total + 1} 次` : `第 ${stalls + 1}/${SUBMIT_REMINDER_STALL_LIMIT} 次空回合`, step.id);
     writeState(state, instId);
-    const n = used + 1;
-    // 诚实标注：无检查依据的步骤本就不验证，不能说「独立验证不会自动开始」（那是另一回事）；
-    // 门步还要说清「停在审查门等用户放行」，不能写成「直接继续」（与 doPrompt 同一口径）。
-    const noSubmitReason = stepHasVerification(step)
-      ? "独立验证不会自动开始"
-      : isGate(wf, step)
-        ? "本步是纯人工审查门（未配置 `check` / `check_voting`）：交卷后**跳过对抗性验证**，停在审查门等用户放行"
-        : "工作流不会推进（本步未配置 `check` / `check_voting`，交卷后跳过对抗性验证直接继续）";
+    const head = worked
+      ? `[ralphflow] 提醒：本步（\`${step.id}\`）还没结束。`
+      : `[ralphflow] 提醒（第 ${stalls + 1}/${SUBMIT_REMINDER_STALL_LIMIT} 次空回合）：本步（\`${step.id}\`）还没结束，上次提醒之后没有任何工具调用。`;
+    // 上一轮是「进度记录」不是完成声明：接着做那份清单，而不是再问一遍「做完了吗」。
+    const checkpoint = lastCheckpointOf(state, step.id);
+    if (checkpoint) {
+      return {
+        remind: true,
+        summary: `▶️ 步骤 ${step.id} 继续：上一轮记下 ${checkpoint.count} 项未完成`,
+        message: `${head}\n\n${stepRecap(instId, wf, state, step, checkpoint)}\n\n接着做上一轮记下的 ${checkpoint.count} 项未完成（条目见上方步骤回顾）；这些项都完成后，交卷时把 \`unfinished\` 留空。\n在等我回答或需要我介入：直接说明，不必交卷。`,
+      };
+    }
     return {
       remind: true,
-      summary: `⚠️ 步骤 ${step.id} 尚未交卷（第 ${n}/${max} 次提醒）`,
-      message: `[ralphflow] 提醒（第 ${n}/${max} 次）：本步（\`${step.id}\`）还没交卷，${noSubmitReason}。\n\n如果任务已完成，请调用 \`ralphflow_submit\` 工具交卷；如果还没做完，继续做。\n如果你正在等用户回答或需要用户介入，请直接说明，不必交卷。`,
+      summary: worked
+        ? `⚠️ 步骤 ${step.id} 还没结束（第 ${total + 1} 次提醒）`
+        : `⚠️ 步骤 ${step.id} 还没结束（连续 ${stalls + 1} 次空回合）`,
+      message: `${head}\n\n${stepRecap(instId, wf, state, step)}\n\n本轮结束前：还有没完成的事项，逐条写进 \`unfinished\`；没有就留空。调用 \`ralphflow_submit\` 结束本轮。\n在等我回答或需要我介入：直接说明，不必交卷。`,
     };
+  }
+
+  /**
+   * 用户点停止按钮（宿主把当前回合 cancel 成 `turn/end { kind:"aborted", reason:{kind:"user"} }`）：
+   * 把实例转成 `paused(user_stop)`。
+   *
+   * 只在 **DO 阶段**生效：已交卷 = 验证在飞 / 停在审查门，停止回合不该打断验证。
+   * 暂停是**意图**，先落盘、再由调用方释放所有权（心跳/锁），顺序不能反 —— 先放所有权
+   * 会让别的 host 把"在飞 + 无主"误判成中断。
+   */
+  function pauseForUserStop(sessionId: string): ToolResult {
+    const info = activeInstanceOfSession(sessionId);
+    if (!info) return { ok: false, text: "当前会话没有活跃的 Flow 实例，不需要暂停。" };
+    const { id: instId, state } = info;
+    if (state.paused) return { ok: false, text: `实例 \`${instId}\` 已经暂停。` };
+    if (state.do_submitted) {
+      return { ok: false, text: `步骤 \`${state.current_step}\` 已交卷；停止回合不会打断验证或审查门。` };
+    }
+    state.paused = true;
+    state.pause_reason = "user_stop";
+    pushHistory(state, "pause", `step=${state.current_step}`, state.current_step);
+    logPause(instId, state, "user_stop", { step: state.current_step });
+    writeState(state, instId);
+    notify(
+      state,
+      `⏸ 已暂停：你停止了运行。用 \`/ralphflow-continue\` 继续步骤 \`${state.current_step}\`，或 \`/ralphflow-cancel\` 结束。`,
+      "⏸ 已暂停：你停止了运行",
+    );
+    return { ok: true, text: `实例 \`${instId}\` 已暂停（你停止了运行）。` };
   }
 
   /**
@@ -3668,21 +3807,33 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const step = stepOf(wf, state.current_step);
     if (!step) return { ok: false, text: `实例状态损坏：当前步骤 \`${state.current_step}\` 不在工作流里。用 \`/ralphflow-cancel\` 结束。` };
 
+    // 属主已失联、但复查还没落盘：用户显式 continue 就是最快的恢复入口，按中断处理。
+    if (!state.paused && needsOwner(state) && !ownerAlive(state)) {
+      state.paused = true;
+      state.pause_reason = "host_restarted";
+      state.delegations = [];
+      pushHistory(state, "interrupted", "owner_heartbeat_stale", state.current_step);
+      writeState(state, instId);
+    }
+
     // ① 暂停中 → 解除暂停
     if (state.paused) {
       const reason = state.pause_reason;
       // 投票步的 `check_infra` 恢复：**已通过的票保留**，只重跑未出终态的票
       // （照抄 opencode §5.3「continue 把 infra_failed 重置为 pending，passed 不动」）。
       // 其它情形（max_failures / no_submit / 非投票步）保持原语义：清空判定重新验证。
-      const resumeVoting = voterCountOf(step) > 0 && reason === "check_infra" && state.do_submitted;
+      // `host_restarted` 与 `check_infra` 同形：已通过的票是盘上的事实，保留；只重跑没出终态的票。
+      const resumeVoting = voterCountOf(step) > 0 && (reason === "check_infra" || reason === "host_restarted") && state.do_submitted;
       const keptVerdicts = resumeVoting
         ? state.verdicts.filter((v) => verdictBelongsToStep(v, step.id) && v.status === "passed")
         : [];
       state.paused = false;
       state.pause_reason = undefined;
       state.verdicts = keptVerdicts;
-      stopHeartbeatsOf(instId, state.delegations);
       state.delegations = [];
+      // 恢复 = 本运行时重新成为属主：心跳立刻刷新，别让别的 host 的复查把刚恢复的实例再判死。
+      stampOwner(state);
+      startDriving(instId);
       // 重置当前步失败计数：这是投递给模型的机制说明（tools.ts / SHARED_MECHANISM）明确承诺的
       // 「重置失败计数并重试」。不清零的话，max_failures 恢复后只要再失败一次就立刻二次暂停，
       // 用户永远拿不到「修好→重试」的机会。
@@ -3697,8 +3848,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           return {
             ok: true,
             text: atGate
-              ? `▶️ 已解除暂停（原因：${reason}）。步骤 \`${step.id}\` 未配置 \`check\`/\`check_voting\`，已跳过对抗性验证，停在审查门等你放行。`
-              : `▶️ 已解除暂停（原因：${reason}）。步骤 \`${step.id}\` 未配置 \`check\`/\`check_voting\`，已跳过对抗性验证，直接进入下一步。`,
+              ? `▶️ 已解除暂停（原因：${pauseLabel(reason)}）。步骤 \`${step.id}\` 未配置 \`check\`/\`check_voting\`，已跳过对抗性验证，停在审查门等你放行。`
+              : `▶️ 已解除暂停（原因：${pauseLabel(reason)}）。步骤 \`${step.id}\` 未配置 \`check\`/\`check_voting\`，已跳过对抗性验证，直接进入下一步。`,
           };
         }
         if (resumeVoting) {
@@ -3708,28 +3859,27 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
             // 防御性：全部票都已在手却停在 check_infra（不该发生）→ 按已通过处理，绝不死循环。
             const votes: VoterVerdict[] = keptVerdicts.map((v) => ({ index: v.check_index, status: v.status, reason: v.reason }));
             applyRoundOutcome(instId, state, wf, step, { kind: "passed", reason: formatVotingPassReason(votes, step.check_voting ?? [], voterCountOf(step)) }, Date.now());
-            return { ok: true, text: `▶️ 已解除暂停（原因：${reason}）：步骤 \`${step.id}\` 的判定已全部通过，已推进。` };
+            return { ok: true, text: `▶️ 已解除暂停（原因：${pauseLabel(reason)}）：步骤 \`${step.id}\` 的判定已全部通过，已推进。` };
           }
           // 重试预算随用户 continue **重置**（新的一次赦免）：再故障仍会自动重试一次。
           void launchVotingRound(instId, state, wf, step, pending, 1);
-          return { ok: true, text: `▶️ 已解除暂停（原因：${reason}）：保留已通过的 ${done.size} 票，正在重新验证其余 ${pending.length} 票（基础设施故障不计失败）。` };
+          return { ok: true, text: `▶️ 已解除暂停（原因：${pauseLabel(reason)}）：保留已通过的 ${done.size} 票，正在重新验证其余 ${pending.length} 票（基础设施故障不计失败）。` };
         }
         void launchVerification(instId, state, wf, step);
-        return { ok: true, text: `▶️ 已解除暂停（原因：${reason}），正在重新委派独立验证者检查步骤 \`${step.id}\`。` };
+        return { ok: true, text: `▶️ 已解除暂停（原因：${pauseLabel(reason)}），正在重新委派独立验证者检查步骤 \`${step.id}\`。` };
       }
       deliverDirective(state, doPrompt(instId, wf, state, step), `▶️ 步骤 ${step.id} 继续执行`);
-      return { ok: true, text: `▶️ 已解除暂停（原因：${reason}），已让模型继续步骤 \`${step.id}\`。` };
+      return { ok: true, text: `▶️ 已解除暂停（原因：${pauseLabel(reason)}），已让模型继续步骤 \`${step.id}\`。` };
     }
 
     // ② 有在飞委派 → 不重复推进（防重复委派）
     if (state.delegations.length > 0) {
-      if (state.delegations.some(delegationOwnerAlive)) {
+      if (ownerAlive(state)) {
         return { ok: false, text: `🔍 步骤 \`${step.id}\` 的独立验证者仍在取证判定中，现在不需要你操作——它跑完会自动唤醒本会话并继续。\n\n想了解进度用 \`/ralphflow-status\`；想中止用 \`/ralphflow-cancel\`。` };
       }
       // 心跳全停了 = 属主已失联（进程崩溃/被重启），判定永远回不来。绝不把用户卡在一个
       // 永远不会结束的「验证中」幽灵状态：按孤儿兜底，并**立刻重新委派**（用户显式动作，
       // 不必等下一个 restore 触发点）。投票步同样只重跑未通过的票。
-      stopHeartbeatsOf(instId, state.delegations);
       state.delegations = [];
       pushHistory(state, "orphan_delegation_recovered", "via=continue");
       log("warn", "orphan_delegation_recovered", { instId, via: "continue" });
@@ -3827,7 +3977,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     if (state.paused) {
       return {
         ok: false,
-        text: `实例 \`${instId}\` 处于暂停状态（${state.pause_reason ?? "未知原因"}），**拒绝重置**。\n\n重置只换干净上下文、**不赦免失败**（失败计数原样保留），也不会解除暂停。请先运行 \`/ralphflow-continue\` 恢复（它会解除暂停、重置失败计数并重试）；恢复后若仍想要干净的上下文，再执行 \`/ralphflow-reset\`。`,
+        text: `实例 \`${instId}\` 处于暂停状态（${pauseLabel(state.pause_reason)}），**拒绝重置**。\n\n重置只换干净上下文、**不赦免失败**（返工计数原样保留），也不会解除暂停。请先运行 \`/ralphflow-continue\` 恢复（它会解除暂停、重置失败计数并重试）；恢复后若仍想要干净的上下文，再执行 \`/ralphflow-reset\`。`,
       };
     }
     // ③ 只在 DO 阶段：已交卷 = 验证在飞 / 停在审查门，重置会打断它、把判定变成孤儿。
@@ -3958,7 +4108,6 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     // 在飞验证者一律中止（正常路径下 `do_submitted === false` ⇒ 无在飞委派；这里是硬护栏：
     // 清掉 delegations 而不中止，判定回来时会变成无人认领的孤儿）
     abortInstance(instId);
-    stopHeartbeatsOf(instId, state.delegations);
     state.delegations = [];
     state.verdicts = [];
     state.current_step = target.id;
@@ -3970,6 +4119,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     state.pause_reason = undefined;
     state.fail_counts = {};
     state.fail_count = 0;
+    stampOwner(state);
     pushHistory(state, "rewind", `${from} → ${target.id}：${reasonText}`, target.id);
     pushHistory(state, "step_start", target.desc ?? "", target.id);
     log("info", "rewind", { instId, from, to: target.id, reason: reasonText });
@@ -4002,8 +4152,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     abortInstance(instId);
     state.active = false;
     state.paused = false;
-    state.pause_reason = "user_cancelled";
-    stopHeartbeatsOf(instId, state.delegations);
+    state.pause_reason = undefined;
     state.delegations = [];
     pushHistory(state, "cancelled", reason);
     logEvent(instId, "info", "cancelled", { step: state.current_step, reason: reason ?? null });
@@ -4118,10 +4267,10 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   function renderInstance(info: InstanceInfo, sessionId?: string): string {
     const { id, state } = info;
     const facts = [
-      state.active ? (state.paused ? `⏸ 暂停（${state.pause_reason}）` : state.delegations.length > 0 ? "🔍 验证中" : state.do_submitted ? "🙋 待放行" : "▶️ 执行中") : "✅ 已结束",
+      state.active ? (state.paused ? (state.pause_reason === "host_restarted" ? "⏸ 已中断（属主运行时失联）" : `⏸ 暂停（${pauseLabel(state.pause_reason)}）`) : state.delegations.length > 0 ? "🔍 验证中" : state.do_submitted ? "🙋 待放行" : "▶️ 执行中") : "✅ 已结束",
       `工作流 \`${state.workflow_name}\``,
       `步骤 \`${state.current_step}\``,
-      `失败 ${state.fail_count} 轮`,
+      `返工 ${state.fail_count} 轮`,
     ];
     const ownerText = !state.owner_session
       ? "无（无属主：`/ralphflow-continue` 会自动接管）"
@@ -4163,13 +4312,15 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       return `工作流已结束，历史在报告里：${rel}；要再跑一次用 \`/ralphflow-start <工作流> <任务>\`。`;
     }
     if (s.paused) {
+      if (s.pause_reason === "host_restarted") return "**已中断**：驱动这个实例的运行时不在了（宿主重启或进程退出）。状态、判定与产出都保留；用 `/ralphflow-continue` 继续，或 `/ralphflow-cancel` 结束。";
+      if (s.pause_reason === "user_stop") return "**等你继续**：你停止了运行。用 `/ralphflow-continue` 从当前步继续，或 `/ralphflow-cancel` 结束。";
       if (s.pause_reason === "max_failures") return "**等你定夺**：修好问题后 `/ralphflow-continue` 重新验证，或 `/ralphflow-cancel` 结束。";
-      if (s.pause_reason === "no_submit") return "**等你处理**：模型反复未交卷。先 `/ralphflow-continue` 恢复，再让它调用 `ralphflow_submit`；或 `/ralphflow-cancel` 结束。";
-      return "**暂停中**：处理后 `/ralphflow-continue` 恢复（基础设施问题不计失败）。";
+      if (s.pause_reason === "no_submit") return "**等你处理**：本步反复停下且没有动作，已暂停。先 `/ralphflow-continue` 恢复，再让它交卷；或 `/ralphflow-cancel` 结束。";
+      return `**暂停中**（${pauseLabel(s.pause_reason)}）：处理后 \`/ralphflow-continue\` 恢复（基础设施问题不计失败）。`;
     }
     if (s.delegations.length > 0) {
       // 心跳停了 = 属主没了：绝不显示成一个永远不会结束的「验证中」（读路径只如实说，不写状态）
-      if (!s.delegations.some(delegationOwnerAlive)) {
+      if (!ownerAlive(s)) {
         return "**验证已中断**：验证属主已失联（那个运行时已经不在了），判定回不来。`/ralphflow-continue` 会按孤儿兜底并重新委派验证；想结束就用 `/ralphflow-cancel`。";
       }
       return "**无需操作**：独立验证者正在取证判定，跑完会自动唤醒本会话继续。可用 `/ralphflow-status` 看进度，`/ralphflow-cancel` 中止。";
@@ -4187,7 +4338,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   /** 派生状态标签（无相位字段） */
   function phaseLabel(s: InstanceState): string {
     if (!s.active) return "已结束";
-    if (s.paused) return `暂停(${s.pause_reason})`;
+    if (s.paused) return s.pause_reason === "host_restarted" ? "已中断（属主运行时失联）" : `暂停（${pauseLabel(s.pause_reason)}）`;
     if (s.delegations.length > 0) return "验证中";
     if (s.do_submitted) return "待放行";
     return "执行中";
@@ -4274,6 +4425,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         issues.push(`实例 \`${id}\` 的 state.json 损坏（${msg(err)}）—— 该实例无法恢复，确认无需保留后可删除整个目录`);
         continue;
       }
+      // Graph 实例完成后**有意保留**（design §3.3）：不是「已结束但未销毁」的异常。
+      if ((parsed as { kind?: unknown }).kind === "graph") continue;
       if ((parsed as { active?: unknown }).active === false) {
         issues.push(`实例 \`${id}\` 已结束但目录未被销毁（可能是报告归档失败）。先确认报告是否已生成，再决定是否删除该目录`);
       }
@@ -4286,6 +4439,16 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const issues: string[] = [];
     const claimed = new Set<string>();
     for (const { state } of listInstances()) if (state.artifacts_dir_name) claimed.add(state.artifacts_dir_name);
+    // Graph 实例与 Flow 共用 artifacts/；它们的产出目录同样不是孤儿（kind 只作数据读取）。
+    try {
+      for (const entry of fs.readdirSync(instancesDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        try {
+          const parsed = JSON.parse(fs.readFileSync(path.join(instancesDir, entry.name, "state.json"), "utf-8")) as { kind?: unknown; artifacts_dir_name?: unknown };
+          if (parsed.kind === "graph" && typeof parsed.artifacts_dir_name === "string") claimed.add(parsed.artifacts_dir_name);
+        } catch {}
+      }
+    } catch {}
     for (const h of listHistory()) if (h.artifactsDirName) claimed.add(h.artifactsDirName);
     let entries: Array<{ name: string; isDirectory(): boolean }> = [];
     try { entries = fs.readdirSync(artifactsDir, { withFileTypes: true }); } catch { return issues; }
@@ -4318,7 +4481,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       const s = i.state;
       const flags: string[] = [];
       if (!s.active) flags.push("已结束");
-      else if (s.paused) flags.push(`暂停(${s.pause_reason})`);
+      else if (s.paused) flags.push(phaseLabel(s));
       else if (s.delegations.length > 0) flags.push("验证中");
       else if (s.do_submitted) flags.push("待放行");
       else flags.push("执行中");
@@ -4342,33 +4505,80 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   }
 
   /**
-   * 插件加载/进程重启：孤儿委派 fail-safe（不隐式继续、不隐式通过）。
+   * 插件加载/进程重启：只处理「需要属主却没有属主」的实例（不隐式继续、不隐式通过）。
    *
-   * **只兜真正的孤儿**：委派的心跳已经停了（属主运行时崩溃/被重启 → 判定永远回不来）→
-   * 暂停 check_infra 等用户定夺。心跳还新鲜的委派一律原样留着、一个字节都不动 ——
-   * 别的会话、别的 sandbox 进程、重载后的新实例碰 ralphflow 都不得影响在飞的验证。
+   * 判据是**实例心跳**（`owner.ts`）：
+   *   · 心跳过了 TTL 或缺失 → 属主确实死了，立刻标中断；
+   *   · 心跳还新鲜 → 可能是另一个活着的 host，也可能是**快速重启**（最后一下心跳必然新鲜）。
+   *     等一个刷新窗口再复查：心跳往前走了 = 活着；没走 = 死了。既不误伤另一个 host，
+   *     也不用等满 TTL。
    *
-   * 老 `state.json` 里的委派没有心跳字段（来源不可考）→ 按孤儿兜底，安全网不缩水。
-   * 判据细节见 {@link delegationOwnerAlive}。
+   * 审查门/暂停不需要属主，一律不动。
    */
   function restore(): void {
     for (const { id, state } of listInstances()) {
-      if (!state.active) continue;
-      if (state.delegations.length === 0) continue;
-      if (state.delegations.some(delegationOwnerAlive)) {
-        // 心跳还新鲜（属主还在等判定）→ 判定会回来，绝不打断。
-        log("info", "orphan_recovery_skipped_live", { instId: id, delegations: state.delegations.length });
+      if (!needsOwner(state)) continue;
+      if (!ownerAlive(state)) {
+        markOwnerLost(id);
         continue;
       }
-      stopHeartbeatsOf(id, state.delegations);
-      state.delegations = [];
-      state.paused = true;
-      state.pause_reason = "check_infra";
-      pushHistory(state, "orphan_delegation_recovered");
-      logPause(id, state, "check_infra", { detail: "orphan_delegation_recovered" });
-      writeState(state, id);
-      log("warn", "orphan_delegation_recovered", { instId: id });
+      // 心跳的属主就是本进程（例如同进程里另一个 facade 正在驱动它）：我们知道自己活着，
+      // 不必再复查，更不会把它判死。
+      if (state.owner_runtime === runtimeId()) continue;
+      scheduleOwnerRecheck(id, state.owner_heartbeat_at ?? 0);
     }
+  }
+
+  /**
+   * 把「属主已失联」落盘：暂停（host_restarted），并清掉不可能回来的在飞委派。
+   * **同步**写：restore() 在 facade 创建时调用，调用方读完状态就要看到结果；
+   * 这个实例不在本运行时的 driving 集合里，没有同实例的并发写要排队。
+   */
+  function markOwnerLost(instId: string): void {
+    markOwnerLostLocked(instId);
+  }
+
+  /**
+   * 已在实例锁内的版本。`beatAt` 是**快速复查**用的观察点：复查时心跳还没过 TTL，
+   * 不能再用 `ownerAlive` 挡；判据换成「心跳是否越过复查前看到的那一下」。
+   */
+  function markOwnerLostLocked(instId: string, beatAt?: number): void {
+    try {
+      const fresh = readState(instId);
+      if (!fresh || !needsOwner(fresh)) return;
+      if (beatAt !== undefined ? (fresh.owner_heartbeat_at ?? 0) > beatAt : ownerAlive(fresh)) return;
+      fresh.delegations = [];
+      fresh.paused = true;
+      fresh.pause_reason = "host_restarted";
+      pushHistory(fresh, "interrupted", "owner_heartbeat_stale");
+      logPause(instId, fresh, "host_restarted", { detail: "owner_heartbeat_stale" });
+      writeState(fresh, instId);
+      notify(fresh, "⏸ 已中断：驱动这个实例的运行时不在了（宿主重启或进程退出）。状态与产出都保留；用 `/ralphflow-continue` 继续当前步骤。", "⏸ 已中断：属主运行时失联");
+      log("warn", "owner_lost", { instId });
+    } catch (e) {
+      log("warn", "owner_lost_check_failed", { instId, error: msg(e) });
+    }
+  }
+
+  /**
+   * 快速复查：等一个刷新窗口，心跳还没有往前走，才判属主已死。
+   * 定时器 unref；实例被继续/暂停/结束时条件自然不成立，复查是空操作。
+   */
+  function scheduleOwnerRecheck(instId: string, beatAt: number): void {
+    const delay = ownerRecheckMs();
+    if (delay <= 0) return;
+    const timer = setTimeout(() => {
+      void withStateLock(instId, () => {
+        try {
+          const fresh = readState(instId);
+          if (!fresh || !needsOwner(fresh)) return;
+          markOwnerLostLocked(instId, beatAt);
+        } catch (e) {
+          log("warn", "owner_recheck_failed", { instId, error: msg(e) });
+        }
+      });
+    }, delay);
+    (timer as unknown as { unref?: () => void }).unref?.();
   }
 
   /** Read-only UI projection; never persists derived phase or advances an instance. */
@@ -4395,14 +4605,17 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       : state.do_submitted && step && wf && atOpenGate(wf, state, step) ? "gate"
       : state.do_submitted ? "switching" : "executing";
     const total = step ? Math.max(voterCountOf(step), stepHasVerification(step) ? 1 : 0) : 0;
+    // 每一票带上**它自己**的检查依据：状态弹层要能看出验证者在查什么，而不只是「通过/未通过」。
+    const criterionOf = (index: number): string | undefined => (step?.check ?? step?.check_voting?.[index]?.check)?.trim() || undefined;
     const votes: WorkflowStatus["votes"] = state.do_submitted ? Array.from({ length: total }, (_, index) => {
       const verdict = state.verdicts.find((v) => verdictBelongsToStep(v, state.current_step) && (total === 1 || v.check_index === index));
       const running = state.delegations.some((d) => total === 1 || d.check_index === index);
-      return { index: index + 1, status: verdict?.status ?? (running ? "running" : "pending"), reason: verdict?.reason.slice(0, 500) ?? "" };
+      const check = criterionOf(index);
+      return { index: index + 1, status: verdict?.status ?? (running ? "running" : "pending"), reason: verdict?.reason.slice(0, 500) ?? "", ...(check ? { check } : {}) };
     }) : [];
     const hint = stage === "unavailable" ? "状态或报告不可用，请用 /ralphflow-doctor 检查。" : stage === "switching" ? "正在切换步骤或准备本步上下文。" : stage === "executing" ? "执行阶段，等待本步交卷。"
       : (nextActionHint(state, id, step) ?? "").replace(/\*\*/g, "");
-    return { status: { id, workflow: state.workflow_name, task: state.user_task.slice(0, 2000), step: state.current_step,
+    return { status: { id, kind: "flow", workflow: state.workflow_name, task: state.user_task.slice(0, 2000), step: state.current_step,
       stage, hint, failures: state.fail_count, maxFailures: step?.max_fail_count ?? 0, updatedAt: state.updated_at, report: null,
       steps: (wf?.steps ?? []).map((s) => ({ id: s.id, description: s.desc ?? "", current: s.id === state.current_step, failures: failCountOf(state, s.id) })),
       votes, recent: state.history.slice(-5).map((h) => ({ step: h.step ?? "", event: h.event, detail: h.detail ?? "" })),
@@ -4416,7 +4629,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     try { report = parseReportHeader(ref.reportRef, ref.runId, fs.readFileSync(path.join(reportsDir, `${ref.runId}.md`), "utf-8")); }
     catch { return null; }
     if (!report.parsed || report.id !== ref.runId || report.statusLabel !== (ref.ended === "done" ? "完成" : "取消")) return null;
-    return { id: ref.runId, workflow: report.workflow ?? "Ralph Flow", task: report.task ?? "", step: "",
+    return { id: ref.runId, kind: "flow", workflow: report.workflow ?? "Ralph Flow", task: report.task ?? "", step: "",
       stage: ref.ended, hint: "运行已结束，报告与产出已归档。", failures: 0, maxFailures: 0,
       updatedAt: report.endedAt ?? "", report: report.relPath, steps: [], votes: [], recent: [] };
   }
@@ -4426,7 +4639,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     ensureLayout, listWorkflows, loadWorkflow,
     readState, listInstances, listHistory, instanceDir,
     artifactsDirOf, artifactsRelDirOf, reportRelPathOf, destroyInstance,
-    start, onSubmit, noteAssistantText, remindToSubmit, continueInstance, resetCurrent, rewindTo, cancelInstance, statusOf, listAll, restore, diagnose,
+    start, onSubmit, noteAssistantText, remindToSubmit, pauseForUserStop, continueInstance, resetCurrent, rewindTo, cancelInstance, statusOf, listAll, restore, diagnose,
     activeInstanceOfSession, uiStatus, uiReport,
   };
 }
@@ -4465,4 +4678,4 @@ function normalizeVerdict(v: Verdict | undefined | null, stepId: string, checkIn
   };
 }
 
-export const BUILTIN_WORKFLOWS = ["loop", "spec"];
+export const BUILTIN_WORKFLOWS = ["loop", "spec", "create-graph"];

@@ -310,8 +310,8 @@ console.log("\nA5) 无 check / check_voting 的工作流：同样能回退");
   check("回退后停在 a，且强制走了整段替换（该步没标 reset）", E.st(id).current_step === "a" && E.resets.length === 1,
     JSON.stringify({ cur: E.st(id).current_step, resets: E.resets.length }));
   const doText = E.last()?.text ?? "";
-  check("目标步 DO 带着原因，且如实说明本步跳过对抗性验证",
-    doText.includes("无检查流程也要能换方向") && doText.includes("跳过对抗性验证"), doText.slice(-400));
+  check("目标步 DO 带着原因（不把验证/跳过说明塞进 DO）",
+    doText.includes("无检查流程也要能换方向") && !doText.includes("跳过对抗性验证"), doText.slice(-400));
 
   E.engine.onSubmit(sid, "a 换方向后重做完成"); await settle();
   check("回退后继续跑（再次推进到 b）", E.st(id).current_step === "b", E.st(id).current_step);
@@ -429,8 +429,9 @@ const PRIOR_TEXT = "旧对话：帮我按旧方向重构（这段必须被移出
 
 function mkRealEnv(workflows, wfName) {
   const ws = mkWs();
+  // 插件按加载目录解析默认项目根（真实 dsh 就从工作区目录启动）；测试也必须同形。
+  process.chdir(ws);
   for (const [n, y] of Object.entries(workflows)) writeWf(ws, n, y);
-  process.env.RALPHFLOW_WORKSPACE = ws;
 
   const sid = "session-rewind-real";
   const ctx = new Context();
@@ -463,10 +464,11 @@ function mkRealEnv(workflows, wfName) {
   ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
     list: () => ["spawn"],
-    getProvider: () => ({ capabilities: { outputSchema: true, persona: true, toolFilter: true }, inheritsParentContext: false }),
-    start: async () => ({ id: "child", result: Promise.resolve({ structured: { passed: true, reason: "取证通过" }, output: [], stopReason: "completed" }) }),
+    getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
+    startActivation: async () => ({ childId: "child", result: Promise.resolve({ structured: { passed: true, reason: "取证通过" }, output: [], stopReason: "completed" }) }),
   });
-  ctx.provide("agents", { get: (id) => agents.get(id) });
+    ctx.provide("agentPresets", { register: async () => async () => {} });
+ctx.provide("agents", { get: (id) => agents.get(id) });
   ctx.provide("sessions", { list: () => [sid], get: (id) => (id === sid ? session : undefined) });
   ctx.provide("logger", { info() {}, warn() {}, error() {} });
 
@@ -562,14 +564,14 @@ function seedPrior(session) {
   check("B2 启动成功（前置）", startText.includes("已启动"), startText.slice(0, 60));
   const instId = fs.readdirSync(path.join(H.ws, ".dsh", "ralph-flow", "instances"))[0];
   await H.turn(async () => {
-    const out = await H.callAs(H.sid, "ralphflow_submit", { summary: "s1 完成" });
+    const out = await H.callAs(H.sid, "ralphflow_submit", { summary: "s1 完成", unfinished: [] });
     H.appendToolExchange("c-sub1", "ralphflow_submit", out);
     return out;
   });
   await waitFor(() => stNow()?.current_step === "s2");
   H.drainInbox();
   await H.turn(async () => {
-    const out = await H.callAs(H.sid, "ralphflow_submit", { summary: "s2 完成" });
+    const out = await H.callAs(H.sid, "ralphflow_submit", { summary: "s2 完成", unfinished: [] });
     H.appendToolExchange("c-sub2", "ralphflow_submit", out);
     return out;
   });
@@ -652,7 +654,7 @@ function seedPrior(session) {
 
   // ── 回退后的实例能继续跑（真实验证链路）──
   await H.turn(async () => {
-    const out = await H.callAs(H.sid, "ralphflow_submit", { summary: "s1 换方向后重做完成" });
+    const out = await H.callAs(H.sid, "ralphflow_submit", { summary: "s1 换方向后重做完成", unfinished: [] });
     H.appendToolExchange("c-sub3", "ralphflow_submit", out);
     return out;
   });
