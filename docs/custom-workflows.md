@@ -1,18 +1,22 @@
 # 自定义工作流
 
-把 `.yaml`（或 `.yml`）文件放到下面三个位置之一即可定义自己的工作流，或运行 `/ralphflow-create` 交互式设计并校验：
+把 `.yaml`（或 `.yml`）文件放到下面这些位置之一即可定义自己的工作流，或运行 `/ralphflow-create` 交互式设计并校验（先问 Flow / Graph）：
 
 | 位置 | 作用范围 | 优先级 |
 |------|----------|--------|
-| `<workspace>/.dsh/ralph-flow/workflows/` | **仅本工作区** | 最高 |
-| `~/.dsh/ralph-flow/workflows/`（或绝对路径的 `$DSH_HOME/ralph-flow/workflows/`；`DSH_HOME` 为相对路径时忽略、回落 `~/.dsh`） | **全局**——所有工作区可用 | 中 |
-| 插件内置（`loop` / `spec`） | 随插件发布，**不落盘** | 最低 |
+| `<项目根>/.dsh/ralph-flow/workflows/` | **Flow，仅本项目** | 最高 |
+| `<项目根>/.dsh/ralph-flow/graphs/` | **Graph，仅本项目** | 最高 |
+| `$DSH_HOME/ralph-flow/workflows/`（缺省 `~/.dsh`） | **Flow，用户级** | 中 |
+| `$DSH_HOME/ralph-flow/graphs/` | **Graph，用户级** | 中 |
+| 插件内置（Flow：`loop` / `spec` / `create-graph`；Graph：`codewiki`） | 随插件发布，**不落盘** | 最低 |
+
+**项目根**与 dsh 原生 Skill 同一条规则：从会话的当前目录（`/cd` 之后按新目录）向上最近的含 `.git` 的祖先目录；没有 `.git` 就用该目录本身。同一仓库的任意子目录会话共享同一套资产与实例。**用户根** = `$DSH_HOME`（支持 `~`，空值视为未设置）或 `~/.dsh`。
 
 **工作流名 = 文件名去掉扩展名**：`design-flow.yaml` 用 `/ralphflow-start design-flow <任务>` 或 `/ralphflow-design-flow <任务>` 启动。快捷入口 `/ralphflow-<工作流名>` 是**技能**，名字必须是小写 kebab（`[a-z0-9]+(-[a-z0-9]+)*`）；名字不合语法时**注册不了快捷入口**，我们会**如实告诉你原因与改法**（不静默跳过），而 `/ralphflow-start <工作流名> <任务>` 照旧可用。目录不存在时自己建（`mkdir -p .dsh/ralph-flow/workflows`）；只读操作（list / doctor / status）对目录缺失是容错的。
 
-解析顺序是**工作区 → 全局 → 内置**：同名工作流靠前的层**遮蔽**靠后的。所以你可以用全局层覆盖内置，或在某个工作区覆盖全局版本。内置工作流只存在于插件目录，因此**始终是随插件发布的最新版本**；要定制就在工作区（或全局）放一个同名文件。
+解析顺序是**项目根 → 用户根 → 内置**（同一类别内）：同名工作流靠前的层**遮蔽**靠后的。Flow 与 Graph 不互相遮蔽；**跨类别同名是冲突**。所以你可以用用户级层覆盖内置，或在某个项目覆盖用户级版本。内置工作流只存在于插件目录，因此**始终是随插件发布的最新版本**；要定制就在项目根（或用户根）放一个同名文件。
 
-> 写完后运行 **`/ralphflow-doctor`**。输出里 `✅` = 该工作流可用，其下 `⚠️` 子项 = 能启动但有告警（不生效的键、成本提示等），`❌` = 加载期硬错误（该工作流无法加载）。**如果你刚写的工作流没出现在 doctor 的清单里，就是位置放错了**——它只会扫描上表三个位置。
+> 写完后运行 **`/ralphflow-doctor`**。输出里 `✅` = 该工作流可用，其下 `⚠️` 子项 = 能启动但有告警（不生效的键、成本提示等），`❌` = 加载期硬错误（该工作流无法加载）。**如果你刚写的工作流没出现在 doctor 的清单里，就是位置放错了**——它只会扫描上表列出的位置。
 
 > 本端把两类问题分得很清：
 >
@@ -54,6 +58,70 @@ steps:
 
 ---
 
+## Graph 工作流
+
+Graph 是无环 DAG，但**格式与 Flow 一致**：同样用 `steps`、`id`、`desc`、`do`、`output`、`check`；只额外用 `depends_on` 声明上游。就绪步骤自动并行，每个步骤在自己的 Git worktree 里写，完成后合入 integration。**普通 Graph 只需要 `kind`、`description`、`steps`。**
+
+Graph 资产必须显式声明 `kind: graph`，且只放 `graphs/` 目录（Flow 资产只放 `workflows/`）。**跨类别同名是冲突**，启动前会拒绝。
+
+```yaml
+kind: graph
+description: 并行检查后汇总发布说明
+
+steps:
+  - id: tests
+    desc: 跑测试
+    do: 运行测试套件，记录命令、退出码与失败项。
+    output: tests.md
+    check: |
+      1. tests.md 记录了实际命令与退出码
+      2. 失败项若存在，写明原因与影响
+
+  - id: docs
+    desc: 核对文档
+    do: 核对版本号与文档一致性。
+    output: docs.md
+
+  - id: summary
+    desc: 汇总
+    do: 读取上游 tests.md 与 docs.md，写发布说明。
+    output: release.md
+    depends_on: [tests, docs]
+    check: null
+```
+
+字段：
+
+- `id` / `desc` / `do` / `output` / `check`：与 Flow 步骤同名同义；`output` 是产物路径，省略时默认 `<id>.md`
+- `depends_on`：Graph 唯一的额外字段，声明上游步骤
+- **上游 `output` 自动注入下游只读材料**，不需要写 `{fromNode, artifact}` 的 `inputs` 映射
+- `check` 是显式判据字符串，或 `check: null` 关闭；**没有固定默认 CHECK，也没有 `{mode: ...}` 对象**
+- Graph 只有单 CHECK：`check_voting` / `check_model` / `on_pass` / `on_fail` 是加载期硬错误
+- 旧版 `nodes` / `dependsOn` / `artifact` / `inputs` 已移除，不再兼容
+
+### 可选字段
+
+| 字段 | 作用 | 什么时候需要 |
+|------|------|--------------|
+| `manual_step: [summary]` | 人工审查门 | 某步需要你明确放行 |
+| 步骤 `execution: main` | 在主会话执行该步 | 需要和用户讨论（需要时） |
+
+没有并发数字：就绪步骤全部放行，由 DSH 的 agent 并发限制排队。Graph 不再有运行输入、共享资料、每步模型、workspace 资源/环境字段。
+
+### Graph 需要 Git
+
+Graph 依靠 Git worktree 做写隔离：每个步骤在自己的 worktree 写，完成后合入 integration，多个 agent 才不会互相覆盖。
+
+启动时如果工作区不是 Git 仓库、没有 HEAD，或有未提交改动，`ralphflow_start` 会返回一条给模型看的提示：**先问用户是否初始化 Git**；用户同意后由 AI 执行 `git init` / `git add -A` / `git commit -m baseline`，再重新启动。引擎不自动初始化，也不提供 `initGit` 参数。
+
+### 生命周期
+
+- 完成后归档报告并**保留** `state.json`、执行日志、产物与 worktree（取消同样保留）；宿主重开只标 `interrupted`，用户 `continue` 才继续。
+- `/ralphflow-cleanup` 只清干净、已登记的节点 worktree。
+- `/ralphflow-create` 是技能：Flow 直接按 `workflow-authoring` 设计；Graph 启动 `create-graph` Flow（grill → spec → tickets → graph），生成的资产只保存、不自动启动。
+- 写完后 `/ralphflow-doctor <名字或路径>`；Graph 错误按 Graph schema 报，不会伪装成 Flow 步骤错误。
+---
+
 ## 步骤字段参考
 
 ### 普通步骤
@@ -69,8 +137,10 @@ steps:
 | `check_model` | ❌ | 单 `check` 场景的步骤级验证模型覆盖 |
 | `on_pass` | ✅ | 通过后的下一步 id，或 `"done"` 表示完成 |
 | `on_fail` | ✅ | 失败后重试/回退到的步骤 id（**不允许 `"done"`**） |
-| `max_fail_count` | ✅ | 暂停前的最大失败次数（整数 ≥ 1，每步独立） |
+| `max_fail_count` | ✅ | 暂停前的最大返工次数（整数 ≥ 1，每步独立） |
 | `reset` | ❌ | `true` 时，**进入**本步骤前换入干净上下文（见[上下文重置门](#上下文重置门reset)） |
+
+> **`do` 只写这一步的工作**：做什么、交付什么、怎么自查。不要写引擎内部协议（交卷/报进度、`unfinished`、CHECK 如何委派、状态字段、心跳/恢复、产出目录落点）——这些由 DO/CHECK 提示词自动追加。完整规则见[工作流 YAML 参考](../references/workflow-authoring.md)。
 
 > **必填字段**：`id`、`desc`、`do`、`input`、`output`、`on_pass`、`on_fail`、`max_fail_count`。
 >
@@ -105,7 +175,7 @@ steps:
 每个工作流实例有一个隔离的产出目录（装**过程文档**，不是工作目录的交付物目录）：
 
 ```
-<workspace>/.dsh/ralph-flow/artifacts/<产出目录名>/
+<项目根>/.dsh/ralph-flow/artifacts/<产出目录名>/
 ```
 
 目录名 = 任务摘要 slug + 实例 id 尾段（按**码点**截断，中文/emoji 不会被切碎），实例启动时建好、工作流结束后**保留**（非空目录整个保留，只有空目录才随实例销毁被删）。
@@ -276,7 +346,7 @@ steps:
 
 - **全过才放行**：任一票不通过 → 整体失败，聚合所有失败者的 reason（含各票检查依据原文）反馈 DO 返工。
 - **每票实时进度**：每票完成立即推送一行（`✅ 通过` / `❌ 不通过` / `⚠️ 基础设施故障，自动重试中`），长投票不再无声；`/ralphflow-status` 可看每票状态。
-- **基础设施故障（infra）自动重试一次**：只重跑故障票，**已通过的票保留**；重试仍故障且无 failed 票 → `check_infra` 暂停（**不计失败次数**），`/ralphflow-continue` 后只补跑未通过的票。
+- **基础设施故障（infra）自动重试一次**：只重跑故障票，**已通过的票保留**；重试仍故障且无 failed 票 → `check_infra` 暂停（**不计返工次数**），`/ralphflow-continue` 后只补跑未通过的票。
 - **failed 优先于 infra**：一票工作失败 + 一票基础设施故障时，直接判失败反馈 DO，不会被故障遮蔽。
 - 验证者 prompt 自动注入"你是 N 个之一，只查自己的检查依据"约束，防止各票趋同。
 - 投票进度**不另立文件**：每票状态就是实例状态里的判定与在飞委派（单一事实源），`/ralphflow-status` 现算。
@@ -446,7 +516,7 @@ opencode 静默忽略、或拖到运行期才炸的，这里一律**加载期硬
 | CHECK | `structured_output` 工具（provider 支持时） | 结构化判定 `{passed, reason}` |
 | CHECK | `<promise-check>true</promise-check>` / `false` | provider 不支持结构化输出时的文本兜底 |
 
-DO 阶段**不对模型自由文本做正则匹配**——交卷是工具调用。忘了交卷时，回合结束前会收到提醒（按"本次进入该步"起算，**上限 2 次**），用尽则暂停（`no_submit`）等你，绝不死循环催促。
+DO 阶段**不对模型自由文本做正则匹配**——交卷是工具调用。回合即将结束时本步还没交卷，引擎会问一句「做完了吗」：做完了就交卷，没做完就接着做。**有工具调用的提醒不累计空回合**；连续 2 次空回合就暂停（`no_submit`）等你。另有提醒预算 5 次（与 opencode 版同数）：预算用完之后再出现空回合才暂停，一直在动工具的循环不设天花板（计数按"本次进入该步"起算）。
 
 验证者的判定**解析失败一律按基础设施故障处理，绝不 passed**（fail-closed）。
 
@@ -639,4 +709,4 @@ steps:
 - **验证用更便宜的模型**——`adversarial_check.model` / `check_model` 能在保持质量的同时省钱。
 - **`do` / `check` 正文用用户的语言写。**
 
-执行提示与验证提示都会注入步骤的 `input`，用于定位上游输入。`reset: true` 后先从这些输入文件恢复需求、决定与证据；用户补充的重要约束应在交卷前写入已有过程文档。完整创建方言参考随 npm 包发布在 `references/workflow-authoring.md`，由 `ralphflow_create` 提供实际路径。
+执行提示与验证提示都会注入步骤的 `input`，用于定位上游输入。`reset: true` 后先从这些输入文件恢复需求、决定与证据；用户补充的重要约束应在交卷前写入已有过程文档。完整创建方言参考随 npm 包发布在 `references/workflow-authoring.md`，由 `ralphflow-create` skill 提供实际路径。

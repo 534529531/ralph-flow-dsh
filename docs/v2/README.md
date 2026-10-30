@@ -8,6 +8,12 @@
 |------|------|
 | [design.md](design.md) | **设计定稿与宪法**：中心定理、状态模型、验证者协议、命令面、十二条不可违反的宪法、版本路线图。这是本仓库设计的单一权威来源。 |
 
+## 下一版设计
+
+| 文档 | 说明 | 状态 |
+|------|------|------|
+| [graph-mode-design.md](graph-mode-design.md) | 统一 Graph 模式：一个插件、`kind` 为 `flow` 或 `graph`、统一命令/状态/报告/查看器；两个引擎由门面路由 | 已实现（v1.8，验收见 `scripts/graph-*-test.mjs`） |
+
 ## 任务书（brief）
 
 任务书是**目标书**，不是实现说明书——写死实现方案会收窄验证空间（见 [brief-style.md](brief-style.md)）。它们记录"当时要达成什么、怎么算做成了"，实现完成后保留原样，**不随代码回改**。
@@ -50,6 +56,7 @@
 | [evidence/spec-gate-20260923.md](evidence/spec-gate-20260923.md) | 真实宿主 E2E：spec 审查门 |
 | [evidence/ui-notice.md](evidence/ui-notice.md) | 真机验收：播报在 Chat 时间线里看得见（含负对照与截图） |
 | [evidence/ui-status.md](evidence/ui-status.md) | 真机验收：工作流状态面精修（恰好一处常驻 / 输入区零占位 / 终态收束 / 与原生同框；含三组负对照） |
+| [evidence/graph-mode/change-note.md](evidence/graph-mode/change-note.md) | Graph 模式实现记录：改动、逐条验收取证、负对照与例外 |
 
 ## 代码级验收
 

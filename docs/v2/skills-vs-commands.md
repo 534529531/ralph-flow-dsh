@@ -21,15 +21,16 @@
 | `/ralphflow-cancel` | 同上 | **人的权限**（中止实例）。同上 |
 | `/ralphflow-reset` | 人敲 → `command/run` → 处理器**直接**驱动引擎（`run`） | 机械执行，且**没有对应工具**（设计如此：不给模型修复入口） |
 | `/ralphflow-rewind` | 同上 | 同上 |
+| `/ralphflow-cleanup` | 同上 | **Graph only** 的机械命令：只清干净、已登记的节点 worktree，不动 state/artifacts/reports；Flow 没有 worktree；无同名工具 |
 | `/ralphflow-status` | 人敲 → `command/run` → 指令投给模型 | 纯读操作，命令零 token 即时回 |
 | `/ralphflow-list` | 同上 | 同上 |
 | `/ralphflow-doctor` | 同上 | 同上 |
-| `/ralphflow-create` | 人敲 → `command/run` → 指令投给模型 | 同类（「把指令交给模型」），但它不是「启动一条运行」，也不涉及新会话第一句；这次不动，避免扩大验证面 |
 
-## 表 B：通用启动技能（1 条，`ctx.skills.register`）
+## 表 B：技能（`ctx.skills.register`）
 
 | 技能 | `invocation` | 面 | 内容 |
 |---|---|---|---|
+| `ralphflow-create` | 省略 ⇒ 两面都有 | 人敲 `/ralphflow-create` 或模型按描述触发 | 创建/修改 Flow/Graph 资产；Flow 分支直接设计，Graph 分支启动 `create-graph` Flow；`resourceBase` 指向随包 `references/` |
 | `ralphflow-start` | **省略** ⇒ 注册表默认 `{ modelInvocable: true, userInvocable: true }`（`dsh-skill/lib/index.js:203`；类型注释原文 *omission permits both model and user surfaces*） | **两面都有**：人敲 `/ralphflow-start <工作流> <任务>` → 普通 `user/message` + 宿主注入正文；模型按描述自然触发 → 调 `skill` 工具加载正文 | 描述 = 触发词（逐字，见下）；正文 = 「调 `ralphflow_start`，参数从用户那条消息里取」+ 工作流机制说明 |
 
 **触发词（`description`）逐字为**：
@@ -111,7 +112,6 @@
 | `/ralphflow-reset`、`/ralphflow-rewind` | 机械执行，而且**没有对应工具**（设计如此：不给模型修复入口）。做成技能等于让模型发起重置/回退，而且技能里没有工具可调 |
 | `/ralphflow-cancel`、`/ralphflow-continue` | 人的权限（中止实例 / 放行审查门）。命令由处理器机械执行、即时生效；技能要绕一个模型回合，还可能被模型忽略 |
 | `/ralphflow-status`、`/ralphflow-list`、`/ralphflow-doctor` | 纯读操作，命令零 token 即时回 |
-| `/ralphflow-create` | 同类（也是「把指令交给模型」），但它不是「启动一条运行」，也不涉及新会话第一句；这次不动，避免扩大验证面 |
 
-另外：判定 / 推进 / 重置 / 计票语义一字不改；**不给模型任何新的可调用入口**（工具面仍是 8 个：
-`ralphflow_start` / `submit` / `continue` / `status` / `list` / `cancel` / `create` / `doctor`）。
+另外：判定 / 推进 / 重置 / 计票语义一字不改；**不给模型任何新的可调用入口**（工具面收为 7 个：
+`ralphflow_start` / `submit` / `continue` / `status` / `list` / `cancel` / `doctor`）。

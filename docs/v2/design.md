@@ -42,15 +42,30 @@
 
 | Claude/opencode 版机制 | dsh v2 机制 |
 |---|---|
-| 引擎 = MCP server（常驻） | 插件内 Service，进程内持有全部状态 |
+| 引擎 = MCP server（常驻） | 插件内 Service，进程内持有全部状态；Graph 节点是 `ctx.agents.create` 的独立子 agent（独立的 Git worktree 与节点分支） |
 | 驱动器 = hooks（一次性进程） | Service 内部监听 `session/event` + `agent/turn-stopping` |
 | Stop hook 见 `<promise>done</promise>` | **模型调用 `ralphflow_submit` 工具**（工具调用是事实；工具结果带 `concludesTurn` 由机器结束回合）。不再对模型自由文本做正则匹配 |
 | 「去验证」宣告（hook 注入） | **投递分两类**（台账见 [delivery-classification.md](./delivery-classification.md)）：**指令**（要模型干活：DO / 命令转达 / 交卷提醒）走 `agent.steer(userMessage)`；**播报**（给人看的记录：验证进度、判定、暂停/审查门/完成/取消）走 `session.append("user/message", …, {surfaceOp:"append"})` —— 立刻落在时间线上、**不唤醒**驱动器、也不把收尾中的回合续上（`steer` 在空闲驱动器上会开新回合；`inject` 不唤醒空闲驱动器但会把收尾中的回合续上，且被 claim 之前不进可见面）。source `{kind:"ralphflow"}` 由插件在 `src/message-source.ts` 里**自己声明**：dsh 0.2 起 `MessageSourceMap` 是 merge-extensible 的，内置的 `plugin` kind 已删除。**Chat 可见性由节点 kind 的过滤与渲染槽共同决定**：内置分类把非 user 来源变成普通 `context` 并整行过滤；`form:"notice"` + summary 仅控制已可见 context 的展开。本包客户端另注册会话级 `ralphflow-notice` 私有节点与渲染器，按 append 日志重放，reset 不抹掉人类记录 |
-| `SubagentStop` 记录判定 | **`await subagents.start(...).result`（权威）** + `subagent/end` 事件（审计） |
-| `ralph-check` agent 定义 | **内部固定 persona**（`VERIFIER_PERSONA`，经 `subagents.start` 的 `persona` 传） + 按能力选出的全新上下文后端 + `toolFilter` + `outputSchema`（程序级强制） |
-| `ralphflow_*` MCP 工具 | `ctx.tools.register`（工具面，固定 8 个） + `ctx.commands.register`（命令面，8 条） + `ctx.skills.register`（**启动类快捷入口是技能**） |
+| `SubagentStop` 记录判定 | **`await subagents.startActivation(...).result`（0.2.1-rc.2+；旧版 `start(...).result`）** + `subagent/end` 事件（审计） |
+| `ralph-check` agent 定义 | **内部固定 persona**（`VERIFIER_PERSONA`，0.2.1-rc.2+ 经 `ralphflow-verifier` Agent Preset 的 persona 行传入） + 按能力选出的全新上下文后端 + preset 的只读工具面 + `outputSchema`（程序级强制） |
+| `ralphflow_*` MCP 工具 | `ctx.tools.register`（全局 7 个 + Graph 节点作用域 `ralphflow_artifact_write`） + `ctx.commands.register`（命令面 8 条；`cleanup` 只对 Graph 有实际动作） + `ctx.skills.register`（**启动类快捷入口是技能**） |
 | `/ralphflow-*` slash 命令（触发词） | **启动类 = 技能**（`ralphflow-start` 两面可见、`ralphflow-<工作流>` 只给人看）：人敲落成普通 `user/message`（`source.kind === "user"` ⇒ 新会话能自动命名），技能正文由宿主在 `agent/pre-step` 注入；同名命令必须保持删除。**人的权限**（cancel / continue）、**机械命令**（reset / rewind）与**纯读**（status / list / doctor / create）仍是 `ctx.commands.register`。逐条归类见 [skills-vs-commands.md](./skills-vs-commands.md) |
 | .delegation-in-flight | 内存 `Set` + state.json `delegations[]` |
+
+### 3.1 Flow / Graph 组件映射（实现对照）
+
+| 面 | Flow | Graph | 共同门面 |
+|---|---|---|---|
+| 引擎 | `src/engine.ts` `createEngine` | `src/graph/engine.ts` `createGraphEngine` | `src/facade.ts` 按 `kind` 路由 |
+| 资产 | `workflows/` + `loadWorkflow` | `graphs/` + `graph/asset.ts` | `src/assets.ts` 统一清单/冲突 |
+| 状态 | `InstanceState`（`current_step`） | `GraphInstanceState`（attempts/verdicts/acceptances…） | 同一 `instances/<id>/state.json` |
+| 交卷 | `onSubmit`（主会话） | `submitFromAgent`（节点 agent / 主执行会话） | `ralphflow_submit` |
+| 验证 | `ports.verify` → `src/verify.ts` | 同一个 `ports.verify` + Graph CHECK 提示词 | T1 单一运行时 |
+| 推进 | `on_pass` / `on_fail` 状态机 | DAG 就绪/释放 + 人工门 | 门面只编排 |
+| 报告 | `archiveReport` | `graph/report.ts` `buildGraphReport` | `reports/<instance>.md` |
+| 恢复 | 属主心跳（实例级） | `interrupted` + 主事实 | `restore()` 不自动推进 |
+| 状态面 | `WorkflowStatus`（step/votes） | `WorkflowStatus.graph` 投影 | 同一个 `ralphflowStatus` 流 |
+| 查看器 | 步骤链 | DAG + 节点详情 | 同一个只读 tab |
 
 ## 4. 状态（无相位）
 
@@ -63,7 +78,9 @@
   "user_task": "...",
   "fail_count": 0,
   "paused": false,
-  "pause_reason": "max_failures | check_infra | user_cancelled",
+  "pause_reason": "user_stop | host_restarted | max_failures | check_infra | no_submit",
+  "owner_runtime": "<runtime-id>",
+  "owner_heartbeat_at": 1760000000000,
   "do_submitted": true,
   "owner_session": "<session-id>",
   "artifacts_dir_name": "修复登录空指针-49lo",
@@ -74,8 +91,10 @@
 ```
 
 - **不存相位**（ADR-0004）：相位是派生量，存了就有两个写入者。v1 的 34 处文件标记位即此教训。
+- **Graph 联合状态（同一 `state.json`）**：`kind: "graph"`、`active`、`workflow_name`、`user_task`、`owner_session`、`owner_runtime`、`owner_heartbeat_at`、`artifacts_dir_name`、`graph.{asset,asset_hash,status,pause_reason,project,integration,attempts,verdicts,acceptances,human_todos,worktrees,rework_counts,fault_retries}`、`history`。**只存主事实**：节点是否运行/完成/等待、当前节点、等待原因由 attempts / verdicts / acceptances / human_todos 现算（`src/graph/state.ts`），不落 `node.status` / `currentStage` / `waitReason`。Graph 的 `attempts` 同时承载 submission 与产物引用；判定与 Flow 共用一套账本语义（Graph 记 node/attempt/checkIndex）。
+- **Graph 完成/取消保留实例**：归档报告后保留 `state.json`、执行日志、产物与 worktree，`active: false`；`instances/` 因此同时装活跃 Flow 实例与保留的 Graph 实例。Flow 完成实例仍按七步销毁序列删除。宿主重开时 Graph 只恢复主事实并标为 `interrupted`，绝不自动推进。
 - 每次运行一个 JSON，原子写（临时文件 + rename）。
-- 完成/取消后：归档报告到 `<workspace>/.dsh/ralph-flow/reports/<instId>.md`，然后**销毁实例目录**（`state.json` 随之消失）。`instances/` 因此只装活跃实例，历史从 `reports/` 读出（`listHistory()`）。`artifacts_dir_name` 是 state 里唯一"非派生"的额外字段：产出目录名在启动时固定，之后无法重算（原设想的理由是子工作流会改写 `user_task`；**本实现的子工作流是加载期静态展开、不改写 `user_task`**，但名字仍在启动时固定落盘：重算依赖实例 id 尾段与当时的原始任务，事后不保证重算出同一个目录名）。
+- 完成/取消后：归档报告到 `<workspace>/.dsh/ralph-flow/reports/<instId>.md`，然后**销毁实例目录**（`state.json` 随之消失）。`instances/` 因此装**活跃 Flow 实例 + 保留的 Graph 实例**（Graph 完成/取消不销毁，见下条）；Flow 的历史从 `reports/` 读出（`listHistory()`），Graph 的历史同时可从保留的 `state.json` 读出。`artifacts_dir_name` 是 state 里唯一"非派生"的额外字段：产出目录名在启动时固定，之后无法重算（原设想的理由是子工作流会改写 `user_task`；**本实现的子工作流是加载期静态展开、不改写 `user_task`**，但名字仍在启动时固定落盘：重算依赖实例 id 尾段与当时的原始任务，事后不保证重算出同一个目录名）。
 
 **推进规则（T2 的落点，引擎唯一决策）：**
 
@@ -85,14 +104,15 @@
 | 判定齐且全 `passed` | 若当前步在**工作流级** `manual_step` 列表里 → 停在门状态等 `continue`；否则按 `on_pass` 推进 |
 | 任一条 `failed` | 按 `on_fail` 回退，`fail_count + 1`；未达上限 → 恢复 DO 等待重做；达上限 → 暂停 |
 | 任一条 `infra` | 暂停（`check_infra`），**不烧 fail_count** |
-| 用户 cancel | 中止在飞验证者，归档报告，`user_cancelled` |
+| 用户 cancel | 中止在飞验证者，归档报告（`cancelled`） |
 
 **崩溃恢复**：插件重载扫描 instances/：`active` 且 `delegations[]` 非空（进程死时验证者已 aborted）→ 判定作废、暂停 `check_infra`、清 delegations。**无人驱动 = 暂停等用户，永不隐式推进。**
 
 ## 5. 三时刻（dsh 版本）
 
 1. **DO 交卷**：主会话**调用 `ralphflow_submit` 工具**（dsh 原生：工具调用即事实，工具结果带 `concludesTurn` 结束回合）→ 引擎在工具 handler 内受理 → **本步有检查依据时**：若无在飞委派 → **引擎自己委派验证者**（`subagents.start`）；**没有检查依据时**按 §4 表直接推进 / 开门，不委派。主会话全程无委派能力（T1 结构性成立）。
-   - **忘了交卷的兜底**：`agent/turn-stopping`（serial、可 await，claude/opencode 版 Stop hook 的原生等价物）在回合关闭前检查「有活跃实例 / 本步未交卷 / 无在飞委派」，是则以 `agent.steer` 提醒调用 `ralphflow_submit`；提醒次数由 history 派生，达上限（2 次）则暂停（`no_submit`）等用户，绝不死循环催促。
+   - **完成后才验证**（`unfinished` 闸门）：交卷必带 `unfinished`（本步还没做完的事项）。非空 = 本轮进度：记一条 `submit_incomplete`、不设 `do_submitted`、不委派验证者、不占返工预算，回合结束（模型拿到它要的边界），回执把清单还给模型让它接着做。空数组表示没有剩余事项，进入验证；是否完成由独立验证者判定。这条闸门把「没做完就先交卷」挡在验证之前——模型自己知道还剩什么，机制只负责不给它烧验证者的机会。Graph 节点同样的语义：未完成项非空 → 交卷被拒、attempt 留在 `running`、CHECK 不启动。
+   - **回合收尾检查**：`agent/turn-stopping`（serial、可 await，claude/opencode 版 Stop hook 的原生等价物）在回合关闭前检查「有活跃实例 / 本步未交卷 / 无在飞委派」，是则提醒「做完了吗」——做完了交卷、没做完继续。提醒走 `agent.followup`（收件箱 next-turn 边界）而**不是** `steer`：`steer` 落 next-step，而回合循环的判据是 `turnEnds && inbox.nextStep.length === 0`，于是正在收尾的回合被续上、`turn/end` 永不出现。实测（RA2 loop，单步 8 小时）**84 轮共用 4 个回合**，模型到第 150 步自己写出 *I've reached the limit of what this turn can carry out* 后不再推进；改成 `followup` 后本回合正常收尾、提醒是**下一回合的第一条消息**——**一轮 = 一个回合**，与 opencode 版每条催促一次 `session.promptAsync` 同形。提醒次数由 history 派生：`submit_activity`（上次提醒后有工具调用）只计总数，`submit_reminder`（空回合）才累计连续次数。**两道上限都只在「这一轮也是空回合」时才算数**：连续 2 次空回合即暂停（`no_submit`）等用户；本步提醒预算 5 次（与 opencode `MAX_DO_REINJECT = 5` 对齐）用完之后再出现空回合同样暂停。反例是旧口径 `total >= 20` 不看 `worked`，把 RA2 那个每轮都在动手的实例（`stalls: 0, total: 20`）掐停了 —— 干着活的循环不该有次数天花板。Graph 的主执行节点用同一套判定。
    - 交卷工具**必定返回结果**（受理 / 已交卷 / 无实例 / 暂停中），模型与用户都能看到 —— 交卷不再有「静默消失」的路径。
 2. **验证者交卷**（本步有检查依据时才发生）：await `run.result`（与宿主 `dsh-tool-subagent` 同款，不设 ralphflow 自造超时）；判定**首选原生结构化输出**，`structured` 经 `outputSchema` 校验后写 `verdicts[]`；provider 不支持 `outputSchema` 时才降级要求 `<promise-check>` 文本标签；**任何解析失败 = infra，绝不 passed**。`subagent/end` 记审计（含 `agent_id`）。
 3. **`ralphflow_continue`**：引擎按 §4 表推进。有检查依据时校验判定存在 / `step_id` 等于当前步（归属校验）；**定义已声明免验证的步骤没有判定**，这一支退化为「本步确实没有检查依据」（§12.1 第二支）。不足推进 → 拒绝并说明原因，**不烧 fail_count**。
@@ -120,16 +140,16 @@
 ## 7. 验证者协议
 
 - **形态**：全新独立会话的子代理；只见「任务 + 检查依据 + 工件」，不见主会话对话历史，**也看不到执行者的交卷摘要**；跑完即焚。
-- **后端选择（按能力，不按名字）**：验证者后端属于 Ralphflow **内部**，工作流没有任何入口影响它。只考虑 `getProvider(n).inheritsParentContext === false` 的 provider（全新上下文）——**绝不**回退到 `true` 的 provider（`fork` 继承主会话历史，T1 静默失效）；未声明该字段的同样不选（fail-closed）。候选里优先 `capabilities.persona && capabilities.toolFilter` 都支持的（这是「独立 + 有纪律的只读裁判」的前置条件；缺了 `start()` 本就会抛 `UNSUPPORTED_CAPABILITY`）。provider 名可配置（`providerName`），**名字不参与判定**。没有可用后端 → `infra`，理由写明「本部署没有全新上下文的委派后端」或点名缺失的能力；两种情况都**不生成通过判定**。
-- **身份是内部定义（单一来源）**：验证者职责（独立性、只读取证、不采信自述、默认不通过）收敛为 `verify.ts` 的 `VERIFIER_PERSONA`，经 DSH 原生子代理 `persona` 传入（在子代理 scope 注册 `deployment:persona-prefix` 系统提示段）。**切分线**：persona 只承载「你是谁、你的纪律」；本次任务的事实与**按 `wantStructured` 分支的判定提交方式**（`structured_output` 工具 / `<promise-check>` 文本标记）仍由 `buildCheckPrompt` 承载——后者是逐请求状态，搬进 persona 会让降级路径失效。工作流的 `check` 因此只写判据与事实，不写角色设定。
+- **后端选择（按能力，不按名字）**：验证者后端属于 Ralphflow **内部**，工作流没有任何入口影响它。只考虑 `getProvider(n).inheritsParentContext === false` 的 provider（全新上下文）——**绝不**回退到 `true` 的 provider（`fork` 继承主会话历史，T1 静默失效）；未声明该字段的同样不选（fail-closed）。0.2.1-rc.2 起优先选 `capabilities.agentPreset === true` 的后端（身份与只读工具面只能经 Agent Preset 声明）；没有时回退到仍声明 `capabilities.persona && capabilities.toolFilter` 的旧版后端（0.2.0 / 0.2.1-alpha）。两者都没有 → `infra`，理由写明「本部署没有全新上下文的委派后端」或点名缺失的能力；两种情况都**不生成通过判定**。provider 名可配置（`providerName`），**名字不参与判定**。
+- **身份是内部定义（单一来源）**：验证者职责（独立性、只读取证、不采信自述、默认不通过）收敛为 `verify.ts` 的 `VERIFIER_PERSONA`。0.2.1-rc.2 起 DSH 删除了子代理请求的 `persona`/`toolFilter` 入口，身份与只读工具面改由 `verifier-preset.ts` 注册的 **Agent Preset**（`ralphflow-verifier`）声明：persona 行走 `@deepseek-ai/dsh-persona`，工具面只挂 read / read_image / grep / glob / bash。旧版宿主仍走逐请求的 persona/toolFilter 通道。**切分线**：persona 只承载「你是谁、你的纪律」；本次任务的事实与**按 `wantStructured` 分支的判定提交方式**（`structured_output` 工具 / `<promise-check>` 文本标记）仍由 `buildCheckPrompt` 承载——后者是逐请求状态，搬进 persona 会让降级路径失效。工作流的 `check` 因此只写判据与事实，不写角色设定。
 - **判定**：`outputSchema` 结构化 `{ passed: boolean, reason: string }`；reason 必须给证据（读到的文件/跑出的结果）。
-- **只读**：`toolFilter: { allow: [read, grep, glob, bash, read_image] }`。bash 内的间接写（`sed -i`/`tee`）**有意接受**（ADR-0002 同款弱点；将来用 dsh 沙箱收紧，见 §11）。
+- **只读**：0.2.1-rc.2+ 由 `ralphflow-verifier` preset **不挂 write/edit** 来保证（不是提示词自律）；旧版宿主用 `toolFilter: { allow: [read, grep, glob, bash, read_image] }`。两种通道下，bash 内的间接写（`sed -i`/`tee`）**有意接受**（ADR-0002 同款弱点；将来用 dsh 沙箱收紧，见 §11）。
 - **模型**：默认同主会话模型；YAML 可覆盖（§0 推论：独立性 ≠ 模型隔离）。优先级链**与 opencode/claude 一致**：`check_voting` 条目 `model` > 步骤 `check_model` > 全局 `adversarial_check.model` > 发起会话当前模型。
   - `model` 通过 DSH 原生 `agentOptions` 传给验证者，不由提示词要求模型自行切换。**没有覆盖时不传 `agentOptions`**，由宿主 `resolveChildAgentOptions` 继承**父级** provider/model（即发起会话当前模型）。
   - 两种形态都支持（dsh/opencode/claude 三端同解）：`"provider/model"` 字符串、`{ providerID, modelID }` 对象（两者都必须非空）。**裸模型名**（如 `sonnet`）、对象缺字段、或类型非法 → 解析不出 → **告警并回退发起会话当前模型**，绝不静默忽略（否则用户以为换了验证模型，实际没换）。归一化只有一处：引擎的 `resolveCheckModel`（照抄 opencode 语义），验证者只消费结果。
   - `check_model` **仅单 `check` 场景生效**：与 `check_voting` 同写、或本步没有 `check` → **加载期硬错误**（照抄 opencode）。投票步各票用自己条目里的 `model`。
 - **公开配置契约（`adversarial_check`）**：可选对象，**唯一允许的字段是 `model`**。`agent` / `system_prompt` / `timeout_ms` **已从公开契约中删除**——它们（以及任何未知字段、`adversarial_check` 非对象）在**加载期**与 `doctor` 都告警并忽略：不拒收、不静默、不改作别的含义。口径与未知键、`check_voting` 统一为 **warn+ignore**（§8 Q13）：dsh 对「自己不兑现的键」只有这一条规则，忽略后回落到固定的内部验证者正是文档承诺的默认行为。告警必须在加载期出现，不能拖到验证阶段。
-- **prompt 由引擎构造**：任务原文 + 本步上下文（`desc`/`do`/`input`/`output`/产出目录）+ 检查依据（来自工作流定义，主会话零输入）+ 工作区可读。任务消息正文只保留这些**事实**，通用角色说明走 persona 通道（见上）。验证者 prompt 是 T1 防污染的唯一注入点。
+- **prompt 由引擎构造**：任务原文 + 本步上下文（`desc`/`do`/`input`/`output`/产出目录）+ 检查依据（来自工作流定义，主会话零输入）+ 工作区可读。任务消息正文只保留这些**事实**，通用角色说明走 preset 的 persona 行（旧版走 persona 参数，见上）。验证者 prompt 是 T1 防污染的唯一注入点。
 - **绝不注入执行者自述（T1 硬规则）**：验证者**看不到**执行者的交卷摘要/实现总结——它只判「结果是否满足检查依据」，不判「执行者怎么做的、自称做了什么」。自述是**锚点**，会软化独立判定。opencode 与 claude 版同样从不传入，并在提示词里明令"不要依赖任何外部提供的实现总结"。
   - 交卷摘要仍存于 `state.last_submit_summary`，但**唯一消费者是审查门改稿重交去重**（`onSubmit` 里"内容与上次完全相同则不重复验证"），不流向验证者。`VerifyRequest` 类型上**没有** `submitSummary` 字段——从类型层面阻止它被重新引入。
 - **数量**：v0 单验证者；**v0.2 起 `check_voting` 激活**（1–5 票并行、全过才放行，见 §11）。`verdicts[]` 与 `delegations[]` 从一开始就按数组建模，投票没有引入新的状态字段：每票一条 `Verdict`（`check_index` = 票号）、一笔 `Delegation`（`attempt` = 第几轮投票）。
@@ -139,7 +159,7 @@
 
 ## 8. 命令面与 v0 范围
 
-**命令/工具（与 claude/opencode 同名，心智通用）。命令语义＝「触发词，回复＝大模型」**（迭代 1 实测定案）：`/ralphflow-*` **一律**给模型注入一条指令（`source: plugin`），由模型调用同名工具、自然回复——**含用法错误**（向 opencode 看齐：参数不全由模型说明用法并追问）——**零程序化卡片返回**。这也根治了「dsh web 新会话首条命令结果不渲染」：命令全部走普通消息路径，平台命令卡渲染缺陷不再涉及。唯一兜底是会话离线时给一行错误提示。工具侧不变：模型可随时直接调用已实现的 `ralphflow_*` 工具。**两条机械命令是例外**：`/ralphflow-reset`（重做当前步）与 `/ralphflow-rewind`（回退到更早的步骤并换方向）的机械动作在命令处理器里直接驱动引擎完成（这是本程序的职责，不要求模型记得去调），结果仍交回模型自然语言回复（零程序化卡片返回不变），且**都不注册**同名工具（不给模型可调用的修复入口，见 §10.10）。
+**命令/工具（与 claude/opencode 同名，心智通用）。命令语义＝「触发词，回复＝大模型」**（迭代 1 实测定案）：`/ralphflow-*` **一律**给模型注入一条指令（`source: plugin`），由模型调用同名工具、自然回复——**含用法错误**（向 opencode 看齐：参数不全由模型说明用法并追问）——**零程序化卡片返回**。这也根治了「dsh web 新会话首条命令结果不渲染」：命令全部走普通消息路径，平台命令卡渲染缺陷不再涉及。唯一兜底是会话离线时给一行错误提示。工具侧不变：模型可随时直接调用已实现的 `ralphflow_*` 工具。**暂停没有命令**：点发送键旁的方块停止当前回合 → `turn/end aborted/user` → 引擎把实例转 `paused(user_stop)`（Flow/Graph 同一动作），恢复仍用 `/ralphflow-continue`。**机械命令是例外**：`/ralphflow-reset`（重做当前步）、`/ralphflow-rewind`（回退并换方向）、`/ralphflow-cleanup`（清理 Graph 干净 worktree）的机械动作在命令处理器里直接驱动引擎完成（这是本程序的职责，不要求模型记得去调），结果仍交回模型自然语言回复（零程序化卡片返回不变），且**都不注册**同名工具（不给模型可调用的修复入口，见 §10.10）。
 
 **启动类入口是技能，不是命令**（任务书「把启动类快捷入口从命令改成技能」）：dsh 的会话标题只认 `user/message` 且 `source.kind === "user"`（`dsh-session-title/lib/index.js` 的 `sessionTitleUserMessageOf`），而斜杠**命令**落成 `command/run` —— 新会话第一句敲 `/ralphflow-start …` 会永远没有标题。改成技能后：人敲 `/ralphflow-start <工作流> <任务>`（以及 `/ralphflow-<工作流> <任务>`）落成**普通用户消息**，技能正文由宿主在 `agent/pre-step` 注入；`ralphflow-start` 两面可见（也是模型按描述自然触发的那一条），`ralphflow-<工作流>` 只给人看（`modelInvocable: false`）。**同名命令必须保持删除**，否则客户端把它解析回命令、标题照旧没有。逐条归类、根因与证据见 [skills-vs-commands.md](./skills-vs-commands.md)。
 
@@ -150,12 +170,16 @@
 | `/ralphflow-status` | `ralphflow_status` | 实现（同上） |
 | `/ralphflow-continue` | `ralphflow_continue` | 实现（同上） |
 | `/ralphflow-cancel` | `ralphflow_cancel` | 实现（同上） |
-| `/ralphflow-create` | `ralphflow_create` | 实现（引导式设计指引 → `ralphflow_doctor` 校验到全部 ✅ 且无告警） |
-| `/ralphflow-doctor` | `ralphflow_doctor` | 实现（工作流/实例诊断，坏文件说人话） |
+| `/ralphflow-create` | 无（skill） | 实现（skill 先问 `kind`：Flow 直接设计；Graph 启动 `create-graph` Flow） |
+| `/ralphflow-doctor` | `ralphflow_doctor` | 实现（工作流/实例诊断；可只诊断一个工作流名或工作区路径；坏文件说人话） |
 | `/ralphflow-<工作流名>` | — | 动态注册的工作流快捷**技能**（只给人看：`modelInvocable: false`），如 `/ralphflow-loop`、`/ralphflow-spec`；工作流名必须是小写 kebab，不合语法时**如实拒绝并说清原因**（不静默跳过） |
+| `/ralphflow-cleanup` | —（不注册同名工具） | **Graph only**：只删除已记录且干净的节点 worktree；不删 state / artifacts / reports；Flow 没有 worktree |
 | `/ralphflow-reset` | —（不注册同名工具） | **实现**：命令处理器直接驱动引擎做机械重置（换干净上下文 + 重投当前步 DO），结果交回模型自然语言回复。**不赦免失败**（`fail_counts` 原样保留），**暂停中拒绝**并指向 `/ralphflow-continue`，只在 DO 阶段生效。不注册 `ralphflow_reset` 工具——不给模型可调用的修复入口（§10.10）。见下方 §8 |
 | `/ralphflow-rewind` | —（不注册同名工具） | **实现**：回退到当前步**之前**的步骤并换方向 = `reset` 的机械动作（整段替换上下文 + 重投目标步 DO）+ **状态机倒退**（`current_step` 拨到目标步，清 `paused` / `pause_reason` / `fail_counts` / `do_submitted` / `verdicts` / `delegations` 并中止在飞验证者，记 `rewind` + `step_start`）+ **带走原因**（原因写进目标步 DO，**自成一段**，并点明下游旧产出仍在盘上、基于旧方向）。目标合法性**只有一条**：按工作流定义顺序、**当前步之前的普通步骤**——没有「已通过 CHECK」这道门（引擎对进度的全部认知就是 `current_step`；不移植 opencode 的 `step-records.json`）。**暂停态允许回退并顺带解除暂停**（判据是 `do_submitted === false`，不是 `paused`：`max_failures` / `check_infra` 的暂停路径留下 `do_submitted=true` 只是那一轮的残留，暂停即意味着机械程序已收尾）。`<步骤> <原因>` 两个都必填，缺参数交回模型自然语言追问；各条拒绝理由（当前步 / 未来步 / 不存在的步骤 / 调用点 / 已交卷）交回模型转达。命令处理器直接驱动引擎，不注册 `ralphflow_rewind` 工具（§10.10）。见下方 §8 |
-| —（无命令，DO 阶段由模型自动调用） | `ralphflow_submit` | DO 交卷（dsh 原生工具调用；取代 `<promise>done</promise>` 文本标记）。见 §5 三时刻① |
+| —（无命令，DO 阶段由模型自动调用） | `ralphflow_submit` | 交卷：Flow 主会话按三时刻①；Graph 节点 agent 提交本 attempt 产物（按调用者绑定分派） |
+| —（Graph 作用域工具） | `ralphflow_respond` | 仅当前会话有 Graph 人工待办时可见：批准产物或提交改稿要求；Flow 仍走 `ralphflow_continue` |
+| —（Graph 节点作用域工具） | `ralphflow_artifact_write` | 仅 Graph 节点 agent 可见：写声明的节点产物 |
+| —（无命令） | —— | 合并没有专用工具：节点在自己的分支上合入集成分支，引擎只做快进 |
 
 **reset 门（已实现）**：进入该步前，在**步骤边界的空闲窗口**（`agent.runMaintenance`，phase ≠ idle 即放弃）把属主会话可见面的 `nodes[1]` 到末尾**整段替换**成一条 ralphflow 自己写的「交接稿」，使模型收到的 messages = **系统提示 + 交接稿 + 本步 DO**。载体 = `src/reset.ts`（自有 plugin source `{kind:'plugin', plugin:'ralphflow'}`，**不冒用压缩检查点**、不发任何 `compaction/*` 事件）；策略与投递 = 引擎的 `deliverStepDo` + `EnginePorts.resetSurface`。三种触发**行为完全一致**、只按来源分措辞：步骤级 `reset: true`、工作流级 `auto_reset: true`（= 给所有步骤标 reset，含失败重试）、手动 `/ralphflow-reset`（`resetCurrent`，用户发起、无论该步有没有标都强制重置）。交接稿只写**能现算**的四项（工作流名 / 第几步 / 产出目录 / 交互契约，**零新增状态字段**）；另发一条 append 来源的**可见告知**（Chat 可见），它被同一次替换一并遮蔽，因此不进模型上下文（决定②：不让「用户看到的 ≠ 模型看到的」变成静默）。两条结构性边界：**工作流首步的初次进入无法重置**（首步 DO 是 `ralphflow_start` 的工具返回值，替换会落在工具调用内部 → 孤儿 `tool/result` → 静默损坏会话），启动回执如实说明（并**按来源分两支**：`auto_reset` 带出的重置绝不说成「本步标了 `reset: true`」——作者没标；子工作流的 `auto_reset` 在加载期静态展开下沉为子步骤 `reset: true` 时**同时打来源标记 `reset_from_auto`**，否则合成键会冒充作者标记、让这句错话重新出现）；**面不平衡时放弃本次替换**，DO 照常投递并把原因写进播报行。手动重置另有三条机械护栏：**不赦免失败**（`fail_counts` 原样保留，否则反复 reset 就能绕过 `max_fail_count`）、**暂停中拒绝**并指向 `/ralphflow-continue`（那条路径才是显式的失败赦免）、**只在 DO 阶段**（已交卷 = 验证在飞/审查门，重置会打断验证）。手动重置是异步落地的（等空闲窗口），而命令处理器当场已回 `success`（零程序化卡片）——因此空闲窗口复查若判定实例已交卷/推进/取消，必须**发一条可见告知**（写 `manual_reset_dropped` 进执行日志）说明这次重置没有生效，绝不静默作废。
 
@@ -169,7 +193,7 @@
 
 **超时不在内核里造（作者定案）**：委派生命周期（含模型卡死/打转等异常）**一律交给宿主 dsh 的原生能力**（请求级空闲看门狗、工具调用时限策略），ralphflow 不自建超时轮询或竞速。理由：这是宿主职责，插件重复实现只会分叉行为、随宿主演进腐化。故 `timeout_ms` 永久 warn+ignore，**不要**在后续轮次重新引入有界竞速（claude 版 ADR 独立得出同一结论：`timeout_ms` 零消费者 → 必须静默忽略）。
 
-**`extra_dirs` 不实现（作者定案，与 `timeout_ms` 同一原则）**：**权限是宿主的职责，插件不建平行权限面。** dsh 的验证者子代理**继承发起会话的工作区与权限面**——`SubagentStartRequest` 的字段只有 `label/prompt/parent/signal/agentOptions/outputSchema/maxDepth/toolFilter/persona`，**没有任何路径/权限字段可表达「额外可读目录」**；子代理的权限在启动时固定，dsh 原话：*"your permission scope was fixed when you were started and cannot be widened from inside this session"*。因此「验证者能读什么 = 发起会话能读什么」，opencode 的 `extra_dirs` 在 dsh **没有对应物**（opencode 需要它，是因为它的 check 会话是独立会话 + 自己的权限配置，读项目外必须显式授权）。**不要**在后续轮次把它当缺口补上。
+**`extra_dirs` 不实现（作者定案，与 `timeout_ms` 同一原则）**：**权限是宿主的职责，插件不建平行权限面。** dsh 的验证者子代理**继承发起会话的工作区与权限面**——`SubagentStartRequest` 的字段只有 `label/prompt/parent/signal/agentOptions/outputSchema/maxDepth/agentPreset`（0.2.1-rc.2；旧版为 `toolFilter/persona`），**没有任何路径/权限字段可表达「额外可读目录」**；子代理的权限在启动时固定，dsh 原话：*"your permission scope was fixed when you were started and cannot be widened from inside this session"*。因此「验证者能读什么 = 发起会话能读什么」，opencode 的 `extra_dirs` 在 dsh **没有对应物**（opencode 需要它，是因为它的 check 会话是独立会话 + 自己的权限配置，读项目外必须显式授权）。**不要**在后续轮次把它当缺口补上。
 
 ## 9. 工作流文件即资产（Q5 定案）
 
@@ -177,11 +201,11 @@
   **维护与收敛范围 = dsh / opencode / claude 三端**（作者定案）。第四端 `ralph-flow-pi`（Pi SDK 的独立 CLI，npm v0.2.1，最后更新 2026-07）**已搁置，不纳入范围**——它的方言事实相同（已核实同样支持被删的三个字段，且验证是同步的 `await adversarialCheck`），但不再维护、不做收敛。上文「四端可跑」是对**既有事实**的陈述，不是维护承诺。
 - **六个步骤字段是必填（`desc` / `input` / `output` / `on_pass` / `on_fail` / `max_fail_count`）**：缺失、非字符串、**空串**都 = **加载期硬错误**（整份拒收，不再静默丢步）。来源是 opencode / claude 的加载期校验**代码**（那边缺一个就 `skipStep` —— 该步被静默丢弃，或整份定义因「没有任何有效步骤」被拒收）；本仓库对「会让资产不再表示它所说的话」的配置一律 fail-fast（悬空 `on_pass`、成环、步骤级 `manual_step` 同一口径）。因此**不再有**「`on_pass` 缺省 = 顺序下一步」「`on_fail` 缺省 = 自身」「`max_fail_count` 缺省 3」。**子工作流调用点同样必填这六个**（那两家的加载器把这六项校验排在第 `workflow` 分支之前）；调用点接受并校验 `id`/`desc`/`do`/`input`/`output`/`workflow`/`on_pass`/`on_fail`/`max_fail_count`/`reset`，其余键（`check`/`check_voting`/`check_model`/`inputs`/未识别键）照旧**逐键告警 + 指路**（`inputs` 的文案**指路到调用点的 `do`**）。调用点上的 `reset: true` **生效**：按本实现的静态展开模型 = **首个展开后子步骤**的重置（下沉时打来源标记 `reset_from_call`，措辞说得出是哪个调用点标的）。调用点上的 `do` 同样**生效**：语义 = 「这段子工作流要做什么」= 子工作流的任务，加载期静态展开时下沉到子步骤的 `task`（DO 与 CHECK 提示词的「## 任务」都取它），不写就继承父级任务描述（向后兼容）；嵌套按**最内层优先、外层继承**组合，与 `adversarial_check.model` 的逐层继承同一形态。`task` 是**定义期**字段，不落状态（§10.4）。
 - **检查依据是可选语义键（`check` / `check_voting` 都不写 = 免验证，与 opencode 对齐）**：不写检查依据 → 该步**跳过对抗性验证**，DO 完成直接按 `on_pass` 推进；在**工作流级** `manual_step` 列表里时则**纯人工审查**（停在门等 `continue`）。判据 `stepHasVerification(step)` 只读 `StepDef`（工作流定义的属性，不是运行事实，故不落状态）= 有 `check` **或** `check_voting`；`check` 写了但**非字符串**（如 `check: true`）仍是**加载期硬错误**——绝不把「想要 check」误读成「不想 check」（本意是免验证请直接删掉该键）。
-- 目录：`<workspace>/.dsh/ralph-flow/workflows/` 自定 + 内置 loop/spec；每实例隔离的**产出目录**为 `<workspace>/.dsh/ralph-flow/artifacts/<artifacts_dir_name>/`（目录名 = 任务摘要 slug + 实例 id 尾段，按码点截断；实例启动时建好、终止后**保留**，DO/CHECK 提示词各注入一行工作区相对路径；只有空目录随实例销毁被 `rmdir` 删掉）。
+- 目录：Flow 用 `<workspace>/.dsh/ralph-flow/workflows/`（自定 + 内置 loop/spec/create-graph）；Graph 用 `<workspace>/.dsh/ralph-flow/graphs/`（自定 + 内置 codewiki）。两类目录与 `kind` 必须一致；跨类别同名是冲突，启动前拒绝。Graph 节点产物在 `artifacts/<dir>/nodes/<node>/<attempt>/`，Flow 产出仍是扁平的 `artifacts/<dir>/`。每实例隔离的**产出目录**为 `<workspace>/.dsh/ralph-flow/artifacts/<artifacts_dir_name>/`（目录名 = 任务摘要 slug + 实例 id 尾段，按码点截断；实例启动时建好、终止后**保留**，DO/CHECK 提示词各注入一行工作区相对路径；只有空目录随实例销毁被 `rmdir` 删掉）。
 - **实例生命周期（§4 的落点）**：活跃 vs 历史分两层。工作流完成/取消时 `destroyInstance()` 严格按序执行：① 先 `archiveReport()`，失败则**中止销毁**（保留可见残留 + 告警，绝不静默丢轨迹）；①b 落 `destroy` 事件、并把执行日志归档到 `reports/<id>-execution.log`（**失败只告警、不阻塞销毁**——报告是主事实、日志是辅助证据，与第①步有意不对称）；② **先把全部路径解析并固定**（产出目录名、实例目录、`state.json` 路径 —— 产出目录名只存在于 `state.json` 里，删掉就查不到了）；③ `unlink(state.json)`（失败记 `state_unlink_failed`，ENOENT 除外）；④ 递归删实例目录（失败记 `instance_dir_remove_failed`）；⑤ 非递归 `rmdir(本实例产出目录)`（非空即保留）；⑥ **复查**实例目录是否真的没了（`instanceDirRemoved`），没删掉就记 `instance_dir_not_removed` 并让完成/取消播报**如实说残留**、指向 `doctor`（绝不谎称"已销毁"）。`writeState` 会 `mkdirSync` 实例目录，因此**销毁后不得再写 state**——迟到的验证回调由 `launchVerification` 的 `readState === null` 护栏挡下（记 `verdict_discarded/instance_state_missing`）。存量已结束实例**不自动迁移**，由 `doctor` 报出、用户显式决定。
 - **执行日志（JSONL，机器可读的复盘证据）**：每实例一份 `instances/<id>/execution.log`，每行 `{ts, level, event, instId, ...extra}`；生命周期事件（`start / step_start / do_submitted / verify_start / verdict / advance / gate_opened / gate_released / check_skipped / pause / resume / complete / cancelled / destroy`）与既有内部告警（`state_unlink_failed` / `instance_dir_remove_failed` / `instance_dir_not_removed` 等）逐个入流，**验证者提示词原文与判定原文全文**（不截断）也在其中——报告给人看、日志给机器（`grep` / `jq`）看，**两者不互相抄**（报告只新增一行指路）。轮转照 opencode：单文件 **10 MB**、保留 **3** 份（`.log.1..3`），阈值可注入（`EnginePorts.logMaxBytes` 或环境变量 `RALPHFLOW_LOG_MAX_BYTES`），否则轮转这条验收不可测。写日志的任何异常（目录只读 / 磁盘满 / 轮转失败）**只记一条 warning 到插件 `log()` 端口**，绝不抛出、绝不中断工作流、绝不改变推进判定；实例目录不存在时一律不写（**绝不把已销毁的目录 mkdir 回来**）。**零新状态字段**：日志是 append-only 的**文件事实**，不是状态，`state.json` 一个字节都不因它改变（§10.4）。**不移植 `step-records.json`**：它是 opencode 用来**现算**「rewind 的已通过列表」的第二个事实源（我们的 `/ralphflow-rewind` **已实现**，而它的合法性判据只需要 `current_step` ——「哪些步已通过」是 `verdicts[]` / `history` 的派生量），且每步耗时/重试报告已从 `history` 派生（`stepStats()`）——再移植一份就是给同一件事造第二个事实源。任务书：`docs/v2/execution-log-brief.md`；验收：`scripts/execution-log-test.mjs`。
-- **工作区运行时目录用 dot-dir**（`<workspace>/.dsh/ralph-flow/`）：与 opencode `.opencode/ralph-flow/`、claude `.claude/ralph-flow/` 形状一致，并与全局 `~/.dsh/ralph-flow/` 对称（同一作用域命名空间 `ralph-flow`）。`.gitignore` 只忽略 `.dsh/ralph-flow/`（精确），不忽略整个 `.dsh/`——将来 dsh 可能往工作区 `.dsh/` 放需要入库的项目配置。
-- 所有者：用户手写（进 git）；交互式创建器 `ralphflow_create` **已实现**（`src/create.ts` 的 CREATE_GUIDE 引导设计 + `ralphflow_doctor` 校验到全部 ✅），手写与引导两条路都通。
+- **运行时目录用项目根 dot-dir**（`<项目根>/.dsh/ralph-flow/`）：项目根 = 从会话目录向上最近的含 `.git` 的祖先目录（没有就用会话目录本身），与 dsh 原生 Skill 的 `<projectRoot>/.dsh/skills` 同一条规则；用户级目录 `$DSH_HOME/ralph-flow/`（缺省 `~/.dsh`）与它对称（两个作用域命名空间都叫 `ralph-flow`）。`.gitignore` 只忽略 `.dsh/ralph-flow/`（精确），不忽略整个 `.dsh/`——原生 Skill 也用 `<项目根>/.dsh/` 放需要入库的项目配置。
+- 所有者：用户手写（进 git）；交互式创建器 `ralphflow-create` skill **已实现**（Flow 直接设计；Graph 启动 `create-graph` Flow，经 spec/tickets CHECK 与人工门），手写与引导两条路都通。
 - **内置工作流不落盘**（对齐 opencode/claude 的 `ensureProjectWorkflows`）：`loadWorkflow` 回落插件目录，内置因此**始终是随插件发布的最新版**。播种副本会遮蔽插件目录、并在插件升级后变成陈旧副本——**实测踩过**：工作区里那份 7 步 `spec` 副本把新版 4 步内置整个挡住了，改内置却"没生效"。定制入口是"放同名文件遮蔽内置"（有意行为）。
 - **内置 `spec` = 4 步**（`explore → propose → implement → archive`），与 opencode 现行版同源；7 步是 opencode 在 2.6.0 废弃的旧版（我们此前从 claude 版抄来）。**与 opencode 完全一致**：`propose`/`implement` 标 `reset: true`（重置门，本版本已实现，见 §8）。首步 `explore` **不标**——首步 DO 是启动工具的返回值，结构上无法重置。依据与完整分析见 `spec-4step-brief.md` 与 `reset-feasibility.md`。
 - **内置 `loop` = 3 票 `check_voting`**：需求落实、遗漏与相关边界合为一票；第二票核对行为及实际产出、可复核的验证依据；第三票核对回归影响与既有约定。三票全过才放行，依据保持项目无关，不假定测试套件或 git 基线。保留 `reset: true`、摘要追加和 `max_fail_count: 100`；自定义投票仍支持 1–5 票。
@@ -201,6 +225,10 @@
 10. **不允许引入自动修复类命令的实现**（`unbrick`）。`ralphflow_doctor` 是**诊断**命令——只报问题与修法，绝不代替用户修，因此不属本禁令；需要自动修复 = 设计错了。**边界**：重置门（步骤级 `reset: true`、工作流级 `auto_reset: true`）是工作流作者写的键、由引擎在步骤边界机械执行，不是「命令」、也不给模型任何可调用的修复入口，故不在本禁令内。`/ralphflow-reset` 与 `/ralphflow-rewind` **是作者已放行的两条例外**（前者原定「只声明不实现」，后者原定「命令只声明不实现」，见 §8 命令表）：两者都是**用户手里**的入口，由命令处理器**直接驱动引擎**（**不注册同名工具**，不给模型可调用的修复入口），且都**不替用户修、也不判断「修好了」** —— 推进权仍在机械程序手里（都必须重新通过独立验证）。两条的语义差异是刻意的：`/ralphflow-reset` = 重做**当前步**，只换干净上下文、**不赦免失败**（`fail_counts` 原样保留，反复 reset 不能绕过 `max_fail_count`），暂停中一律拒绝并指向 `/ralphflow-continue` 这条显式赦免路径；`/ralphflow-rewind` = 回退到**更早的步骤**并换方向，按用户显式意图清掉旧方向的推进事实（暂停、失败计数、判定与在飞委派），**暂停态也允许**（顺带解除暂停）——它不是「修复」而是「这条方向作废，回去重做」，且它**不删除任何产出**（下游旧产出仍在盘上，DO 里明写这一点）。
 11. **每个功能入场合规**：带"最小版失败"的复现记录（§11 准入列）。
 12. **不支持的方言键 = 警告忽略，不兼容、不加工作量**（Q13 定案）。
+13. **Graph 是同一产品的第二类资产，不是第二个插件**：一个包、一套 `/ralphflow-*` 与 `ralphflow_*`、一个运行根、一个只读查看器；不注册 `/ralphgraph-*`、`rg_*`、`.dsh/ralphgraph/` 或第二套状态/报告/索引。
+14. **Graph 不存派生投影**：节点状态、当前节点、等待原因由 attempt/submission/verdict/acceptance/todo 现算；搬参考实现时先剥离 `node.status`/`currentStage`/`waitReason`。
+15. **合入是一次引用前进**：节点在自己的分支上提交，交卷前把集成分支 `ralphflow/<instance>` 合进来（冲突由写代码的节点解决）；引擎只校验「worktree HEAD 在节点分支上 + 该分支包含集成分支头 + 工作树没有未提交的跟踪改动」，满足就前进 `refs/heads/ralphflow/<instance>`。只交产物、没有提交的节点，其空分支由引擎快进到集成 tip（集成分支不动）。
+16. **两类生命周期各自成立**：Flow 完成/取消归档报告后销毁实例；Graph 归档后保留状态/日志/产物/worktree；宿主重开都只暂停/中断，不自动推进。
 
 ## 11. 路线图（每级只由"最小版失败"触发）
 
@@ -226,6 +254,10 @@
 | v1.6 | **状态界面精修（2.1.3）**：一处页头常驻，执行/验证不占输入区，待放行/暂停才出现单行动作；终态收为结果与精确报告。复用原生状态点、主题字号/圆角/阴影，弹层和提示条使用实色层背景；默认轮次/失败次数，预算只在接近上限时展开提示。机制与时间线角色不变。 | 作者**直接指示**；[精修任务书](workflow-status-ui-refine-brief.md)、[真机验收与三组负对照](evidence/ui-status.md)，包含原生 jobs/goal 浅色与深色截图对照。 |
 | v1.7 | **loop 三视角与恢复统一（2.3.0）**：默认验收合并需求与边界，保留实际可用性、回归影响；单 `check` 与投票一样，基础设施故障自动重试一次、仍故障暂停，人工恢复后重置重试机会，不消耗工作失败预算。 | 作者**直接指示**；[验收](evidence/loop-three-checks.md)，专项取消/恢复测试与真机正负对照。 |
 
+| v1.8 | **统一 Graph 模式已实现**：`kind` 路由（Flow `workflows/` / Graph `graphs/`）、Graph DAG 调度与并发、逐节点产物与独立 CHECK（复用 `verify.ts` 的 T1 通道）、人工审查门、可选 Git worktree + merger 合入、Graph 保留式生命周期、统一 `status`/报告/查看器、`design-graph` 公开内置与 `create` 分流。Graph 不复制投票/子工作流/Flow 的 on_pass，跨类别组合明确拒绝 | 作者**直接指示**（同 v0.2/v0.6–v1.7：未按原准入收集最小版失败证据，如实记录）。验收 `scripts/graph-asset-test.mjs`、`graph-engine-test.mjs`、`graph-surface-test.mjs`、`graph-status-test.mjs` 与全量回归 |
+
+| v1.9 | **Graph 合入重做：分支 + 快进（按 implement-spec）**：集成分支从 HEAD 切出（`ralphflow/<实例>`），每个节点在自己的 worktree 与分支（`ralphflow-node/<实例>/<节点>`）上提交，交卷前把集成分支合进来（冲突由写代码的节点解决）；引擎只校验「worktree HEAD 在节点分支上 + 节点分支包含集成分支头 + 工作树没有未提交的跟踪改动」并前进引用，不满足就退回节点重做；只交产物的空分支由引擎快进到集成 tip。节点 agent 的权限与 Claude Code 子 agent 同级（worktree 是工作目录，不再当权限边界）。删除影子 ref、`RalphFlow-*` trailer 校验、CAS、独立 integration 仓库 + fetch 回主仓库与专职 merger agent | 作者直接指示（原话：合并要交给 agent，引擎处理不了复杂情况；宁可颠覆性重构也不绕弯）。验收 `scripts/graph-engine-test.mjs`（92 项，含冲突由写者解决、detached HEAD 被退回、空分支快进、cleanup 保留脏 worktree、旧实例迁移）、`graph-parallel-git-test.mjs`（13 项，4 节点并行 + 串行快进）、`delivery-classification-test.mjs`；真实模型运行见 `docs/v2/graph-redesign-brief.md` 与本轮 `summary.md` |
+
 当前提示词改写与上下文契约见 [提示词审查](prompt-review.md)：DO 注入当前输入和验收依据，创建指南按需读取随包参考；历史记录中的原触发描述属于当时版本。
 
 ## 12. 验收（v0 完成判据）
@@ -246,11 +278,17 @@
   ```
   src/index.ts     入口：Service 注册 / 工具 / 命令 / 事件监听 / 重启扫描
   src/engine.ts    状态机 + 三时刻 + 审查门 + 推进规则 + 崩溃恢复
-  src/verify.ts    ralph-check 委派（selectBackend 按能力选后端 / persona / toolFilter / outputSchema / 打回）
-  src/tools.ts     工具与命令注册（含 ralphflow_submit）；命令面只有 8 条（启动类不在这里）
+  src/verify.ts    ralph-check 委派（selectBackend 按能力选后端 / preset 或旧版 persona 通道 / outputSchema / 打回）
+  src/verifier-preset.ts  验证者 Agent Preset 声明（persona 行 + 只读工具面；0.2.1-rc.2+）
+  src/tools.ts     工具与命令注册（含 ralphflow_submit）；命令面 8 条（启动类不在这里；cleanup 只对 Graph 有实际动作）
   src/skills.ts    技能面：ralphflow-start（两面）+ ralphflow-<工作流>（只给人看）+ 名字校验与如实拒绝
   src/voting.ts    多验证者投票（聚合优先级 / infra 重试）
-  src/create.ts    自定义工作流创建指引（CREATE_GUIDE）
-  workflows/loop.yaml  spec.yaml   内置工作流（发货）
+  src/create.ts    自定义工作流创建指引（CREATE_GUIDE）+ kind 分流指针
+  src/facade.ts    按 kind 路由：Flow 引擎 / Graph 引擎；门面只编排，不写第二遍
+  src/assets.ts    统一资产发现（Flow/Graph 清单、跨类别同名冲突）
+  src/graph/       Graph 资产契约、状态与派生投影、调度、Git worktree/分支快进、报告
+  workflows/loop.yaml  spec.yaml   内置 Flow 工作流（发货）
+  graphs/codewiki.yaml                  内置 Graph 工作流（发货）
+  references/      随包写作/资产/CodeWiki 参考
   ```
 - 包名 `ralphflow-dsh` 沿用；成熟后发 2.0.0。

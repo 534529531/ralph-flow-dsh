@@ -9,15 +9,19 @@
 | `/ralphflow-continue` | `[实例ID]` | 放行审查门 · 恢复暂停 · 接管实例 |
 | `/ralphflow-status` | `[实例ID]` | 查看本会话的实例、指定实例详情，或全部活跃实例概览 |
 | `/ralphflow-list` | — | 列出可用工作流 + 活跃实例（只答"现在有什么在跑"） |
-| `/ralphflow-cancel` | `[实例ID] [原因]` | 取消实例（先归档报告，再销毁实例目录） |
-| `/ralphflow-reset` | — | 重做当前步：换干净上下文 + 重投本步 DO（失败计数保留，不赦免失败） |
-| `/ralphflow-rewind` | `<步骤> <原因>` | 回退到更早的步骤并换方向（状态机倒退、清暂停与失败计数） |
-| `/ralphflow-doctor` | — | 诊断所有工作流定义与实例状态 |
-| `/ralphflow-create` | `[流程想法]` | 交互式设计自定义工作流，校验到全部 ✅ 且无告警 |
+| `/ralphflow-cancel` | `[实例ID] [原因]` | 取消实例（先归档报告；Flow 再销毁实例目录，Graph 保留状态/产物/worktree 供复核） |
+| `/ralphflow-cleanup` | `[实例ID]` | **Graph only**：只删除已记录且干净的节点 worktree；不动 state / artifacts / reports；Flow 没有 worktree |
+| `/ralphflow-reset` | — | **Flow only**：重做当前步（换干净上下文 + 重投 DO，失败计数保留）；Graph 明确拒绝 |
+| `/ralphflow-rewind` | `<步骤> <原因>` | **Flow only**：回退到更早步骤并换方向；Graph 是无环 DAG，明确拒绝 |
+| `/ralphflow-doctor` | `[工作流名或工作区路径]` | 诊断全部，或只诊断一个资产（Flow / Graph 各自 schema） |
 
 **命令语义 = 触发词。** `/ralphflow-*` **一律**由模型自然语言回复（含用法错误），**零程序化卡片返回**——参数不全时由模型说明用法并追问，与 opencode / claude 版一致。
 
-**两条机械命令是例外**：`/ralphflow-reset` 与 `/ralphflow-rewind` 的机械动作由命令处理器**直接驱动引擎**完成（不要求模型记得去调），结果仍交回模型自然语言回复；**两者都不注册同名工具**——不给模型可调用的修复入口。
+**机械命令是例外**：`/ralphflow-reset`、`/ralphflow-rewind`、`/ralphflow-cleanup` 的机械动作由命令处理器**直接驱动引擎**完成（不要求模型记得去调），结果仍交回模型自然语言回复；**都不注册同名工具**——不给模型可调用的修复入口。前两条是 Flow-only，最后一条是 Graph-only；对另一类实例调用时明确说明不适用。
+
+**暂停没有命令**：点发送键旁的方块停止当前回合即可。Flow 与 Graph 同一动作（`paused(user_stop)`）；恢复用 `/ralphflow-continue`，结束用 `/ralphflow-cancel`。Graph 在跑后台节点、主回合没有可停的回合时，输入区会出现独立的「暂停」按钮；在飞节点会被中断（attempt 标 `interrupted`），不再启动新节点。
+
+**Graph 人工审查门**用 `ralphflow_respond` 回答（“批准此版本”或说明要改什么），不要用 `/ralphflow-continue` 代答；`continue` 只恢复暂停/中断。
 
 ## 启动技能（自动注册）
 
@@ -40,11 +44,12 @@
 
 机制说明：
 
-- **自动注册**：引擎创建时、以及新会话创建时，枚举**工作区 → 全局 → 内置**三层工作流各注册一个技能。
+- **自动注册**：引擎创建时、以及新会话创建时，枚举**工作区 → 全局 → 内置**三层的 **Flow 与 Graph** 资产各注册一个技能（如 `/ralphflow-loop`、`/ralphflow-codewiki`、`/ralphflow-create-graph`）。
 - **只给人看**：`modelInvocable: false` —— 模型目录里 ralphflow 相关的条目只有 `ralphflow-start` 一条（同义描述重复 = 一个触发分支写两遍）。
 - **同名先到先得**：与已登记的技能撞名时跳过（不影响 `/ralphflow-start <工作流> <任务>` 启动它）。
 - **名字必须是小写 kebab**：技能名必须匹配 `[a-z0-9]+(-[a-z0-9]+)*`。工作流名里带大写/下划线/空格时**注册不了快捷技能**——这时会**如实告诉你原因与改法**（投一条可见播报：重命名成小写 kebab，如 `my-flow.yaml`），**不静默跳过**；在那之前它仍可用 `/ralphflow-start <工作流> <任务>` 启动。
 - **无效定义不注册**：启动必然失败的工作流不会出现，用 `/ralphflow-doctor` 查看原因。
+- **Graph 的 Git 前置**：Graph 需要 Git 仓库、HEAD 基线和干净工作区。缺失时 `ralphflow_start` 返回提示；先问用户是否初始化，用户同意后由 AI 执行 `git init` / `git add -A` / `git commit -m baseline`，再重新启动。引擎不自动初始化。
 
 ## 使用示例
 
@@ -83,27 +88,33 @@
 
 | 工具 | 参数 | 功能 |
 |------|------|------|
-| `ralphflow_start` | `workflow`（必填）、`task`（必填） | 创建并绑定新实例，返回第一步的 DO 提示词 |
-| `ralphflow_submit` | `summary`（可选） | **DO 交卷**（工具调用即事实，工具结果结束回合） |
+| `ralphflow_start` | `workflow`（必填）、`task`（Flow 必填；Graph 可选，作为任务上下文） | Flow：创建实例并返回第一步 DO。Graph：创建实例并启动 DAG 调度，返回启动回执 |
+| `ralphflow_submit` | `summary`（可选）、`unfinished`（必填） | Flow：DO 交卷；Graph：节点 agent 提交本 attempt 产物（按调用者绑定分派；被拒绝时不结束回合）。`unfinished` 为空 = 没有剩余事项，进入验证（完成由独立验证者判定）；非空 = 报进度（Flow 记 `submit_incomplete` 后不启动验证，Graph 直接拒收） |
 | `ralphflow_continue` | `instance`（可选，可前缀） | 放行审查门 / 恢复暂停 / 接管；必要时重新委派验证 |
 | `ralphflow_status` | `instance`（可选） | 单实例详情或活跃实例概览 |
 | `ralphflow_list` | — | 可用工作流 + 活跃实例 |
 | `ralphflow_cancel` | `instance`（可选）、`reason`（可选） | 取消实例并归档报告 |
-| `ralphflow_create` | `idea`（可选） | 返回交互式创建工作流的指引（`CREATE_GUIDE`） |
-| `ralphflow_doctor` | — | 只读诊断报告 |
+| `ralphflow_doctor` | `workflow`（可选，名字或工作区路径） | 只读诊断报告；按资产类别报 Graph/Flow schema |
+| `ralphflow_respond` | `text`（必填）、`todoId`（可选） | **仅 Graph 人工待办时可见**：批准此版本或提交改稿要求；含糊回复不算批准 |
+| `ralphflow_artifact_write` | `content`（必填） | **仅 Graph 节点 agent 可见**：写声明的节点产物（路径由引擎决定） |
+| —— | —— | 合并没有专用工具：节点在自己的分支上合入集成分支，引擎只做快进 |
 
 > `ralphflow_submit` 的 `summary` **只用于审查门改稿重交去重**（内容与上次完全相同则不重复验证）。它**不流向验证者**——验证者只判"结果是否满足检查依据"，不判"执行者自称做了什么"。
+>
+> `unfinished` 是**机械闸门**：模型自述的未完成项非空时，引擎不委派验证者、不消耗返工预算，只把清单还回去让它继续。这条信息也**不流向验证者**（自述不参与独立判定）。
 
 ---
 
 ## 实例模型
 
-- 每次 `ralphflow_start` 在工作区 `.dsh/ralph-flow/instances/<实例ID>/` 下创建一个实例。
+- 每次 `ralphflow_start` 在工作区 `.dsh/ralph-flow/instances/<实例ID>/` 下创建一个实例（Flow / Graph 同根）。
 - 一个会话最多驱动一个实例；同一工作区的多个会话各驱动各的，互不干扰。
+- **Graph 实例**：DAG 就绪节点全部放行，由 DSH 的 agent 并发限制排队；每节点独立 agent / attempt / 产物；`manual_step` 节点在 CHECK 通过后停人工门；完成/取消**保留** `state.json`、日志、产物与 worktree，供交付验收与复核。宿主重开只标 `interrupted`，必须用户 `continue`。
+- Graph 的 CHECK 与 Flow 走同一个独立验证者运行时（T1）；节点 agent 看不到验证者，验证者看不到执行者自述。Git 节点在自己的分支上完成并合入集成分支，引擎只做快进。
 - 属主是实例状态里的 `owner_session` 字段。**接管的两条口径**：
   - `/ralphflow-continue` **只在无属主**（`owner_session` 为空）时自动接管——恰好一个无属主实例就直接接管；有属主（或不止一个无属主、无法判定）→ 列出候选（含属主会话）并要求 `/ralphflow-continue <实例ID>` **显式指定**（显式点名仍可接管有属主的实例）。
   - `/ralphflow-status` 无参且本会话没有活跃实例时，给**全部活跃实例的概览**（每行带属主会话，本会话的标出来），而不是随便挑最后一个实例讲成自己的；实例详情也显示属主会话。
-- 崩溃恢复不会隐式推进：插件重载时，**心跳已停止**的在飞验证委派被判为孤儿，判定作废、暂停 `check_infra`；心跳仍新鲜的委派一律不动（见[工作原理 → 崩溃恢复与心跳](how-it-works.md#崩溃恢复与心跳)）。
+- 崩溃恢复不会隐式推进：属主心跳过期 → 标中断（`host_restarted`）、清掉在飞委派，等 `/ralphflow-continue`；心跳还新鲜 → 等一个刷新窗口复查（区分另一个活着的 host 与快速重启），绝不误伤（见[工作原理 → 崩溃恢复与属主心跳](how-it-works.md#崩溃恢复与属主心跳)）。
 
 ---
 
@@ -139,12 +150,12 @@
 | `advance` / `gate_opened` / `gate_released` / `gate_reopened` | 推进与审查门 |
 | `check_skipped` | 本步无检查依据，跳过对抗性验证（**绝不写成检查通过**） |
 | `rework_rewind` | 判定失败，按 `on_fail` 返工 |
-| `pause` / `resume` | 暂停（`max_failures` / `check_infra` / `no_submit` / `user_cancelled`）与恢复 |
-| `submit_reminder` / `reminder_exhausted` | 忘了交卷的提醒与用尽后暂停 |
+| `pause` / `resume` | 暂停（`user_stop` / `max_failures` / `check_infra` / `no_submit`）与恢复 |
+| `submit_reminder` / `submit_activity` / `reminder_exhausted` | 回合收尾提醒（空回合 / 有动作）与到上限后的暂停 |
 | `manual_reset` / `manual_reset_dropped` | 手动重置生效 / 未生效（绝不静默作废） |
 | `rewind` | 用户回退到更早的步骤（含 `from → to：reason`） |
 | `reset_surface` / `reset_surface_skipped` / `reset_skipped_first_step` | 上下文重置落地 / 放弃 / 首步结构上无法重置 |
-| `adopted` / `orphan_delegation_recovered` | 接管实例 / 恢复心跳已停的孤儿委派 |
+| `adopted` / `interrupted` / `orphan_delegation_recovered` | 接管实例 / 属主心跳失联标中断 / 验证失败后按孤儿兜底重派 |
 | `verifier_prompt` / `verifier_result` | 验证者提示词与判定的原文快照 |
 
 > 另有诊断级事件（`state_write_failed`、`report_archive_failed`、`instance_dir_not_removed`、`deliver_failed`、`reset_surface_failed` 等）只写插件日志端口，用于排查，不改变推进判定。完整清单见[设计文档](v2/design.md)。
@@ -169,7 +180,7 @@ tail -10 .dsh/ralph-flow/instances/<实例ID>/execution.log
 
 ## 最终报告
 
-工作流完成或取消时，报告归档到 `<workspace>/.dsh/ralph-flow/reports/<实例ID>.md`（**永久保留**，历史的唯一入口）。
+工作流完成或取消时，报告归档到**项目根**的 `.dsh/ralph-flow/reports/<实例ID>.md`（**永久保留**，历史的唯一入口）。
 
 报告头部字段：
 
@@ -192,31 +203,37 @@ tail -10 .dsh/ralph-flow/instances/<实例ID>/execution.log
 
 ## 目录结构
 
-工作区运行时数据落在**发起会话的工作区**（dot-dir，与 opencode `.opencode/ralph-flow/`、claude `.claude/ralph-flow/` 形状一致）：
+运行时数据落在**项目根**（与 dsh 原生 Skill 同一条规则：从会话的当前目录向上最近的含 `.git` 的祖先目录；没有 `.git` 就用该目录本身）：
 
 ```
-<workspace>/.dsh/ralph-flow/
-├── workflows/                      # 自定义工作流 YAML（内置 loop/spec 不在此）
-├── instances/                      # 仅活跃实例的机器状态
+<项目根>/.dsh/ralph-flow/
+├── workflows/                      # Flow 资产（内置 loop/spec 不在此）
+├── graphs/                         # Graph 资产（内置 codewiki 不在此）
+├── instances/                      # 活跃 Flow 实例 + 保留的 Graph 实例
 │   └── <实例ID>/
-│       ├── state.json              # 工作流状态（勿手改）
-│       └── execution.log           # JSONL 执行日志
+│       ├── state.json              # 状态（勿手改；kind 区分 Flow/Graph）
+│       ├── execution.log           # JSONL 执行日志
+│       └── worktrees/              # 仅 Graph：每节点独立 worktree（节点分支 ralphflow-node/<实例>/<节点>）
 ├── reports/                        # 完成/取消后归档（永久）
 │   ├── <实例ID>.md
 │   └── <实例ID>-execution.log
 └── artifacts/                      # 每实例隔离的产出（永久；只有空目录随实例销毁）
     └── <产出目录名>/
+        └── nodes/                  # 仅 Graph：<node>/<attempt>/<artifact>
 ```
 
-全局工作流目录：
+用户级工作流目录（`$DSH_HOME` 支持 `~`，空值视为未设置，缺省 `~/.dsh`）：
 
 ```
-~/.dsh/ralph-flow/workflows/        # 所有工作区可用（$DSH_HOME 为绝对路径时以它为准）
+$DSH_HOME/ralph-flow/workflows/     # Flow：所有项目可用
+$DSH_HOME/ralph-flow/graphs/        # Graph：同上
 ```
 
-**实例状态字段**（`state.json`，由插件管理，勿手改）：`active`、`workflow_name`、`current_step`、`user_task`、`fail_counts`（每步一份）、`paused`、`pause_reason`、`do_submitted`、`owner_session`、`last_submit_summary`、`artifacts_dir_name`、`delegations`、`verdicts`、`history`、`started_at`、`updated_at`。
+**Flow 实例状态字段**（`state.json`，由插件管理，勿手改）：`active`、`workflow_name`、`current_step`、`user_task`、`fail_counts`（每步一份）、`paused`、`pause_reason`、`do_submitted`、`owner_session`、`last_submit_summary`、`artifacts_dir_name`、`delegations`、`verdicts`、`history`、`started_at`、`updated_at`。
 
-**一个工作区一个引擎**：引擎的根就是发起会话的工作区，所以列表、历史、`doctor`、自定义工作流查找全都落在同一个地方。工作区之间互相独立、互不可见，**没有全局索引**。
+**Graph 实例状态字段**：`kind: "graph"`、`active`、`workflow_name`、`user_task`、`owner_session`、`artifacts_dir_name`、`graph.asset`（启动时冻结）、`graph.status`、`graph.project`、`graph.integration`、`graph.attempts`、`graph.verdicts`、`graph.acceptances`、`graph.human_todos`、`graph.worktrees`、`history`。**没有** `node.status` / `currentStage` / `waitReason`——这些是投影，由状态现算。
+
+**一个项目根一个引擎**：引擎的根就是项目根，所以列表、历史、`doctor`、自定义工作流查找全都落在同一个地方；同一仓库的任意子目录会话共享这套状态。不同项目根之间互相独立、互不可见，**没有全局索引**。
 
 ---
 
@@ -224,6 +241,5 @@ tail -10 .dsh/ralph-flow/instances/<实例ID>/execution.log
 
 | 变量 | 作用 | 缺省 |
 |------|------|------|
-| `RALPHFLOW_WORKSPACE` | 引擎根的**回落值**（会话拿不到工作区信息时才用它；正常以会话工作区为准） | 进程 cwd |
-| `DSH_HOME` | 全局工作流目录的根（`$DSH_HOME/ralph-flow/workflows`） | `~/.dsh` |
+| `DSH_HOME` | 用户级目录的根（`$DSH_HOME/ralph-flow/{workflows,graphs}/`，与原生 Skill 同一套解析） | `~/.dsh` |
 | `RALPHFLOW_LOG_MAX_BYTES` | 执行日志单文件轮转阈值（正整数） | 10 MB |

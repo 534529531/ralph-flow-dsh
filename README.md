@@ -14,7 +14,7 @@
 
 ## 这是什么
 
-你让 AI"实现认证模块、写测试、更新文档、确认全绿"，它常常写了代码就停——测试没跑、文档没写。ralphflow 把这类多步骤承诺变成必须遵循的状态机：**每步做完，由独立的验证会话按检查依据取证判定，通过才放行**。
+你让 AI"实现认证模块、写测试、更新文档、确认全绿"，它常常写了代码就停——测试没跑、文档没写。ralphflow 把这类多步骤承诺变成必须遵循的执行结构：**每步/每个节点做完，由独立的验证会话按检查依据取证判定，通过才放行**。它支持两类工作流：**Flow**（顺序状态机、可循环返工）与 **Graph**（无环 DAG、节点并行与 Git 合入），一个插件、一套命令与工具。
 
 它不是提示词技巧，是插件级强制。两条中心定理决定了它为什么成立：
 
@@ -31,9 +31,9 @@ flowchart TD
     Start(["/ralphflow-start 或 /ralphflow-工作流名"]) --> Inst["创建实例，投递第一步 DO"]
     Inst --> DO["DO：主会话执行任务"]
     DO --> Submit{"调用 ralphflow_submit 交卷"}
-    Submit -->|"忘了交卷"| Remind["回合结束前提醒<br/>上限 2 次"]
-    Remind -->|"仍不交卷"| NoSubmit["暂停（no_submit）"]
-    Remind --> DO
+    Submit -->|"本步还没结束"| Remind["回合结束提醒<br/>连续空回合上限 2<br/>提醒预算 5（仅空回合）"]
+    Remind -->|"到上限"| NoSubmit["暂停（no_submit）"]
+    Remind -->|"开下一个回合"| DO
     Submit --> HasCheck{"本步有检查依据？<br/>check / check_voting"}
     HasCheck -->|"否"| Manual2{"在 manual_step 列表？"}
     Manual2 -->|"是"| Review2["停在审查门等人放行"]
@@ -72,16 +72,19 @@ CHECK 不是同一个会话再问一遍"你做完了吗"。它是一个**全新�
 | 上下文重置 | `/ralphflow-reset` 换干净上下文重做当前步；步骤级 `reset: true` / 工作流级 `auto_reset: true` 在步骤边界自动重置；**只换上下文、不赦免失败** |
 | 中途回退 | `/ralphflow-rewind <步骤> <原因>` 回退到当前步之前的步骤并换方向：状态机倒退、清暂停与失败计数、原因带进目标步 DO；暂停态也允许 |
 | 子工作流 | 一步整段委托给另一个工作流，多层嵌套，通用流程做成可复用资产（加载期静态展开） |
-| 多实例并行 | 一个工作区一个引擎；同一工作区多个会话各跑各的实例，互不干扰 |
+| 多实例并行 | 一个项目根一个引擎；同一项目多个会话各跑各的实例，互不干扰 |
 | 诊断与创建 | `/ralphflow-doctor` 提前抓定义错误与实例体检；`/ralphflow-create` 交互式设计并校验到零告警 |
 | 日志与报告 | JSONL 执行日志（含验证者提示词与判定原文）+ 逐步耗时/重试的归档报告 |
-| 方言共享 | 同一份工作流 YAML 在 opencode / claude / dsh 三端可跑；本端对"会让资产不再表示它所说的话"的配置一律加载期 fail-fast |
+| 方言共享 | 同一份 Flow YAML 在 opencode / claude / dsh 三端可跑；本端对"会让资产不再表示它所说的话"的配置一律加载期 fail-fast |
+| Graph DAG | `graphs/*.yaml`：无环依赖、就绪节点并行、逐节点产物与 CHECK、人工审查门；每个节点在自己的 Git worktree 与节点分支上提交，交卷前把集成分支合进来，引擎只接受快进（否则退回节点重做） |
+| 统一门面 | 一个插件、一套 `/ralphflow-*` 与 `ralphflow_*`；按资产的 `kind` 路由到 Flow 或 Graph，两种实例共用 `.dsh/ralph-flow/` 与报告 |
+| 只读查看器 | 右侧栏一个只读 tab：按 Flow/Graph 分组浏览步骤链 / DAG、节点 DO/CHECK 与当前状态；没有控制面 |
 
 ## 快速开始
 
 ### 安装
 
-前置：已安装 **dsh** 与 **pnpm**（`dsh plugin` 是 pnpm 的转发器）。已验证 npm 默认频道 `dsh@0.2.0-rc.2`（`cordis@4.0.4`）及原有 `dsh@0.2.1-alpha.1`；**不需要升级到 alpha**。宿主包由 dsh 提供，插件不会通过 peer 自动安装另一套宿主。
+前置：已安装 **dsh** 与 **pnpm**（`dsh plugin` 是 pnpm 的转发器）。已验证 npm 默认频道 `dsh@0.2.1-rc.2`（`cordis@4.0.5`）；同一条兼容路径也保留对 `dsh@0.2.0-rc.2` 的支持。宿主包由 dsh 提供，插件不会通过 peer 自动安装另一套宿主。
 
 ```bash
 dsh plugin --profile web add ralphflow-dsh
@@ -100,16 +103,22 @@ dsh plugin --profile web add ralphflow-dsh
 /ralphflow-loop "用 JWT + refresh token 实现用户认证模块"
 ```
 
-工作流自动执行、自动验证、自动推进，绝大多数时间你只需等。需要你出手的只有：人工审查门、以及三类暂停（连续失败 / 基础设施故障 / 忘了交卷的提醒用尽）——都用 `/ralphflow-continue` 放行或恢复。
+工作流自动执行、自动验证、自动推进，绝大多数时间你只需等。需要你出手的只有：人工审查门、以及三类自动暂停（连续失败 / 基础设施故障 / 回合反复空转）——都用 `/ralphflow-continue` 放行或恢复。
 
-跑完后报告归档到 `<workspace>/.dsh/ralph-flow/reports/`，交付物在 `.dsh/ralph-flow/artifacts/<产出目录名>/`（两者永久保留）。
+**想主动停就点发送键旁边的方块**：Flow 和 Graph 同一个动作——停止当前回合 = 暂停（`user_stop`），状态、判定与产物都保留。Graph 在跑后台节点时主会话没有可停的回合，输入区会出现独立的「暂停」按钮，效果相同。恢复用 `/ralphflow-continue`，结束用 `/ralphflow-cancel`。Graph 的在飞节点会被中断（attempt 标 `interrupted`），不再启动新节点；`continue` 时按 interrupted 路径重试。
 
-> **跑之前确认宿主有委派后端**：验证者需要一个**全新上下文**的子代理后端。若本部署没有（或缺少 persona / 工具白名单能力），验证会以**基础设施故障**暂停（`check_infra`），`/ralphflow-continue` 只会重派、无法让它通过——这时需要先在 dsh 里启用支持该能力的后端。
+**宿主重启 / 进程退出**：属主心跳失联 → 实例标**中断**（`host_restarted`），不再显示“执行中”；状态、判定与产出都保留，`/ralphflow-continue` 恢复。另一个活着的 dsh 正在驱动同一个实例时不会被误标（心跳还在走）。
+
+跑完后报告归档到**项目根**的 `.dsh/ralph-flow/reports/`，交付物在 `.dsh/ralph-flow/artifacts/<产出目录名>/`（两者永久保留）。
+
+**项目根**与 dsh 原生 Skill 同一条规则：从会话的当前目录（`/cd` 之后按新目录）向上最近的含 `.git` 的祖先目录；没有 `.git` 就用该目录本身。同一仓库的任意子目录会话共享同一套资产、实例、报告与产出。用户级资产在 `$DSH_HOME/ralph-flow/`（`DSH_HOME` 支持 `~`，空值视为未设置，缺省 `~/.dsh`）。
+
+> **跑之前确认宿主有委派后端**：验证者需要一个**全新上下文**的子代理后端。dsh 0.2.1-rc.2 起验证者的身份与只读工具面经 `ralphflow-verifier` Agent Preset 提供，因此宿主还需装配 `agentPresets` 服务（标准 **web** 组合已带；headless 或自定义组合需要在 profile 里加 `@deepseek-ai/dsh-agent-preset-registry` 行）；旧版 0.2.0 则使用 persona / toolFilter 通道。缺少这些能力时，验证会以**基础设施故障**暂停（`check_infra`），`/ralphflow-continue` 只会重派、无法让它通过——这时需要先在 dsh 里启用支持该能力的后端。
 
 ### 定义你自己的工作流
 
 ```yaml
-# <workspace>/.dsh/ralph-flow/workflows/my-flow.yaml
+# <项目根>/.dsh/ralph-flow/workflows/my-flow.yaml
 description: 实现、测试并文档化一个功能
 
 steps:
@@ -140,10 +149,10 @@ steps:
 
 **DO → CHECK → 推进。** 每个步骤分两个阶段：
 
-- **DO（主会话）**执行任务，最后调用 `ralphflow_submit` 工具交卷（dsh 原生：工具调用即事实，工具结果结束回合）
+- **DO（主会话）**执行任务，最后调用 `ralphflow_submit` 工具交卷（dsh 原生：工具调用即事实，工具结果结束回合）。`unfinished` 只列本轮结束时还没完成的事项；没有就留空。是否完成由独立验证者判定。列出未完成项 = 报进度：不启动验证、不占返工预算，引擎把清单还给模型接着做
 - **CHECK（独立会话）**严格对照检查依据取证评判，不和 DO 阶段共享记忆
 
-**交卷是工具调用，不是文本标记。** 不再对模型自由文本做正则匹配——`ralphflow_submit` 的调用是事实。忘了交卷时，回合结束前会收到提醒（上限 2 次），用尽则暂停等你，绝不死循环催促。
+**交卷是工具调用。** 调用 `ralphflow_submit` 即事实，引擎据此结束本轮；只有 `unfinished` 为空才进入验证——非空时引擎只记一条进度、不拉起验证者，把清单还给模型继续做。留空表示没有剩余事项，是否完成由独立验证者判定。回合即将结束时本步还没交卷，引擎会提醒：还有没完成的事项就写进 `unfinished`；没有就留空交卷；在等你回答就直接说。**提醒开的是下一个回合**（本回合先正常收尾，提醒是下一回合的第一条消息：一轮 = 一个回合，不会把一个回合越续越长）。**有工具调用的提醒不累计**（交卷本身不算干活，带未完成项的进度记录算）；连续 2 次空回合（提醒之间没有任何工具调用）就暂停等你。本步还有**提醒预算 5 次**（与 opencode 版 `MAX_DO_REINJECT` 同数）：预算用完之后**再出现空回合**才暂停 —— 每轮都在动工具的循环不设天花板，别让月级任务被次数掐死。
 
 **独立验证不是自问自答。** 验证者的后端按**能力**选择（只考虑全新上下文的委派后端，绝不回退到继承父级历史的 `fork`）；身份与职责是插件内部定义，工作流无法配置。它只有只读工具，必须自己看文件、跑命令找证据。**它看不到执行者的交卷摘要**——自述是锚点，会软化独立判定。
 
@@ -173,10 +182,13 @@ steps:
 | `/ralphflow-cancel [实例ID] [原因]` | 命令 | 取消并归档报告 |
 | `/ralphflow-reset` | 命令 | 换干净上下文重做当前步（**机械命令**，不注册工具） |
 | `/ralphflow-rewind <步骤> <原因>` | 命令 | 回退到更早的步骤并换方向（**机械命令**，不注册工具） |
-| `/ralphflow-doctor` | 命令 | 诊断工作流定义与实例状态（只报问题与修法，不代你修） |
-| `/ralphflow-create [流程想法]` | 命令 | 交互式设计自定义工作流，校验到全部 ✅ 且无告警 |
+| `/ralphflow-cleanup [实例ID]` | 命令（Graph only） | 清理已结束 Graph 实例的干净 worktree；不动 state/artifacts/reports |
+| `/ralphflow-doctor [工作流或路径]` | 命令 | 诊断工作流定义与实例状态（只报问题与修法，不代你修） |
+| `/ralphflow-create [流程想法]` | 技能（由描述触发） | 先问 `kind`：Flow 直接设计；Graph 启动 `create-graph` 设计运行（grill → spec → tickets → DAG） |
 
-命令语义 = **触发词**：`/ralphflow-*` 一律由模型自然语言回复（含用法错误），零程序化卡片返回。两条机械命令是例外——`/ralphflow-reset` 与 `/ralphflow-rewind` 的机械动作由命令处理器直接驱动引擎完成，结果仍交回模型自然语言回复，且**都不给模型可调用的工具**。逐条归类与理由见 [`docs/v2/skills-vs-commands.md`](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/v2/skills-vs-commands.md)。
+Graph 实例的人工审查门用 `ralphflow_respond` 回答（“批准此版本”或说明要改什么），不用 `/ralphflow-continue` 代答；`/ralphflow-reset` 与 `/ralphflow-rewind` 对 Graph 明确拒绝（Graph 是无环 DAG，局部返工由 CHECK/人工门驱动）。
+
+命令语义 = **触发词**：`/ralphflow-*` 一律由模型自然语言回复（含用法错误），零程序化卡片返回。机械命令是例外——`/ralphflow-reset`、`/ralphflow-rewind`（Flow-only）与 `/ralphflow-cleanup`（Graph-only）的机械动作由命令处理器直接驱动引擎完成，结果仍交回模型自然语言回复，且**都不给模型可调用的工具**。暂停没有命令：统一用发送键旁的停止按钮；Graph 后台节点在飞、主回合不可停时，输入区会出现独立的「暂停」按钮。逐条归类与理由见 [`docs/v2/skills-vs-commands.md`](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/v2/skills-vs-commands.md)。
 
 ## 内置工作流
 
@@ -211,7 +223,21 @@ flowchart LR
 
 `propose` 是人工审查门（验证通过后停下等你放行）；`propose` 与 `implement` 标了 `reset: true`，进入时换干净上下文。
 
-> **内置工作流不落盘**（对齐 opencode/claude）：它们只存在于插件目录，加载时回落取用，因此**始终是随插件发布的最新版本**。要定制，就在 `<workspace>/.dsh/ralph-flow/workflows/` 放一个同名文件——它会遮蔽内置（这是唯一的定制入口，也是有意行为）。
+### Graph 内置：codewiki
+
+Graph 资产放在 `graphs/`，与 Flow 的 `workflows/` 分开；一个运行根、一套报告。
+
+```
+/ralphflow-codewiki "把这个仓库写成 wiki，输出到 docs/wiki，语言 zh-CN"
+/ralphflow-create "把发布流程做成并行 Graph"
+```
+
+- **codewiki**：盘点仓库 → 并行写核心/模块/运维页面 → 汇总校验；从任务文本读取 repository/outputDir/language，演示 Git 隔离、并行、逐步骤 CHECK 与交付。
+- **create-graph**：设计 Graph DAG 的 Flow 工作流（grill → spec → tickets → graph），不是 Graph 执行器；spec/tickets 各带独立 CHECK 和人工门。`/ralphflow-create` 的 Graph 分支启动它；生成的资产只保存，**不会自动启动**。
+- Graph 实例完成后**保留** `state.json`、执行日志与产物（供复核与交付验收），与 Flow 的“跑完归档报告并销毁实例目录”不同；取消也保留。`/ralphflow-cleanup` 只清干净、已登记的节点 worktree。
+- 只读查看器在右侧栏：顶部选 Flow/Graph 资产，Graph 显示 DAG 与节点详情；启动与审查放行仍在聊天/命令里完成；暂停点发送键旁的停止按钮，Graph 后台节点在飞时点输入区的「暂停」。
+
+> **内置工作流不落盘**（对齐 opencode/claude）：它们只存在于插件目录，加载时回落取用，因此**始终是随插件发布的最新版本**。要定制，就在 `<项目根>/.dsh/ralph-flow/workflows/` 放一个同名文件——它会遮蔽内置（这是唯一的定制入口，也是有意行为）。Graph 的同名定制文件放 `<项目根>/.dsh/ralph-flow/graphs/`；跨类别同名是冲突，必须改名。
 
 ## 与 opencode 和 claude 版的关系
 
@@ -219,7 +245,7 @@ flowchart LR
 
 | 主题 | opencode / claude 版 | 本端（dsh） |
 |------|---------------------|-------------|
-| DO 交卷 | 输出 `<promise>done</promise>` 文本标记，由 idle 驱动正则检测 | **调用 `ralphflow_submit` 工具**（工具调用即事实）；忘了交卷由 `agent/turn-stopping` 提醒，上限 2 次 |
+| DO 交卷 | 输出 `<promise>done</promise>` 文本标记，由 idle 驱动正则检测 | **调用 `ralphflow_submit` 工具**（工具调用即事实）；回合结束由 `agent/turn-stopping` 提醒（连续空回合 2 次即暂停；提醒预算 5 次，且只在空回合上触发） |
 | 验证超时 | `adversarial_check.timeout_ms` | **不设**：委派生命周期交给宿主 dsh 的原生看门狗；写了该键是加载期告警 + 忽略 |
 | 验证者额外可读目录 | `extra_dirs` | **不存在对应物**：子代理继承发起会话的工作区与权限面，权限是宿主的职责 |
 | 子工作流 | 运行期状态栈，最多 5 层 | **加载期静态展开**，步骤总数上限 2000、嵌套深度上限 32；零新增实例状态字段 |
@@ -233,11 +259,11 @@ flowchart LR
 
 | 想了解 | 看这个 |
 |--------|--------|
-| 创建自己的工作流（YAML 字段、check 可选、重置门、回退、嵌套、多验证者投票） | [自定义工作流指南](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/custom-workflows.md) |
+| 创建自己的工作流（Flow / Graph YAML 字段、check 可选、重置门、回退、嵌套、投票、DAG、Git 合入） | [自定义工作流指南](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/custom-workflows.md) |
 | 架构、状态模型、独立验证、生命周期、工作区锚定 | [工作原理](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/how-it-works.md) |
 | 所有命令、工具、日志事件、实例目录结构 | [命令参考](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/commands.md) |
 | 完整导航（阅读顺序、场景速查、设计档案索引） | [文档主页](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/README.md) |
-| 设计定稿与宪法（不可违反的十二条） | [设计文档](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/v2/design.md) |
+| 设计定稿与宪法（不可违反的十六条） | [设计文档](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/v2/design.md) |
 | 历史任务书与验收证据 | [docs/v2/](https://github.com/534529531/ralph-flow-dsh/tree/main/docs/v2) |
 | 怎么发版（维护者） | [发版](https://github.com/534529531/ralph-flow-dsh/blob/main/docs/releasing.md) |
 
@@ -245,7 +271,7 @@ flowchart LR
 
 ralphflow 的名字和核心理念（执行 → 验证 → 重试）来自 [ralph-loop](https://github.com/charfeng1/opencode-ralph-loop) 提示词模板。内置的 `loop` 工作流是其工作流化实现，`spec` 受 [OpenSpec](https://github.com/Fission-AI/OpenSpec) 启发重新设计。
 
-姊妹实现：[opencode 版](https://github.com/534529531/ralph-flow)（`@yibener/ralph-flow`）与 claude code 版。多步骤状态机、独立验证、重置门等架构经验从 gsd2（现 [gsd-pi](https://github.com/open-gsd/gsd-pi)）吸取了大量工程教训。
+姊妹实现：[opencode 版](https://github.com/534529531/ralph-flow)（`@yibener/ralph-flow`）与 claude code 版。Flow YAML 是三端共享方言；**Graph 是 dsh 专属类别**，不进入跨端方言承诺。多步骤状态机、独立验证、重置门等架构经验从 gsd2（现 [gsd-pi](https://github.com/open-gsd/gsd-pi)）吸取了大量工程教训。
 
 与 ralph-loop 的关键差异：ralphflow 是插件级状态机而非提示词——具备独立验证（不依赖"自己审查自己"）、多步骤流水线、暂停/恢复、中途回退、可组合子工作流和完整日志记录。
 
