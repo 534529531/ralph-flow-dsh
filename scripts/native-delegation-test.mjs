@@ -54,7 +54,7 @@ console.log("D1 委派请求只带 dsh 契约字段，不注入自造超时");
   // ── §1.7 产出目录：DO 与 CHECK 提示词都注入，且验证者按相对路径读得到 ──────
   // 目录名 = 任务摘要 slug + instId 尾段，可能含中文/emoji，故用宽松的相对路径正则。
   const relRe = /\.dsh\/ralph-flow\/artifacts\/[^/`\s]+/;
-  check("DO 提示词含产出目录行 + 工作区相对路径", startRes.text.includes("## 产出目录") && relRe.test(startRes.text), startRes.text.slice(-260));
+  check("DO 提示词含落点行 + 工作区相对路径", startRes.text.includes("## 落点") && relRe.test(startRes.text), startRes.text.slice(-260));
   const relFromDo = startRes.text.match(relRe)?.[0];
   // 先把真实产出写进去，再交卷 —— 它必须在实例销毁后原样存活。
   if (relFromDo) fs.writeFileSync(path.join(ws, relFromDo, "summary.md"), "verified-by-check\n", "utf-8");
@@ -69,14 +69,14 @@ console.log("D1 委派请求只带 dsh 契约字段，不注入自造超时");
     JSON.stringify(Object.keys(captured ?? {})));
 
   const prompt = captured?.request?.prompt?.[0]?.text ?? "";
-  check("CHECK 提示词含本步上下文与产出目录行", prompt.includes("## 本步上下文") && prompt.includes("**产出目录**"));
+  check("CHECK 提示词含本步上下文与落点行", prompt.includes("## 本步上下文") && prompt.includes("## 落点"));
   check("CHECK 提示词含交付物（DO 的 output 承诺）", prompt.includes("交付物") && prompt.includes("实现的代码/文件"), prompt.slice(0, 400));
   // 回归：验证者曾被副本带偏（RA2 取证原文把「产出目录 summary.md 与仓库 summary.md 逐字节相同」
   // 判成了正确）。CHECK 必须写明落点边界，并明说工作目录里的副本是落点错误、不算满足。
-  check("CHECK 提示词写明过程文档/产物落点边界",
-    prompt.includes("过程文档") && prompt.includes("工作目录只放本步的**产物**") && prompt.includes("明确路径"), prompt.slice(0, 600));
-  check("CHECK 提示词明说工作目录里的副本是落点错误、不算满足",
-    prompt.includes("落点错误") && prompt.includes("不要把副本判成满足"), prompt.slice(0, 600));
+  check("CHECK 提示词写明过程记录/交付物落点边界",
+    prompt.includes("过程记录") && prompt.includes("交付物") && prompt.includes("明确路径"), prompt.slice(0, 600));
+  check("CHECK 提示词明说工作目录里的副本不算满足",
+    prompt.includes("副本") && prompt.includes("不算满足"), prompt.slice(0, 600));
   const rel = prompt.match(relRe)?.[0];
   check("CHECK 提示词含工作区相对产出路径", !!rel, prompt.slice(0, 300));
   check("DO/CHECK 指向同一个产出目录", !!rel && rel === relFromDo, JSON.stringify({ rel, relFromDo }));

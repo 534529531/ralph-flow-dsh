@@ -162,8 +162,8 @@ console.log("\nS5 工具/命令/技能描述：无 check 的步骤不得被描�
   const byName = (n) => registered.tools.find((t) => t.name === n);
   const startDesc = byName("ralphflow_start")?.description ?? "";
   const submitDesc = byName("ralphflow_submit")?.description ?? "";
-  // 启动类快捷入口现在是**技能**（不是命令）：描述是触发词（逐字固定），
-  // 「有 check / 没有 check」的限定随**技能正文**（机制说明）进对话。
+  // 启动类快捷入口现在是**技能**（不是命令）：工具描述只讲启动与返回 DO，
+  // 执行细节随**技能正文**（机制说明）进对话。
   const startSkill = (registered.skills ?? []).find((s) => s.name === "ralphflow-start");
   const startSkillContent = startSkill?.content ?? "";
   // continue 指令是**投递给模型**的文本：走真实 handler，再从投递队列里取回
@@ -171,18 +171,19 @@ console.log("\nS5 工具/命令/技能描述：无 check 的步骤不得被描�
   await registered.commands.find((c) => c.name === "ralphflow-continue")
     .handler({ rawInput: "", agent: { session: { id: pid } }, signal: new AbortController().signal });
   const continueText = delivered.map((m) => JSON.stringify(m?.content ?? m)).join("\n");
-  check("ralphflow_start 描述限定「有 check 的步骤」才独立验证、无 check 则跳过",
-    startDesc.includes("有 `check`") && startDesc.includes("没有 `check`") && startDesc.includes("跳过对抗性验证"), startDesc);
+  check("ralphflow_start 描述只讲启动与返回 DO（≤100 字符）",
+    startDesc.length <= 100 && startDesc.includes("Flow 或 Graph") && startDesc.includes("DO") && startDesc.includes("Git"), startDesc);
   check("ralphflow_submit 描述只讲交卷/剩余事项，不预告验证或 CHECK",
-    submitDesc.includes("`unfinished`") && submitDesc.includes("留空") && submitDesc.includes("没有次数上限")
+    submitDesc.includes("`unfinished`") && submitDesc.includes("留空") && submitDesc.includes("交卷结束本轮")
     && !submitDesc.includes("独立验证") && !submitDesc.includes("CHECK"), submitDesc);
-  check("ralphflow-start 已是技能（同名命令不存在），技能正文同样限定（有 check → 独立验证；无 check → 跳过）",
+  check("ralphflow-start 已是技能（同名命令不存在），正文只留技能层机制",
     !registered.commands.some((c) => c.name === "ralphflow-start")
-      && startSkillContent.includes("有 `check`") && startSkillContent.includes("没有 `check`"),
+      && startSkillContent.includes("工作流机制") && startSkillContent.includes("独立验证者看不到本对话"),
     `commands=${registered.commands.map((c) => c.name).join(",")}`);
   check("continue 指令说明手动审查的两种情形（有 check 通过 / 无 check 跳过）",
     continueText.includes("有 `check`") && continueText.includes("没有 `check`") && continueText.includes("跳过对抗性验证"), continueText.slice(0, 220));
-  check("有 check 的语义在 start/continue 描述里如实保留；submit 只讲交卷", /取证判定/.test(startDesc) && !/取证判定/.test(submitDesc) && /跳过对抗性验证/.test(continueText));
+  check("有 check 的语义在 continue 指令里如实保留；submit 只讲交卷",
+    /跳过对抗性验证/.test(continueText) && !/取证判定/.test(submitDesc) && !/跳过对抗性验证/.test(submitDesc));
   fs.rmSync(ws, { recursive: true, force: true });
 }
 

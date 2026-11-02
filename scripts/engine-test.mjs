@@ -102,7 +102,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     r.text.includes(`接下来：模型执行本步 → 交卷 → **${LOOP_VOTERS} 个独立验证者**（独立会话，看不到本对话）并行取证判定，**全过才放行** → 通过则推进，不通过自动返工。`),
     r.text.slice(0, 320));
   check("投票首步：DO prompt 只给判据与交卷指令，不预告交卷后的验证",
-    r.text.includes("## 本步验收依据（供自查）") && r.text.includes("交卷工具会结束当前回合")
+    r.text.includes("## 本步验收依据（供自查）") && r.text.includes("交卷后引擎接手")
     && !r.text.includes("各自只查一条检查依据") && !r.text.includes("引擎会启动独立验证"),
     r.text.slice(-420));
   scripted.push(...votes({ status: "passed", reason: "文件存在且内容正确" }));
@@ -341,22 +341,21 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   const artDir = path.join(ws, ".dsh", "ralph-flow", "artifacts", artName);
   check("每实例产出目录已建好（任务摘要 slug + id 尾段）", fs.existsSync(artDir), artDir);
   check(
-    "DO 提示词含产出目录（工作区相对路径）",
-    r.text.includes("## 产出目录") && r.text.includes(`.dsh/ralph-flow/artifacts/${artName}/`),
+    "DO 提示词含落点（工作区相对路径）",
+    r.text.includes("## 落点") && r.text.includes(`.dsh/ralph-flow/artifacts/${artName}/`),
     r.text.slice(-260),
   );
-  // 回归：光有「## 产出目录」这一节**不算守住边界**（上一轮就是这么漏过去的）——
-  // 必须断言这一节真的写明了「过程文档 vs 产物」的落点，且拼装后不与其它节打架。
+  // 回归：落点按**概念**说 —— 过程记录进产出目录，交付物落工作目录或 output 路径。
   // 更细的整篇分节自洽断言在 scripts/artifact-placement-test.mjs。
   check(
-    "DO 产出目录一节写明过程文档/产物落点边界（不只断言有这一节）",
-    r.text.includes("过程文档") && r.text.includes("工作目录只放本步的**产物**")
-      && r.text.includes("同一份过程文档只写一处") && r.text.includes("明确路径"),
+    "DO 落点写明过程记录/交付物的落点边界（不只断言有这一节）",
+    r.text.includes("过程记录") && r.text.includes("交付物")
+      && r.text.includes("只写文件名") && r.text.includes("`output` 里写了明确路径的，按那个路径"),
     r.text.slice(-420),
   );
   const delivSection = r.text.includes("## 交付物") ? r.text.split("## 交付物")[1].split("\n## ")[0] : "";
   check(
-    "DO 交付物一节不含过程文档 summary.md（拼装后与产出目录自洽）",
+    "DO 交付物一节不含过程文档 summary.md（落点与交付物分开说）",
     delivSection.trim().length > 0 && !delivSection.includes("summary.md"),
     delivSection,
   );
@@ -627,8 +626,9 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   }, true);
   check("CHECK 含步骤 desc", prompt.includes("## 本步上下文") && prompt.includes("写文档"));
   check("CHECK 含交付物（DO 的承诺）", prompt.includes("交付物") && prompt.includes("x.md + summary.md"));
-  check("CHECK 含产出目录（工作区相对路径）", prompt.includes("`.dsh/ralph-flow/artifacts/inst-1/`"), prompt);
-  check("CHECK 要求去产出目录取证", prompt.includes("产出目录也在这个工作区内"));
+  check("CHECK 含落点（工作区相对路径）", prompt.includes("## 落点") && prompt.includes("`.dsh/ralph-flow/artifacts/inst-1/`"), prompt);
+  check("CHECK 要求按落点取证（过程记录用文件名读到、交付物在工作目录）",
+    prompt.includes("过程记录") && prompt.includes("用文件名即可读到") && prompt.includes("工作目录"));
   // T1 硬规则：验证者只看结果，不看执行者怎么做的/自称做了什么
   // （opencode 与 claude 版同样从不传入自述，并明令"不要依赖任何外部提供的实现总结"）
   check("CHECK 不注入「执行者交卷摘要」段", !prompt.includes("执行者交卷摘要"), prompt);
@@ -910,7 +910,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     check("17b start 回执不预告独立验证、写明停在审查门",
       !r.text.includes("取证判定") && r.text.includes("停在审查门等你 `/ralphflow-continue` 放行"), r.text.slice(0, 360));
     check("17b 无 check 的 DO 同样注入「剩余事项清单」（不泄露验证触发）",
-      r.text.includes("还没完成的事项") && r.text.includes("留空") && r.text.includes("没有时按「本步要做什么」与「交付物」")
+      r.text.includes("还没完成的事项") && r.text.includes("留空") && r.text.includes("完成条件逐条满足")
       && !r.text.includes("引擎会启动独立验证"), r.text.slice(-300));
     // 回合收尾提醒（模型可见）不得谎称会开始独立验证 —— 本步本来就不验证
     const remGate = engine.remindToSubmit(s);
@@ -1052,7 +1052,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     check("17e continue 的 DO 写明跳过对抗性验证",
       c.ok && text.includes("## 验证方式") && text.includes("跳过对抗性验证"), text.slice(-300));
     check("17e continue 的 DO 仍是任务书（任务 / 本步要做什么）",
-      text.includes("## 任务") && text.includes("做唯一的事") && text.includes("## 交卷方式"), text.slice(0, 300));
+      text.includes("## 任务") && text.includes("做唯一的事") && text.includes("## 交卷"), text.slice(0, 300));
   }
 }
 

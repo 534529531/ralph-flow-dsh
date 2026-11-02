@@ -159,11 +159,31 @@ function isDirectory(target: string): boolean {
  * 与 dsh 注入 Skill 资源根的两句同构（名词不同）：模型在 Skill 里见过同一个形状，迁过来没有
  * 新概念。**只在这里写一次** —— Flow/Graph × 执行者/验证者四处注入点都引用它。
  *
- * 第二句限定在**资产资源**：要写出的交付物仍按 `output` / 任务指定的落点。边界按**用途**
- * （读参考材料 vs 写交付物）划，不按「文件名是否带路径」划 —— 短指针 `format.md` 是资产资源，
- * `summary.md` 是过程文档，两者都可以是裸文件名。
+ * 这一节只说**资产资源**的参考根；过程记录与交付物的落点由 {@link placementSection} 说。
  */
 export function assetReferenceSection(root: string | undefined): string | undefined {
   if (!root) return undefined;
-  return `## 资产目录\n\`${root}\` —— 本资产的基准目录。\n本资产自己的资源（契约、模板、校验清单等）若用相对路径，先相对这个基准目录解析再使用，需要的资源才读取；要写出的交付物按各自的落点（\`output\`、任务指定的落点），不在这个目录。`;
+  return `## 资产目录\n\`${root}\` —— 本资产资源的基准目录：本资产引用的契约、模板、校验清单按它解析，需要时再读。`;
+}
+
+/**
+ * 过程记录 / 交付物 的落点段。DO 与 CHECK 共用这一份文案。
+ *
+ * 判据是**概念**（过程记录 vs 交付物），不是路径写法：过程记录一律落 `rel`，交付物落工作
+ * 目录或 `output` 写明的路径。`rel` 由调用方传入（现有 `artifactsRelDir`）。
+ */
+export function placementSection(rel: string, forVerifier?: boolean): string {
+  if (forVerifier) {
+    return [
+      "## 落点",
+      `过程记录（清单、方案、报告、摘要、草稿）在 \`${rel}/\` 里，用文件名即可读到。`,
+      "交付物（代码、文档产品、可执行文件）在工作目录；`output` 里写了明确路径的，按那个路径。",
+      "判定只认落点上的那份：同一份过程记录在工作目录里的副本，不算满足。",
+    ].join("\n");
+  }
+  return [
+    "## 落点",
+    `过程记录（清单、方案、报告、摘要、草稿）写进 \`${rel}/\`：只写文件名，不写路径。`,
+    "交付物（代码、文档产品、可执行文件）落工作目录；`output` 里写了明确路径的，按那个路径。",
+  ].join("\n");
 }

@@ -44,12 +44,11 @@ try {
   assert(propose.includes("留空"));
   assert(propose.includes("完成条件"));
   assert(propose.includes("确实被阻塞"));
-  assert(propose.includes("剩余工作清单"));
-  assert(propose.includes("不是完成声明"));
-  assert(propose.includes("每一条都能指出可复核的证据"));
-  assert(propose.includes("把**还没完成的事项**逐条写进 `unfinished`"));
-  assert(propose.includes("调用 `ralphflow_submit` 结束本轮"));
-  assert(propose.includes("被打回会整步返工"));
+  assert(propose.includes("引擎会把清单还给你接着做"));
+  assert(propose.includes("每条都有可复核的证据"));
+  assert(propose.includes("把还没完成的事项写进 `unfinished`"));
+  assert(propose.includes("调用 `ralphflow_submit`"));
+  assert(propose.includes("计划与完成分开写"));
   // 不向执行者泄露判定的触发条件：DO 不能再把「没有剩余事项」和「启动验证」绑在一起。
   assert(!propose.includes("留空 = 做完了") && !propose.includes("完成开关"));
   assert(!propose.includes("没有剩余事项**") && !propose.includes("还有剩余事项"));
@@ -58,8 +57,7 @@ try {
   assert(propose.includes("proposal 的每条验收标准都有明确任务承接"));
   assert(propose.includes("proposal.md（本实例产出目录，含需求与已确认决定）"));
   assert(propose.includes("用户新反馈时先更新 proposal.md"));
-  assert(propose.includes("审查门"));
-  assert(propose.includes("交卷工具会结束当前回合"));
+  assert(propose.includes("交卷后引擎接手"));
   assert(checks[0].includes("reason 必须自包含"));
   assert(!checks[0].includes("explore complete"));
   assert(fs.readFileSync(`${artifactDir}/proposal.md`, "utf8").includes("保留现有 API"));
@@ -68,14 +66,16 @@ try {
   fs.writeFileSync(`${artifactDir}/tasks.md`, "- [ ] 保留 API 并验证原调用\n");
   assert(engine.continueInstance("owner").ok); await settle();
   const implement = delivered.at(-1);
-  assert(implement.includes("剩余工作清单"));
+  assert(implement.includes("把还没完成的事项写进 `unfinished`"));
+  assert(implement.includes("引擎会把清单还给你接着做"));
   assert(implement.includes("先读 proposal.md、tasks.md"));
   assert(implement.includes("proposal.md + tasks.md（+ 已有 design.md）"));
   assert(implement.includes("项目没有某类工具时"));
   assert(!implement.includes("每任务单独一个提交"));
   assert(!implement.includes("只改代码"));
   assert(resets.length >= 2, "real engine requests reset at propose and implement");
-  assert(SHARED_MECHANISM.includes("基础设施故障自动重验一次"));
+  assert(SHARED_MECHANISM.includes("独立验证者看不到本对话"));
+  assert(SHARED_MECHANISM.includes("交卷后由引擎投递下一步"));
   assert(!SHARED_MECHANISM.includes("简短地确认一下"));
   assert(VERIFIER_PERSONA.includes("DO 是被验收工作的说明"));
   assert(VERIFIER_PERSONA.includes("文档本身是交付物"));

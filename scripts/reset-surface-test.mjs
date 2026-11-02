@@ -496,8 +496,8 @@ console.log("\n1) 真实跑一次（reset: true 的第二步）");
     && texts[1].includes("`ralphflow_submit`")
     // 不含「已完成/✓/👈」这类勾选事实（要它就得造事实源 = 新增状态字段）
     && !/已完成|✅|👈/.test(texts[1]), texts[1]);
-  check("③ 第 2 条是本步 DO（任务书 + 本步要做什么 + 产出目录）",
-    texts[2].includes("任务书 T") && texts[2].includes("做第二步的工作") && texts[2].includes("产出目录"), texts[2]?.slice(0, 120));
+  check("③ 第 2 条是本步 DO（任务书 + 本步要做什么 + 落点）",
+    texts[2].includes("任务书 T") && texts[2].includes("做第二步的工作") && texts[2].includes("落点"), texts[2]?.slice(0, 120));
   check("旧对话 100% 不进模型上下文（被 shadow）",
     !texts.some((t) => t.includes("重构登录模块")) && !texts.some((t) => t.includes("旧回复")), JSON.stringify(texts.map((t) => t.slice(0, 30))));
   check("DO 确实被投递到收件箱（交接完成后才投递，顺序不可颠倒）",

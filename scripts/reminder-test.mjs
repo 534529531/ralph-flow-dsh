@@ -197,8 +197,8 @@ console.log("\nR6 提示词问的是「还有没有剩余事项」");
   const r = E.engine.remindToSubmit(sid);
   check("没有剩余事项：留空并结束本轮（不预告验证）",
     r.message.includes("留空") && r.message.includes("ralphflow_submit") && !r.message.includes("引擎会启动") && !r.message.includes("交卷后引擎才会开始独立验证"), r.message);
-  check("还有剩余事项：逐条写进 unfinished", r.message.includes("还没完成的事项") && r.message.includes("逐条写进 `unfinished`"), r.message);
-  check("在等用户：调用 ask_user_question", r.message.includes("需要用户决定：调用 `ask_user_question`"), r.message);
+  check("还有剩余事项：写进 unfinished", r.message.includes("还没完成的事项") && r.message.includes("写进 `unfinished`"), r.message);
+  check("在等用户：调用 ask_user_question", r.message.includes("需要用户决定时调用 `ask_user_question`"), r.message);
   check("不再出现「你怎么还没交卷」式的标题", !r.summary.includes("尚未交卷") && r.summary.includes("还没结束"), r.summary);
 }
 
@@ -213,7 +213,7 @@ console.log("\nR7 长上下文：催促消息必须自包含（不依赖已经�
   check("带任务原文", r.message.includes("回合收尾任务书"), r.message);
   check("带输入", r.message.includes("## 输入") && r.message.includes("上游产出"), r.message);
   check("带本步要做什么", r.message.includes("## 本步要做什么") && r.message.includes("做这一步的工作"), r.message);
-  check("带产出目录", /## 产出目录/.test(r.message) && /\.dsh\/ralph-flow\/artifacts\//.test(r.message), r.message);
+  check("带落点", /## 落点/.test(r.message) && /\.dsh\/ralph-flow\/artifacts\//.test(r.message), r.message);
   check("带交付物", r.message.includes("## 交付物") && r.message.includes("本步产出"), r.message);
   check("带自查依据", r.message.includes("## 本步验收依据（供自查）") && r.message.includes("这一步是否真的完成"), r.message);
 }

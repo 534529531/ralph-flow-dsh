@@ -332,15 +332,15 @@ async function main() {
     check("DO 里提到的资产资源（notes.md）能用注入根直接解析",
       promptResources(flowDo, doRoot).includes("notes.md"), JSON.stringify(promptResources(flowDo, doRoot)));
     const assetSec = sectionOf(flowDo, "资产目录") ?? "";
-    const outSec = sectionOf(flowDo, "产出目录") ?? "";
-    check("资产目录一节把参考根限定为资产自己的资源（相对路径解析 + 按需读取）",
-      assetSec.includes("本资产自己的资源") && assetSec.includes("资源才读取"), assetSec);
-    check("资产目录一节按用途划界：资源按基准目录解析，要写出的交付物按各自落点",
-      assetSec.includes("要写出的交付物") && assetSec.includes("不在这个目录"), assetSec);
+    const outSec = sectionOf(flowDo, "落点") ?? "";
+    check("资产目录一节把参考根限定为资产自己的资源（按它解析 + 需要时再读）",
+      assetSec.includes("本资产资源的基准目录") && assetSec.includes("按它解析") && assetSec.includes("需要时再读"), assetSec);
+    check("资产目录一节不重复落点规则（过程记录 / 交付物由 ## 落点 说）",
+      assetSec.includes("资产资源") && !assetSec.includes("交付物") && !assetSec.includes("过程记录"), assetSec);
     check("资产目录一节不把「裸文件名」当成过程文档的判据（短指针 format.md 也是资源）",
       assetSec.length > 0 && !assetSec.includes("裸文件名"), assetSec);
-    check("资产目录与产出目录两节同时存在，各管一类落点",
-      assetSec.length > 0 && outSec.includes("过程文档") && outSec.includes("裸文件名"), outSec);
+    check("资产目录与落点两节同时存在，各管一类信息",
+      assetSec.length > 0 && outSec.includes("过程记录") && outSec.includes("交付物"), outSec);
 
     await facade.submitFromAny(host.main, "写好了");
     const got = await waitFor(() => verifyRequests.some((item) => item.workflow?.name === "folder-flow"));
@@ -404,8 +404,9 @@ async function main() {
       check("Graph CHECK 里提到的资产资源（spec.md）能用同一参考根直接解析",
         promptResources(graphCheck, graphRoot).includes("spec.md"), JSON.stringify(promptResources(graphCheck, graphRoot)));
       const graphAssetSec = sectionOf(graphCheck, "资产目录") ?? "";
-      check("Graph CHECK 没有产出目录一节时，资产目录一节也不引用它（按用途划界）",
-        graphAssetSec.includes("任务指定的落点") && !graphAssetSec.includes("产出目录"), graphAssetSec);
+      check("Graph CHECK 的资产目录一节只讲资产资源，不引用落点规则",
+        graphAssetSec.includes("本资产资源的基准目录") && !graphAssetSec.includes("产出目录")
+          && !graphAssetSec.includes("交付物"), graphAssetSec);
     }
     await settle();
   }

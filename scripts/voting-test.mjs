@@ -158,7 +158,7 @@ console.log("== B. 提示词：投票变体 vs 单 check 变体 ==");
   check("投票提示词含「专属视角」段与该票依据", votingPrompt.includes("## 你的检查依据（专属视角）") && votingPrompt.includes("行为真实可用"));
   check("投票提示词含「你是 N 个之一」约束（照抄 opencode §8.4）", votingPrompt.includes("## 你是 3 个验证者之一"));
   check("投票提示词不泄露别的票的依据", !votingPrompt.includes("需求逐条落实") && !votingPrompt.includes("无遗漏边界"));
-  check("投票提示词仍带完整本步上下文与产出目录", votingPrompt.includes("## 本步上下文") && votingPrompt.includes("**产出目录**") && votingPrompt.includes("产出.md"));
+  check("投票提示词仍带完整本步上下文与落点", votingPrompt.includes("## 本步上下文") && votingPrompt.includes("## 落点") && votingPrompt.includes("产出.md"));
   check("投票提示词不含单 check 的段名", !votingPrompt.includes("## 检查依据\n"));
   check("投票提示词仍要求结构化提交（不退化）", votingPrompt.includes("structured_output"));
 

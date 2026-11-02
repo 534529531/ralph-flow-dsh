@@ -140,7 +140,7 @@ console.log("T1 Flow：DO 阶段点停止 → paused(user_stop)");
   await execTool(toolOf(env.registered, "ralphflow_continue"), {}, sid);
   const resumed = flowState(ws);
   check("continue 解除暂停", resumed?.state.paused === false, JSON.stringify(resumed?.state.paused));
-  check("恢复后重投当前步 DO", env.sent.some((m) => textOf(m).includes("停止流程用例") && textOf(m).includes("## 交卷方式")), JSON.stringify(env.sent.map(textOf).slice(-2)));
+  check("恢复后重投当前步 DO", env.sent.some((m) => textOf(m).includes("停止流程用例") && textOf(m).includes("## 交卷")), JSON.stringify(env.sent.map(textOf).slice(-2)));
 
   await execTool(toolOf(env.registered, "ralphflow_cancel"), { reason: "test cleanup" }, sid);
   fs.rmSync(ws, { recursive: true, force: true });

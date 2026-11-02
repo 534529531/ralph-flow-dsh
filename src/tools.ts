@@ -145,7 +145,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
   const toolDefs: Array<{ name: string; description: string; params: Record<string, any>; handler: ToolHandler; concludeTurn?: boolean }> = [
     {
       name: "ralphflow_start",
-      description: "启动 Flow 或 Graph 工作流。Flow 返回当前 DO：有 `check` / `check_voting` 才独立取证判定，没有 `check` / `check_voting` 则跳过对抗性验证。Graph 创建实例并由引擎调度节点；Graph 需要 Git 隔离，没有 Git 时按工具错误里的步骤先征得用户同意再初始化。",
+      description: "启动 Flow 或 Graph 工作流；返回当前步骤的 DO。Graph 需要 Git 隔离，缺少时按工具返回的步骤处理。",
       params: {
         workflow: { type: "string", required: true, description: "工作流名（Flow：loop / spec / create-graph；Graph：codewiki；或自定义 YAML 名）。" },
         task: { type: "string", description: "任务描述（Flow 必填；Graph 可选，作为任务上下文）。" },
@@ -154,7 +154,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: SUBMIT_TOOL_NAME,
-      description: "【交卷】Flow 主会话交卷，或 Graph 节点 agent 提交本 attempt 的产物。`unfinished` 列出本轮结束时还没完成的事项；本轮清单做完就留空。交卷结束本轮；`ralphflow_submit` 没有次数上限。被拒绝时不结束。",
+      description: "【交卷】Flow 主会话交卷，或 Graph 节点 agent 提交本 attempt 的产物。`unfinished` 列出本轮结束时还没完成的事项；本轮清单做完就留空。`ralphflow_submit` 没有次数上限；被拒绝时不结束本轮。交卷结束本轮。",
       params: {
         summary: { type: "string", description: "可选：简述本步做了什么。**验证者看不到它**（T1：验证请求不含执行者自述），它仅供审查门重交去重，不是验证证据，也不作持久交接；跨步信息应写入过程文档。" },
         unfinished: {
@@ -167,7 +167,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: "ralphflow_continue",
-      description: "按用户明确指令放行审查门、解除暂停或接管实例。普通步骤自动推进。只在无属主时自动接管；有属主的实例必须显式给 `instance`。",
+      description: "按用户明确指令放行审查门、解除暂停或接管实例；接管有属主的实例时显式给 `instance`。",
       params: {
         instance: { type: "string", description: "要接管/推进的实例 ID（可前缀）。按用户指定填写；有属主的实例必须显式指定，参数本身不替代用户授权。" },
       },
@@ -189,7 +189,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: "ralphflow_cancel",
-      description: "取消当前会话（或指定）的活跃实例：中止在飞验证者、归档报告到精确路径并销毁实例目录（报告归档失败时保留不销毁）。",
+      description: "取消当前会话（或指定）的活跃实例：归档报告到精确路径并销毁实例目录，产出目录保留。",
       params: {
         instance: { type: "string", description: "实例 ID（可前缀）。" },
         reason: { type: "string", description: "取消原因（可选）。" },
@@ -198,7 +198,7 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: "ralphflow_doctor",
-      description: "诊断工作流定义与实例状态：坏文件说人话、列出阻塞项，修完重跑直到全部 ✅。可只诊断一个工作流名或工作区资产路径。",
+      description: "诊断工作流定义与实例状态：坏文件说人话、列出阻塞项。可只诊断一个工作流名或工作区资产路径。",
       params: {
         workflow: { type: "string", description: "可选：只诊断这个工作流名或工作区资产路径（Flow / Graph）；省略则诊断全部资产与实例。" },
       },

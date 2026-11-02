@@ -20,6 +20,7 @@ import {
   assetReferenceSection,
   assetRootOf,
   discoverAssetsIn,
+  placementSection,
 } from "./asset-path.js";
 import { pauseLabel, type PauseReason } from "./pause.js";
 import { OWNER_HEARTBEAT_REFRESH_MS, ownerAlive, ownerRecheckMs, runtimeId, stampOwner } from "./owner.js";
@@ -2302,10 +2303,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   /**
    * DO prompt：宣告本步任务（交卷 = 调用 ralphflow_submit 工具，dsh 原生方式）。
    *
-   * §1.7：每个 DO 提示词**各注入一节**「产出目录」（工作区相对路径），写明**过程文档**与
-   * **产物**的落点边界（过程文档裸文件名 → 该目录；明确路径 → 按写的路径；工作目录只放产物、
-   * 不留副本）。`## 交付物` 一节随后补一句「落点由产出目录决定」，保证**拼装后**两节不打架 ——
-   * 仅靠「各文件单独看没错」会漏掉这种跨节矛盾。
+   * 落点按**概念**划：过程记录进 `artifacts/<dir>/`，交付物落工作目录或 `output` 写明的
+   * 路径。文案只有一份（`placementSection`），DO 与 CHECK 共用；`## 交付物` 只放 `output`
+   * 原文，落点由「## 落点」一节说，两节拼装后自洽。
    *
    * 「## 任务」= {@link effectiveTaskOf}：子工作流调用点写了 `do` 时，这里给的是**那段子工作流
    * 要做什么**（加载期下沉到 `step.task`）；否则仍是发起会话的任务描述（向后兼容）。
@@ -2343,34 +2343,24 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       "",
       `## 输入`,
       String(step.input).trim(),
-      "先读取本步所需输入；重置后从指定文件恢复需求、决定与验证依据。文件中的完成声明是待核对的记录，以当前产出与证据为准。",
+      "读本步声明的输入；重置后从这里恢复需求与决定。输入里的完成声明是记录，以产出与证据为准。",
       "",
       ...(assetRef ? [assetRef, ""] : []),
       ...(hasCheck ? [
         "## 本步验收依据（供自查）",
         ...(voters > 0 ? step.check_voting!.map((v, i) => `${i + 1}. ${v.check.trim()}`) : [step.check!.trim()]),
-        "以下执行要求应交付满足这些判据的产出；独立判定由验证者负责。",
         "",
       ] : []),
       `## 本步要做什么`,
       (step.do || step.desc || step.id).trim(),
       "",
-      `## 产出目录`,
-      `\`${rel}/\` —— 本步的**过程文档**（清单、方案、报告、摘要、草稿等）只落这里：要产出的过程文档在 \`do\`/\`output\` 里写**裸文件名**（如 \`summary.md\`）就落到这个目录；写了**明确路径**的（如 \`docs/x.md\`）按写的路径来。`,
-      "",
-      `工作目录只放本步的**产物**（代码、资源、可执行文件）；过程文档除「写了明确路径」外不进工作目录，同一份过程文档只写一处、不要留副本（例如产出目录已有 \`summary.md\`、工作目录根又出现一份，那是落点错误）。`,
+      placementSection(rel),
     ];
-    // 「交付物」与「产出目录」必须拼装后自洽：`output` 说的是**产出什么**，落点由上面
-    // 「产出目录」一节决定。少了这句，`output` 里写进过程文档名就会被读成
-    // 「和代码并列的工作目录交付物」，与紧邻的「产出目录」直接打架 ——
-    // 模型两边都写、并行维护、开始漂移。
     if (step.output) {
       parts.push(
         "",
         `## 交付物`,
         String(step.output).trim(),
-        "",
-        `（这一节说的是本步**产出什么**；它们落在**哪里**由「产出目录」一节决定 —— 过程文档写裸文件名就落产出目录，不因为列在这一节就改写进工作目录。）`,
       );
     }
     if (continuation && continuation.items.length > 0) {
@@ -2379,7 +2369,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         `## 本轮清单（上一轮记下的 ${continuation.count} 项未完成）`,
         ...continuation.items.map((item, index) => `${index + 1}. ${item}`),
         "",
-        "本轮的目标是把这份清单做完；会话时长和上下文用量不改变本轮的完成条件。",
+        "本轮的目标是把这份清单做完；以清单完成作为本轮的完成条件。",
       );
     }
     if (rework) {
@@ -2400,23 +2390,20 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         "",
         rewind.reason,
         "",
-        "请按这个原因**换方向重做本步**，不要沿原方向继续。",
+        "请按这个原因**换方向重做本步**。",
         "",
         downstream.length > 0
-          ? `⚠️ **下游旧产出仍在盘上、且基于旧方向**：${downstream.join("、")} 的既有产出没有被删除、也不会自动作废，它们可能与本步的新方向不一致。交卷时请写清哪些下游旧产出需要随之重做或作废，供后续步骤与独立验证者判断。`
+          ? `⚠️ **下游旧产出仍在盘上、且基于旧方向**：${downstream.join("、")} 的既有产出仍在盘上、可能已过时，与本步的新方向不一致。交卷时请写清哪些下游旧产出需要随之重做或作废，供后续步骤与独立验证者判断。`
           : "⚠️ **本步是工作流顺序上的最后一步**：它自己的既有产出仍在盘上、基于旧方向，重做时以新方向为准；交卷时请说明旧产出里哪些已不再适用。",
       );
     }
-    const hasRoundList = continuation !== undefined && continuation.items.length > 0;
     parts.push(
       "",
-      "## 交卷方式",
-      `1. 完成条件：${hasRoundList ? "本轮清单上的每一项都完成（或确认被阻塞），并且" : ""}本步的完成条件逐条满足（有验收依据时按上面每一条判据；没有时按「本步要做什么」与「交付物」），每一条都能指出可复核的证据（文件位置、命令与结果）。全部满足后把 \`unfinished\` 留空，调用 \`ralphflow_submit\` 结束本轮。`,
-      "2. 阻塞只算三种：缺用户决定、缺外部输入、环境不可用。确实被阻塞时，把**还没完成的事项**逐条写进 `unfinished` 再交卷；`unfinished` 是剩余工作清单，不是完成声明，引擎会把清单还给你接着做。其余情况继续做本轮清单。被打回会整步返工，并占用一次返工预算。",
-      "3. 把跨步需要的用户决定、验证方法与结果写进本步已有过程文档；过程文档里把计划与完成分开写，无法验证的事项标成未验证；需要用户补充信息时调用 `ask_user_question`，等信息齐全再完成本步。",
-      "4. 面向用户简短说明本步交付内容及自查结果，然后**调用 `ralphflow_submit` 工具交卷**。验证者看不到 summary 参数：需要验收的证据应能从文件或命令结果独立取得。不要给任何时长预估。",
-      "5. 需要用户决定：调用 `ask_user_question`。其余情况继续做本轮清单。",
-      "交卷后由引擎处理；期间不需要用户做任何操作，可用 `/ralphflow-status` 查进度或 `/ralphflow-cancel` 中止。交卷工具会结束当前回合，随后等待引擎或用户的下一条指令。通知与状态入口由插件展示，不需要重复播报。",
+      "## 交卷",
+      `完成条件逐条满足、每条都有可复核的证据（文件位置、命令与结果），把 \`unfinished\` 留空，调用 \`ralphflow_submit\`。`,
+      "确实被阻塞时（只算缺用户决定、缺外部输入、环境不可用），把还没完成的事项写进 `unfinished`；引擎会把清单还给你接着做。",
+      "需要用户决定时调用 `ask_user_question`；把用户决定、验证方法与结果写进本步过程记录，计划与完成分开写。",
+      "先向用户简短说明本步交付与自查结果，再交卷；交卷后引擎接手，用 `/ralphflow-status` 看进度。",
     );
     return parts.join("\n");
   }

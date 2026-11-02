@@ -53,35 +53,26 @@ export const START_SKILL_NAME = `${SKILL_PREFIX}start`;
 export const START_SKILL_DESCRIPTION = "Ralph Flow：用户点名 ralphflow，或要求执行后由独立会话的验证者验收时，用它启动工作流。";
 
 /**
- * 工作流机制说明（`/ralphflow-start` 与 `/ralphflow-<工作流>` 的技能正文共享，opencode 版
- * SHARED_MECHANISM 的 v0 裁剪版）。
+ * 工作流机制说明（`/ralphflow-start` 与 `/ralphflow-<工作流>` 的技能正文共享）。
  *
- * 让模型知道：两阶段协议、自动验证、手动审查的放行语义、暂停恢复、以及通知与执行边界
- * （AI 交互友好的来源）。它随技能正文注入 —— 人敲时由宿主注入，模型自然触发时由
- * `skill` 工具返回。
+ * 只保留**技能层独有**的信息：执行者只负责当前步、验证者独立取证、用户决定的入口、
+ * Graph 的调度边界。DO 已经写明的操作细节不在这里复述。
  */
 export const SHARED_MECHANISM = `## 工作流机制
 
-1. 启动成功后，按工具返回的当前步 DO 执行；后续步骤由引擎投递。
-2. 一轮的目标是把上一轮留下的 \`unfinished\` 清单（本轮清单）做完。交卷前逐条核对本步的完成条件；全部满足才把 \`unfinished\` 留空并交卷。确实被阻塞（只算缺用户决定、缺外部输入、环境不可用）时，把还没完成的事项逐条写进 \`unfinished\` 再交卷；\`unfinished\` 是剩余工作清单，不是完成声明，模型没有本步是否完成的裁判权，完成判定由独立验证者负责。引擎会把清单还给你接着做。\`ralphflow_submit\` 会结束本轮，没有次数上限。
-3. 交卷后等待：有 \`check\` 时委派独立验证者，有 \`check_voting\` 时 N 票并行、全过才放行；没有 \`check\` / \`check_voting\` 时跳过独立验证。
-4. 通过则自动推进；工作成果不通过则收到失败依据并返工，达到返工上限才暂停。基础设施故障自动重验一次，仍故障则暂停，不消耗工作返工次数。
-5. 审查门在交卷并通过验证后等用户放行；免验证的门交卷即停。用户要求修改时，改好产出再交卷；用户明确放行时才调用 \`ralphflow_continue\`。**Graph 的人工门**通过 \`ralphflow_respond\` 回答：用户明确批准才提交批准，要求改稿就提交改稿要求，含糊回复不算批准。需要用户决定时调用 \`ask_user_question\`；其余情况继续做本轮清单。暂停恢复与实例接管也以用户指令为准，按工具实际返回的阶段行动。用户点发送键旁的方块停止当前回合 = 暂停（\`user_stop\`）：之后不要再调用任何 ralphflow 工具，等用户明确 continue。
-6. Graph 节点由引擎并行调度，不需要逐步催促；Graph 需要 Git 隔离，没有 Git 时先征得用户同意再初始化。
-
-验证者看不到本对话或交卷 summary；把需要它验收的产出与证据留在工具指定的文件位置。步骤重置会移除此前对话，跨步需要的需求、决定与证据应写入已有过程文档。
-阶段通知与状态入口由插件直接向用户展示，无需逐条回应。说明进度以工具结果为准；独立验证没有可承诺的完成时长。`;
+你只负责当前步：按工具返回的 DO 执行，交卷后由引擎投递下一步。
+独立验证者看不到本对话，它按本步判据自己取证；没过就返工，把反馈当定位线索。
+需要用户决定时调用 \`ask_user_question\`；用户点停止即暂停，等用户明确要求再继续。
+Graph 的节点由引擎并行调度，不需要催促或汇报进度。`;
 
 /**
  * `ralphflow-start` 的技能正文。**参数从用户那条消息里取**，所以正文是静态的：
  * 敲字与自然语言两条路都从这里出发，按用户输入补足缺项，不猜任务内容。
  */
-const START_SKILL_CONTENT = `启动用户要求的 Ralph Flow 工作流。请调用 \`ralphflow_start\` 工具启动它。
+const START_SKILL_CONTENT = `启动用户要求的 Ralph Flow 工作流。请调用 \`ralphflow_start\` 工具。
 
-- \`workflow\` 与 \`task\` 都从**用户那条消息**里取：\`/ralphflow-start <工作流> <任务描述>\` 的第一段是工作流名，其余整段是任务描述。
-- 有任务而未指定工作流：先用 \`ralphflow_list\` 列出可选项，匹配明确时选择并说明，无法判断时问用户。缺任务：请用户补充任务后再启动。保留用户原始约束，不替用户扩充任务范围。
-- Graph 需要 Git 隔离；没有 Git 时先问用户是否初始化，用户同意后再执行 git init/add/commit 并重新启动。
-- 工具报错就如实转达；成功就按它返回的指示执行，并遵循下面的机制。
+- \`workflow\` 与 \`task\` 从**用户那条消息**里取：\`/ralphflow-start <工作流> <任务描述>\` 的第一段是工作流名，其余整段是任务描述。
+- 有任务而未指定工作流：用 \`ralphflow_list\` 列出可选项，匹配明确时选择并说明，无法判断时问用户。缺任务：请用户补充任务后再启动。保留用户原始约束与任务范围。
 
 ${SHARED_MECHANISM}`;
 
@@ -136,10 +127,9 @@ export function workflowSkillDescription(workflowName: string, desc: unknown): s
 
 /** 某个工作流的快捷技能正文：正文里点名这个工作流与它的人敲形态，任务仍从用户那条消息里取。 */
 export function workflowSkillContent(skillName: string, workflowName: string): string {
-  return `用户用 \`/${skillName}\` 启动了 \`${workflowName}\` 工作流。请调用 \`ralphflow_start\` 工具：workflow = \`${workflowName}\`，task = **用户那条消息**里 \`/${skillName}\` 之后的整段任务描述。
+  return `用户用 \`/${skillName}\` 启动了 \`${workflowName}\` 工作流。请调用 \`ralphflow_start\` 工具：workflow = \`${workflowName}\`，task 取**用户那条消息**里 \`/${skillName}\` 之后的整段任务描述。
 
-用户没带任务描述时**不要调用任何工具**，先用自然语言说明用法 \`/${skillName} <任务描述>\` 并请用户补上要完成的任务。若该工作流是 Graph，启动时按工具返回的 Git 提示处理。
-工具报错就如实转达；成功就按它返回的指示执行，并遵循下面的机制。
+用户没带任务描述时，先用自然语言说明用法 \`/${skillName} <任务描述>\`，请用户补上要完成的任务。
 
 ${SHARED_MECHANISM}`;
 }

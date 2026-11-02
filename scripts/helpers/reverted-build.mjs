@@ -103,7 +103,7 @@ export function revertHonestVerifyNotice(src) {
  * 从命令改成技能之后，这段机制说明随**技能正文**进对话，不再随命令指令进对话。
  */
 export function revertMechanismWording(src) {
-  const honest = "独立验证没有可承诺的完成时长。";
+  const honest = "交卷后由引擎投递下一步。";
   if (!src.includes(honest)) throw new Error("负对照锚点（机制说明文案）不见了 —— 修复被改写，请同步更新负对照");
   return src.replace(honest, "通常需要 1–5 分钟，期间不需要你做任何操作，跑完会自动唤醒本会话。");
 }

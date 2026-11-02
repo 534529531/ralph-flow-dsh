@@ -201,8 +201,9 @@ console.log("T1 真 SkillRegistry：注册了什么、哪一面看得见（判�
   check("正文让模型调 ralphflow_start，并把参数来源指向**用户那条消息**",
     !!startDef && startDef.content.includes("ralphflow_start") && startDef.content.includes("用户那条消息"),
     startDef?.content.slice(0, 160));
-  check("正文带工作流机制说明（DO/CHECK 两阶段、自动验证）",
-    !!startDef && startDef.content.includes("工作流机制") && startDef.content.includes("ralphflow_submit"));
+  check("正文带工作流机制说明（当前步 DO、独立验证、交卷后由引擎投递）",
+    !!startDef && startDef.content.includes("工作流机制") && startDef.content.includes("独立验证者")
+      && startDef.content.includes("交卷后由引擎投递下一步"));
 
   const loopDef = await fixed.ctx.skills.get("ralphflow-loop", { cwd: fixed.ws });
   check("人敲 /ralphflow-loop 时注入的正文点名该工作流与任务来源",
@@ -224,6 +225,11 @@ console.log("T1 真 SkillRegistry：注册了什么、哪一面看得见（判�
       && !startToolDesc.includes("用户点名 ralphflow")
       && !startToolDesc.includes("独立验证者验收才算完成"),
     startToolDesc);
+
+  const submitToolDesc = toolOf(fixed.registered, "ralphflow_submit")?.description ?? "";
+  check("`ralphflow_submit` 的描述同时包含「没有次数上限」与「被拒绝时不结束」",
+    submitToolDesc.includes("没有次数上限") && submitToolDesc.includes("被拒绝时不结束"),
+    submitToolDesc);
 
   check("插件没有往系统提示词里加段落（不加第二处触发点）",
     fs.readdirSync(srcDir).filter((f) => f.endsWith(".ts"))

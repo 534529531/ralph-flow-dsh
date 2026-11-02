@@ -137,7 +137,8 @@ const fixed = await collectVisibleTexts(PLUGIN_ENTRY, "");
   // 内置 loop 现在是 N 票投票步：可见播报必须说「N 个独立验证者**并行**取证」（不是单验证者）
   check("验证中播报与内置 loop 的多验证者形状一致（N 个独立验证者并行取证）",
     /\d+ 个独立验证者/.test(notice) && /并行/.test(notice), notice.slice(0, 240));
-  check("DO 提示词要求模型不要给时长预估", /不要给任何时长预估/.test(fixed.texts.find((t) => t.label === "ralphflow_start 返回")?.text ?? ""));
+  check("DO 提示词把进度说明写成正面目标（先说明交付与自查结果）",
+    /先向用户简短说明本步交付与自查结果/.test(fixed.texts.find((t) => t.label === "ralphflow_start 返回")?.text ?? ""));
   cleanupTmp(fixed.ws);
 }
 

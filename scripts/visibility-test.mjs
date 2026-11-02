@@ -195,10 +195,10 @@ console.log("\nU5 默认可见的只有 summary（notice 行默认折叠）→ s
   await sleep();
   sent.length = 0;
 
-  // DO prompt 必须要求模型**面向用户**说明状态（启动状态由模型说明）
-  check("DO prompt 要求先向用户说明状态", /面向用户的话说明|面向用户/.test(doOut), doOut.slice(-300));
-  check("DO prompt 说明「不需要用户做任何操作」", /不需要用户做任何操作/.test(doOut));
-  check("DO prompt 给出期间可做什么（status/cancel）", /ralphflow-status/.test(doOut) && /ralphflow-cancel/.test(doOut));
+  // DO prompt 必须要求模型**面向用户**说明交付与自查结果（启动状态由模型说明）
+  check("DO prompt 要求先向用户说明交付与自查结果", /先向用户简短说明本步交付与自查结果/.test(doOut), doOut.slice(-300));
+  check("DO prompt 说明交卷后由引擎接手", /交卷后引擎接手/.test(doOut));
+  check("DO prompt 给出进度入口（status）", /ralphflow-status/.test(doOut));
 
   await submitTool.execute({ summary: "做完了", unfinished: [] }, { agent: { session: { id: sid } } });
   await sleep(200);

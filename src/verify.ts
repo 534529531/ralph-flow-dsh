@@ -14,7 +14,7 @@
  */
 import type { Context } from "@deepseek-ai/cordis";
 import { stepHasCheck } from "./engine.js";
-import { assetReferenceSection, assetRootOf } from "./asset-path.js";
+import { assetReferenceSection, assetRootOf, placementSection } from "./asset-path.js";
 import type { StepDef, WorkflowDef, Verdict, VerifyRequest } from "./engine.js";
 
 /** 验证者 preset id：与 verifier-preset.ts 的声明共用同一常量。 */
@@ -161,23 +161,18 @@ export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): s
   const voter = req.voter;
   const rel = req.artifactsRelDir;
   const assetRef = assetReferenceSection(assetRootOf(req.assetPath));
-  // §1.3：CHECK 必须拿到与 DO 同等的承诺上下文（desc + 交付物 + 产出目录），
-  // 否则验证者不知道本步承诺交付什么，只能泛泛核对。
-  //
-  // 「交付物」与「产出目录」**拼装后必须自洽**：`output` 说的是产出**什么**，落点由下一行
-  // 「产出目录」决定。不点明时，验证者会把 `output` 里的过程文档名当成工作目录交付物 ——
-  // RA2 有一轮就把「产出目录 `summary.md` 与仓库 `summary.md` 逐字节相同」的副本判成了正确。
+  // §1.3：CHECK 必须拿到与 DO 同等的承诺上下文（desc + 交付物 + 落点），
+  // 否则验证者不知道本步承诺交付什么，只能泛泛核对。落点文案与 DO 共用 `placementSection`。
   const stepFacts = [
     `**步骤**：\`${req.step.id}\``,
     ...(req.step.desc ? [`**描述**：${req.step.desc}`] : []),
     `**本步任务**：${(req.step.do ?? "").trim() || "（未声明）"}`,
     ...(req.step.input ? [`**输入**：${String(req.step.input).trim()}`] : []),
-    ...(req.step.output ? [`**交付物（本步承诺的产出）**：${String(req.step.output).trim()}（这一项只说产出**什么**；落在**哪里**看下一行「产出目录」）`] : []),
-    `**产出目录**：\`${rel}/\` —— 本步的**过程文档**（清单、方案、报告、摘要、草稿等）只应落这里：检查依据里要核对的过程文档写**裸文件名**（如 \`summary.md\`）即指这个目录下的文件；写了**明确路径**的按那个路径。工作目录只放本步的**产物**（代码、资源、可执行文件）。**工作目录里出现同一份过程文档的副本（如根目录的 \`summary.md\` 与产出目录那份内容相同）不是落点正确、而是落点错误：不要把副本判成满足。**`,
+    ...(req.step.output ? [`**交付物**：${String(req.step.output).trim()}`] : []),
   ];
   // 投票变体（对齐 opencode `buildVotingCheckPrompt`）：共享上下文 + **该票专属**检查依据 +
   // 「你是 N 个之一，只查自己这一条」约束。目的：防止各票趋同成同一份泛泛检查。
-  // 三条约束各自只讲一件事：查什么、别横向协调、放行规则 —— 不再逐条重述同一层意思。
+  // 三条约束各自只讲一件事：查什么、独立判定、放行规则 —— 不再逐条重述同一层意思。
   const basis = voter
     ? [
       "## 你的检查依据（专属视角）",
@@ -185,9 +180,9 @@ export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): s
       "",
       `## 你是 ${voter.count} 个验证者之一`,
       "",
-      "- 你**只判断你自己那条检查依据**（上方「你的检查依据」段）：其他视角由并行的其他验证者负责，各有独立会话。",
-      "- 不要等待、引用或回应它们：汇总由程序完成，你只需给出自己这一票的判定。",
-      "- 本步**全过才放行**：在你的视角内逐项取证，给出有依据的判定。",
+      "- 只判断你自己那条检查依据；其他视角由并行的其他验证者负责。",
+      "- 汇总由程序完成。",
+      "- 本步**全过才放行**：逐项取证，给出有依据的判定。",
     ]
     : ["## 检查依据", req.step.check!.trim()];
   // T1：**不注入执行者的交卷自述**。验证者只看"结果是否满足检查依据"，不看执行者
@@ -200,19 +195,20 @@ export function buildCheckPrompt(req: VerifyRequest, wantStructured: boolean): s
     "## 本步上下文",
     stepFacts.join("\n"),
     "",
+    placementSection(rel, true),
+    "",
     ...(assetRef ? [assetRef, ""] : []),
     ...basis,
     "",
-    "## 取证要求",
-    "在**当前工作区**里取证（读文件、跑命令、搜索），逐条核对检查依据。",
-    "产出目录也在这个工作区内，用上面的相对路径即可读到。",
-    "每条检查依据都给出结论与证据定位（文件位置、命令及退出结果或实际观察）；区分已证实的问题与未能验证的事项。",
-    "判定 reason 必须自包含：优先写阻塞项、对应判据、证据与修复目标；通过时概括各项证据。取证细节只写在前面的正文里不会替代 reason。",
+    "## 取证",
+    "在**当前工作区**取证（读文件、跑命令、搜索），逐条核对。",
+    "逐条给结论与证据（位置、命令及结果），区分已证实与未验证。",
+    "reason 必须自包含：写阻塞项、判据、证据与修复目标；通过时概括。",
     wantStructured
       // 原生结构化输出可用：判定由 structured_output 工具承载，不需要文本标签。
-      ? "先写出取证过程与结论，最后**调用 `structured_output` 工具**提交判定（passed / reason）。reason 包含上述证据与结论，保持精简；只调用一次。"
+      ? "先写取证与结论，最后**调用 `structured_output`** 提交判定（passed / reason）；只调用一次。"
       // 降级路径：provider 不支持 outputSchema 时才要求文本标签。
-      : "先写出取证过程与结论，并在最后一行单独输出 `<promise-check>true</promise-check>`（通过）或 `<promise-check>false</promise-check>`（不通过）。",
+      : "先写取证过程与结论，最后一行单独输出 `<promise-check>true</promise-check>`（通过）或 `<promise-check>false</promise-check>`（不通过）。",
   ];
   return parts.join("\n");
 }
