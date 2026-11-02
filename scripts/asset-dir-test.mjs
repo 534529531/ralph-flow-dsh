@@ -476,6 +476,10 @@ async function main() {
     const names = ["loop", "spec", "create-graph", "codewiki"];
     const codewikiDir = path.join(REPO, "graphs", "codewiki");
     const codewikiDoc = yaml.load(fs.readFileSync(path.join(codewikiDir, "graph.yaml"), "utf8"));
+    const codewikiDoctor = facade.diagnose("codewiki");
+    check("codewiki 的 doctor 定义有效且无告警",
+      codewikiDoctor.ok === true && codewikiDoctor.text.includes("✅ 定义有效") && !codewikiDoctor.text.includes("⚠️"),
+      codewikiDoctor.text.slice(0, 500));
     const listed = facade.listAll().text;
     for (const name of names) check(`list 发现内置 ${name}`, listed.includes(`\`${name}\``), listed.slice(0, 400));
     for (const name of names) {
@@ -491,11 +495,24 @@ async function main() {
         const nodeDo = host.nodeMessages[before] ?? "";
         check("codewiki 节点 DO 注入的参考根是资产目录（不是 graphs/）",
           injectedRoot(nodeDo) === codewikiDir, injectedRoot(nodeDo));
-        check("codewiki 节点 DO 的短指针 format.md 能用参考根真实读到",
-          promptResources(nodeDo, codewikiDir).includes("format.md"), JSON.stringify(promptResources(nodeDo, codewikiDir)));
-        check("codewiki 的全部 DO 与 CHECK 都指向同目录契约 format.md（CHECK 用短指针）",
-          codewikiDoc.steps.every((step) => String(step.do).includes("format.md") && String(step.check).includes("format.md")),
-          JSON.stringify(codewikiDoc.steps.map((step) => step.id)));
+        check("codewiki 节点 DO 的短指针 nodes/survey.md 能用参考根真实读到",
+          promptResources(nodeDo, codewikiDir).includes("nodes/survey.md"), JSON.stringify(promptResources(nodeDo, codewikiDir)));
+        const nodeFiles = codewikiDoc.steps.map((step) => `nodes/${step.id}.md`);
+        check("codewiki 的入口是地图：每个 DO 与 CHECK 都是一句话并指向自己的 nodes/<id>.md",
+          codewikiDoc.steps.every((step) =>
+            String(step.do).length <= 120 &&
+            String(step.check).length <= 80 &&
+            String(step.do).includes(`nodes/${step.id}.md`) &&
+            String(step.check).includes(`nodes/${step.id}.md`)),
+          JSON.stringify(codewikiDoc.steps.map((step) => `${step.id}:do=${String(step.do).length},check=${String(step.check).length}`)));
+        check("codewiki 的每个 nodes/<id>.md 都在资产目录里，且含「做什么」「验收」两节与 format.md 指针",
+          nodeFiles.every((rel) => {
+            const text = fs.readFileSync(path.join(codewikiDir, rel), "utf8");
+            return text.includes("## 做什么") && text.includes("## 验收") && text.includes("format.md");
+          }), JSON.stringify(nodeFiles));
+        check("codewiki 入口全文 ≤ 2500 字符，做法正文都在资源文件里",
+          fs.readFileSync(path.join(codewikiDir, "graph.yaml"), "utf8").length <= 2500,
+          String(fs.readFileSync(path.join(codewikiDir, "graph.yaml"), "utf8").length));
         check("契约文件 format.md 就在资产目录里（不是复制进提示词）",
           fs.statSync(path.join(codewikiDir, "format.md")).isFile());
       }
@@ -538,18 +555,30 @@ async function main() {
   {
     const doc = yaml.load(fs.readFileSync(path.join(REPO, "workflows", "create-graph", "workflow.yaml"), "utf8"));
     const step = doc.steps.find((item) => item.id === "graph");
+    const resource = fs.readFileSync(path.join(REPO, "workflows", "create-graph", "steps", "graph.md"), "utf8");
+    const [doSection, checkSection = ""] = resource.split(/^## 验收$/m);
+    const entryText = `${step?.do ?? ""}\n${step?.check ?? ""}`;
+    check("create-graph 的入口 do/check 只留一句话并指向 steps/graph.md",
+      String(step?.do ?? "").length <= 120 && String(step?.check ?? "").length <= 80 && entryText.includes("steps/graph.md"),
+      JSON.stringify({ do: step?.do, check: step?.check }));
     check("create-graph 的 output 是 graphs/<slug>/graph.yaml",
       String(step?.output ?? "").includes(".dsh/ralph-flow/graphs/<slug>/graph.yaml"), step?.output);
     check("create-graph 不再要求生成单文件 graphs/<slug>.yaml",
-      !/graphs\/<slug>\.yaml/.test(String(step?.output)) && !/graphs\/<slug>\.yaml/.test(String(step?.do)), step?.do);
+      !/graphs\/<slug>\.yaml/.test(String(step?.output)) && !/graphs\/<slug>\.yaml/.test(doSection), doSection);
     check("create-graph 的 DO 要求在同一个资产目录放资源并用相对路径指向",
-      String(step?.do ?? "").includes("同一个资产目录") && String(step?.do ?? "").includes("相对路径"), step?.do);
+      doSection.includes("同一个资产目录") && doSection.includes("相对路径"), doSection);
     check("create-graph 的 CHECK 覆盖入口路径与同目录资源",
-      String(step?.check ?? "").includes("graphs/<slug>/graph.yaml") && String(step?.check ?? "").includes("同目录"), step?.check);
-    const checkSteps = doc.steps.filter((item) => String(item.check ?? "").includes("matt/"));
+      checkSection.includes("graphs/<slug>/graph.yaml") && checkSection.includes("同目录"), checkSection);
+    check("create-graph 的 DO 要求一个 ticket 一个 nodes/<id>.md，入口只写一句话加指针",
+      doSection.includes("nodes/<ticket-id>.md") && doSection.includes("入口地图") && doSection.includes("≤ 120"), doSection);
+    check("create-graph 的 CHECK 核对 nodes 两节与入口字符上限",
+      checkSection.includes("nodes/<ticket-id>.md") && checkSection.includes("## 做什么") && checkSection.includes("## 验收") && checkSection.includes("≤ 120") && checkSection.includes("≤ 80"), checkSection);
+    const checkSteps = doc.steps
+      .map((item) => ({ id: item.id, text: item.id === "graph" ? `${item.check ?? ""}\n${checkSection}` : String(item.check ?? "") }))
+      .filter((item) => item.text.includes("matt/"));
     check("create-graph 的 CHECK 引用 matt 参考时写明 ralphflow-create skill 资源目录（不按资产根解析）",
-      checkSteps.length > 0 && checkSteps.every((item) => String(item.check).includes("`ralphflow-create` skill 资源目录中的 `matt/")),
-      checkSteps.map((item) => `${item.id}: ${item.check}`).join(" || "));
+      checkSteps.length > 0 && checkSteps.every((item) => item.text.includes("`ralphflow-create` skill 资源目录中的 `matt/")),
+      checkSteps.map((item) => `${item.id}: ${item.text}`).join(" || "));
     check("create-graph 引用的 matt 参考在 skill 资源目录里真实存在",
       fs.statSync(path.join(REPO, "skills", "ralphflow-create", "matt", "writing-for-agents.md")).isFile());
   }

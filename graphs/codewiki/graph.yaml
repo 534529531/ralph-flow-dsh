@@ -3,113 +3,37 @@ description: 盘点仓库 → 并行编写页面 → 校验交付，生成固定
 steps:
   - id: survey
     desc: 盘点仓库并制定页面计划
-    do: |-
-      先用 read 读取同目录的 `format.md`：输出树、页面契约、模块树规则与各 JSON 的 schema 都以它为准。任务未指定 repository、outputDir、language 时，repository 用 `.`、outputDir 用 `docs/codewiki`、language 用 `zh-CN`；值一旦确定就写进 plan，后续步骤只读 plan。
-
-      1. 检查路径与输出安全。完成条件：repository 与 outputDir 都是工作区内相对路径；outputDir 是目录或不存在，且不等于 repository 根与 `.ralphflow-codewiki`；outputDir 或是空目录，或是本工作流先前生成的目录（判定见 format.md §输出树）。用原生 bash 清空并重建工作区暂存目录 `.ralphflow-codewiki/`；plan、manifests、delivery 是节点产物，由 ralphflow_artifact_write 写入本次运行的 artifact store，不在暂存目录复制。
-      2. 处理先前输出。完成条件：只删除 format.md §输出树 记录的旧文件与 metadata.json、index.md，再删掉空目录，outputDir 为空。遇到冲突（outputDir 是文件、含计划外文件、记录里有越界路径）时把 plan.status 设为 blocked、blocked_reason 写明冲突路径，跳到第 8 步，冲突文件保持原样。
-      3. 扫描 repository。完成条件：记录语言、源根、入口点、包清单、构建/测试/lint/CI 配置与模块导入边，每项都带文件路径来源；排除范围见 format.md §模块树规则。
-      4. 建立模块树。完成条件：按 §模块树规则 生成 modules，每个未被排除的源文件至少属于一个模块或 coverage.uncovered，模块按 slug 字典序。
-      5. 制定页面计划。完成条件：pages 覆盖 §输出树 的全部页面，每页字段齐全（见 §页面契约），owner 按固定映射，模块页与 modules 一一对应。
-      6. 写 format 快照。完成条件：plan.format 与 §页面契约 的当前版本逐字一致。
-      7. 用 ralphflow_artifact_write 写 `.ralphflow-codewiki/plan.json`（引擎保存到本次运行的 artifact store；下游用 read 读取）。完成条件：符合 §plan.json 契约；source.commit 与 dirty 来自 git 事实；commands 含 build、test、lint；无法确认的项写入 assumptions。
-      8. 完成自检。完成条件：ready 时所有 source_paths 在 repository 下存在；blocked 时 blocked_reason 与实际冲突一致；文件不含 TODO、TBD 或占位符。
+    do: 盘点仓库并制定页面计划：读 `nodes/survey.md` 的「做什么」一节，按它执行。
     output: .ralphflow-codewiki/plan.json
-    check: |-
-      1. plan.json 符合同目录 `format.md` 的 §plan.json 契约，status 为 ready，source.repository、source.outputDir、format.language 与任务文本或默认值一致。
-      2. pages 覆盖 §输出树 的全部页面；每页字段齐全（§页面契约），owner 符合固定映射；模块页与 modules 一一对应，路径无重复。
-      3. modules 满足 §模块树规则：数量上限、slug 唯一、other 聚合与覆盖要求都成立；每个 source_paths 在 repository 下存在。
-      4. plan.format 的每个字段与 §页面契约 的当前版本逐字一致。
-      5. source.source_roots 与 commands 的来源路径都在 repository 下存在；languages 由实际文件统计得出；无法确认的项在 assumptions 中说明。
-      6. 输出目录安全：ready 时没有删除或覆盖计划外文件的证据；blocked 时 blocked_reason 与实际冲突一致。
-      7. plan.json 可解析，generated_at 是有效 ISO 8601 时间，不含 TODO、TBD 或占位符。
+    check: 读 `nodes/survey.md` 的「验收」一节，逐条核对并给出证据。
   - id: core-pages
     desc: 编写核心页面
-    do: |-
-      先用 read 读取同目录的 `format.md` 与 survey 产物；页面契约与 manifest schema 以 format.md 为准。repository、outputDir、language 以 plan 为准。
-
-      1. 从 plan.pages 取出 owner 为 core-pages 的页面。完成条件：页面集合恰好是 overview.md、architecture.md、workflows.md，没有缺页或多页。
-      2. 阅读页面 source_paths 指向的代码、README、包清单与入口文件，为每条结论找到 path:line 来源。完成条件：每个要写的结论都有来源；无法验证的内容写入「未覆盖与假设」。
-      3. 按 §页面契约 写三页到 outputDir。完成条件：页面结构与 plan.format 完全一致；architecture 与 workflows 各至少一个 mermaid 块。
-      4. 写源码索引。完成条件：每页列出正文引用的全部路径，按字典序，且都在 repository 下存在。
-      5. 用原生 write 写页面，用 ralphflow_artifact_write 写 `.ralphflow-codewiki/manifests/core.json`。完成条件：符合 §manifest.json 契约；files 恰好是三个页面，每项字段与实际文件一致。
-      6. 完成自检。完成条件：正文语言与 language 一致；没有 TODO、TBD、占位符或空章节；页面只引用 repository 的事实和 plan.modules 中的模块。
+    do: 编写核心页面并交付 manifest：读 `nodes/core-pages.md` 的「做什么」一节，按它执行。
     output: .ralphflow-codewiki/manifests/core.json
     depends_on:
       - survey
-    check: |-
-      1. manifest 符合同目录 `format.md` 的 §manifest.json 契约；files 恰好等于 plan 中 owner 为 core-pages 的页面；每项字段与实际文件一致。
-      2. overview.md、architecture.md、workflows.md 存在；frontmatter 与 plan 一致；8 个 H2 的编号和文字等于 plan.format.headings（见 §固定二级标题）。
-      3. architecture.md 与 workflows.md 各至少一个 mermaid 块，围栏闭合，图与正文描述一致。
-      4. 每条代码事实带 path:line 来源；每页源码索引列出全部引用路径且都存在；页面不引用 plan.modules 之外的模块。
-      5. 正文语言与 language 一致；没有 TODO、TBD、占位符或空章节；无法验证的内容在「未覆盖与假设」中写明检查路径。
-      6. 页面内容只来自 repository 的事实；接口、命令与符号没有编造。
+    check: 读 `nodes/core-pages.md` 的「验收」一节，逐条核对并给出证据。
   - id: module-pages
     desc: 编写模块页面
-    do: |-
-      先用 read 读取同目录的 `format.md` 与 survey 产物；页面契约与 manifest schema 以 format.md 为准。repository、outputDir、language 以 plan 为准。
-
-      1. 从 plan.pages 取出 owner 为 module-pages 的页面，与 plan.modules 一一核对。完成条件：每个模块恰好一页，路径为 modules/<slug>.md，没有缺页、多页或计划外页面。
-      2. 逐模块阅读 source_paths 下的代码与导入边，记录职责、入口、关系、流程、接口、约束和坑。完成条件：每个模块页的结论都有 path:line 来源；无法验证的内容写入「未覆盖与假设」。
-      3. 按 §页面契约 写每个模块页。完成条件：页面结构与契约一致；每页至少一个 mermaid 块；模块间链接指向 plan.pages 中存在的模块页。
-      4. 写源码索引与交叉链接。完成条件：每页列出的路径都在 repository 下存在；所有相对链接可解析。
-      5. 用原生 write 写全部模块页，用 ralphflow_artifact_write 写 `.ralphflow-codewiki/manifests/modules.json`。完成条件：符合 §manifest.json 契约；files 恰好是全部模块页，每项字段与实际文件一致。
-      6. 完成自检。完成条件：页面只描述分配给该模块的 source_paths；other 页说明聚合规则；没有 TODO、TBD、占位符或空章节。
+    do: 编写模块页面并交付 manifest：读 `nodes/module-pages.md` 的「做什么」一节，按它执行。
     output: .ralphflow-codewiki/manifests/modules.json
     depends_on:
       - survey
-    check: |-
-      1. manifest 符合同目录 `format.md` 的 §manifest.json 契约；files 恰好等于 plan 中 owner 为 module-pages 的页面；每项字段与实际文件一致。
-      2. 每个模块页都存在且路径与 slug 对应；frontmatter 与 plan 一致；8 个 H2 的编号和文字等于 plan.format.headings；没有缺页或多页。
-      3. 每页至少一个 mermaid 块且围栏闭合；图与正文一致；模块间相对链接都指向存在的页面。
-      4. 页面只描述 plan 分配给该模块的 source_paths；每条代码事实带 path:line 来源；源码索引路径存在；other 页说明聚合规则。
-      5. 正文语言与 language 一致；没有 TODO、TBD、占位符或空章节；无法验证的内容在「未覆盖与假设」中写明检查路径。
-      6. 模块页数量与 plan.modules 一致；页面标题、slug 与 source_paths 与 plan 一致。
+    check: 读 `nodes/module-pages.md` 的「验收」一节，逐条核对并给出证据。
   - id: operations-pages
     desc: 编写接口与运维页面
-    do: |-
-      先用 read 读取同目录的 `format.md` 与 survey 产物；页面契约与 manifest schema 以 format.md 为准。repository、outputDir、language 以 plan 为准。
-
-      1. 从 plan.pages 取出 owner 为 operations-pages 的页面。完成条件：页面集合恰好是 interfaces.md 与 operations.md。
-      2. 阅读接口、配置、构建、测试、CI/CD、部署、可观测性、安全、性能相关文件与命令，用实际路径和命令核对。完成条件：每个接口、命令和配置都有来源；无法验证的内容写入「未覆盖与假设」。
-      3. 按 §页面契约 写 interfaces.md 与 operations.md 到 outputDir。完成条件：页面结构与契约一致；每个命令与仓库文件一致；N/A 项写明检查过的路径。
-      4. 写源码索引。完成条件：每页列出的路径都在 repository 下存在，按字典序。
-      5. 用原生 write 写页面，用 ralphflow_artifact_write 写 `.ralphflow-codewiki/manifests/operations.json`。完成条件：符合 §manifest.json 契约；files 恰好是两页，每项字段与实际文件一致。
-      6. 完成自检。完成条件：正文语言与 language 一致；没有 TODO、TBD、占位符或空章节；接口和命令没有编造。
+    do: 编写接口与运维页面并交付 manifest：读 `nodes/operations-pages.md` 的「做什么」一节，按它执行。
     output: .ralphflow-codewiki/manifests/operations.json
     depends_on:
       - survey
-    check: |-
-      1. manifest 符合同目录 `format.md` 的 §manifest.json 契约；files 恰好等于 plan 中 owner 为 operations-pages 的页面；每项字段与实际文件一致。
-      2. interfaces.md 与 operations.md 存在；frontmatter 与 plan 一致；8 个 H2 的编号和文字等于 plan.format.headings。
-      3. 接口、命令与配置陈述都能在 repository 文件中找到来源；N/A 项写明检查过的路径；命令与仓库文件一致。
-      4. 构建、测试、CI/CD、部署、可观测性、安全、性能各有内容或带证据的 N/A；源码索引路径存在且按字典序。
-      5. 正文语言与 language 一致；没有 TODO、TBD、占位符或空章节；无法验证的内容在「未覆盖与假设」中写明检查路径。
-      6. 页面内容只来自 repository 的事实；接口与命令没有编造。
+    check: 读 `nodes/operations-pages.md` 的「验收」一节，逐条核对并给出证据。
   - id: assemble
     desc: 组装索引、元数据并校验固定格式
-    do: |-
-      先用 read 读取同目录的 `format.md` 与四个上游产物；index、metadata、validation、delivery 的 schema 以 format.md 为准。repository、outputDir、language 以 plan 为准。
-
-      1. 核对输入。完成条件：plan.status 为 ready；三个 manifest 与 plan 中对应 owner 的页面完全一致，每个字段与实际文件一致。不一致时停止写入 wiki，用原生 write 把差异写到工作区暂存目录 `.ralphflow-codewiki/validation.json`，保留现场供 CHECK 复核。
-      2. 写 index.md。完成条件：index 符合 §index.md 契约；链接覆盖全部页面，不链接计划外页面。
-      3. 写 metadata.json。完成条件：符合 §metadata.json 契约；files 覆盖除 metadata.json 外全部 wiki 文件；modules 与 plan 一致；validation 先写 pending 与空 checks。
-      4. 用原生 write 写 `.ralphflow-codewiki/verify.mjs`，实现 §校验清单 的 10 项检查，支持 --check 与 --write。完成条件：脚本可执行；--check 只读并打印 JSON；--write 写出 validation.json。
-      5. 运行 --check，修复自己负责的 index.md 与 metadata.json；上游页面缺陷保持原样并记录。完成条件：退出码为 0，或失败项都来自上游页面且有明确证据。
-      6. 运行 --write，通过后把 validation.status 与 checks 写回 metadata.json，再运行一次 --check。完成条件：validation.status 为 passed；metadata.validation 与 validation.json 一致；--check 退出码为 0。
-      7. 用 ralphflow_artifact_write 写 `.ralphflow-codewiki/delivery.json`。完成条件：符合 §validation.json 与 delivery.json 契约；各字段与实际一致，files 按路径字典序。
-      8. 完成自检。完成条件：wiki 目录只含 plan.pages 与 metadata.json；没有临时文件；全部页面语言一致且无占位符。
+    do: 组装索引与元数据并校验交付格式：读 `nodes/assemble.md` 的「做什么」一节，按它执行。
     output: .ralphflow-codewiki/delivery.json
     depends_on:
       - survey
       - core-pages
       - module-pages
       - operations-pages
-    check: |-
-      1. index.md 与 metadata.json 存在；index 符合同目录 `format.md` 的 §index.md 契约，链接覆盖全部页面且不指向计划外页面。
-      2. metadata 符合 §metadata.json 契约；files 覆盖除 metadata.json 外全部 wiki 文件，每个字段与实际文件一致；modules 与 plan 一致；validation 与 validation.json 一致。
-      3. validation.json 存在，§校验清单 的 10 项 id 齐全且全部 passed，evidence 指向实际文件，validation.command 可复现。
-      4. 重跑 `node .ralphflow-codewiki/verify.mjs <outputDir> --check` 返回 0，输出与 validation.json 一致，且重跑不修改工作区文件。
-      5. wiki 目录的文件集合恰好是 plan.pages 加 metadata.json；没有临时文件、内部文件或计划外文件。
-      6. delivery.json 符合 §validation.json 与 delivery.json 契约，status 为 passed，契约要求的路径都存在，files 覆盖全部 wiki 文件且每个字段与实际文件一致。
-      7. 全部页面语言与 plan.format.language 一致；没有 TODO、TBD、占位符或空章节。
+    check: 读 `nodes/assemble.md` 的「验收」一节，逐条核对并给出证据。

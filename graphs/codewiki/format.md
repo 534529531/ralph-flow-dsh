@@ -123,6 +123,22 @@ source_paths:
 - `src/index.mjs:42`
 ```
 
+## 页面验收清单
+
+页面节点与 `assemble` 的 CHECK 按本节逐条核对，每条给出证据（文件、行号或命令输出）。本节是页面通用判据的唯一归属，节点 CHECK 只写指针与本节点专属判据。
+
+1. frontmatter 的键与顺序等于 `plan.format.frontmatter_keys`；`title`、`kind`、`source_paths` 与 plan 中该页一致，`source_commit` 等于 `plan.source.commit`，`generated_at` 是有效 ISO 8601 时间。
+2. H1 等于 frontmatter 的 `title`，其后有一句话摘要。
+3. H2 恰好是 `plan.format.headings` 的 8 项；编号、文字、顺序一致，没有额外 H2。
+4. `architecture`、`workflows` 与每个 `module` 页至少有一个 `mermaid` 代码块，围栏成对闭合，图与正文描述一致。
+5. 每条关于代码结构、行为、接口或命令的事实，在同一节内带 `path:line` 形式的行内代码来源。
+6. 源码索引列出正文引用的全部路径，每行一个路径，按字典序，且每个路径都在 `repository` 下存在。
+7. 正文语言与 `plan.format.language` 一致；代码标识符、路径与命令保留原文。
+8. 页面只陈述能从 `repository` 文件验证的事实；接口、命令与符号没有编造。
+9. 页面不引用 `plan.modules` 之外的模块。
+10. 页面不含 `TODO`、`TBD`、`待补充` 或 `占位符`，也没有空章节。
+11. 无法验证的内容写在「未覆盖与假设」，并写明检查过的路径。
+
 ## index.md 契约
 
 - 阅读顺序固定：`overview` → `architecture` → `workflows` → `interfaces` → `operations` → `modules`（按 slug 字典序）。

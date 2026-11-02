@@ -141,7 +141,7 @@ const fixed = await collectVisibleTexts(PLUGIN_ENTRY, "");
   cleanupTmp(fixed.ws);
 }
 
-console.log("\nT3 静态扫描运行时面（src/*.ts 剥注释、workflows/ 与 graphs/ 下的 YAML、README.md）");
+console.log("\nT3 静态扫描运行时面（src/*.ts 剥注释、workflows/ 与 graphs/ 下的 YAML 与 Markdown、README.md）");
 {
   const files = scanRuntimeSurfaces(REPO);
   const bad = files.filter((f) => f.hits.length > 0);
@@ -153,6 +153,8 @@ console.log("\nT3 静态扫描运行时面（src/*.ts 剥注释、workflows/ 与
     "workflows/spec/workflow.yaml",
     "workflows/create-graph/workflow.yaml",
     "graphs/codewiki/graph.yaml",
+    "graphs/codewiki/nodes/survey.md",
+    "graphs/codewiki/format.md",
   ]) {
     check(`内置资产的目录形态入口在扫描清单里：${rel}`, paths.includes(rel), paths.join("、"));
   }
