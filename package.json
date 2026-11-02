@@ -1,6 +1,6 @@
 {
   "name": "ralphflow-dsh",
-  "version": "2.3.2",
+  "version": "2.4.0",
   "description": "Ralph Flow for DeepSeek Harness — Flow 顺序状态机 + Graph DAG（统一插件/命令/工具/查看器）：主会话执行，独立验证者取证，推进权在机械程序（v2 原生）",
   "type": "module",
   "main": "lib/index.js",
