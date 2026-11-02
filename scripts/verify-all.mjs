@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const files = fs.readdirSync(path.join(dir, "scripts"))
-  .filter((f) => f.endsWith("-test.mjs") || f === "verify-activation.mjs")
+  .filter((f) => f.endsWith("-test.mjs") || f === "verify-activation.mjs" || f === "verify-matt.mjs")
   .sort();
 
 let failed = 0;

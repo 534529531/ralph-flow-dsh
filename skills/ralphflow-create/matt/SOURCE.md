@@ -7,3 +7,6 @@
 - 随包文件：`grilling.md`、`to-spec.md`、`to-tickets.md`、`writing-for-agents.md`、`SKILL-MECHANICS.md`
 
 这些文件按原样随 RalphFlow 提供，便于 `ralphflow-create` skill 在用户没有安装 Matt 技能包时仍能读取同一套方法。
+
+- 校验方法：在本目录运行 `sha256sum -c SHA256SUMS`。
+- 这些文件必须保持与上游 commit `5beb35b` 逐字一致，只允许去掉 frontmatter。
