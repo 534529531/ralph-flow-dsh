@@ -22,7 +22,6 @@ import { pauseLabel } from "../pause.js";
 import { OWNER_HEARTBEAT_REFRESH_MS, ownerAlive, ownerRecheckMs, runtimeId, stampOwner } from "../owner.js";
 import {
   RALPH_FLOW_DIR,
-  SUBMIT_REMINDER_TOTAL_LIMIT,
   SUBMIT_REMINDER_STALL_LIMIT,
   makeArtifactsDirName,
   type EnginePorts,
@@ -1892,7 +1891,7 @@ export function createGraphEngine(options: GraphEngineOptions) {
   /**
    * 主执行节点的回合收尾检查（宿主 `agent/turn-stopping` 调用）。
    *
-   * 判定与 Flow 同一条：有动作的提醒只记总次数，空回合连续到上限（或总次数到顶）就暂停整个 run。
+   * 判定与 Flow 同一条：有动作的重置连续计数；连续空回合到上限就暂停整个 run。
    * 暂停后主节点的 attempt 仍在等交卷 —— 恢复时由 {@link continueInstance} 重新投递继续指令，
    * 否则模型会停在原地（DO 只投递过一次）。
    */
@@ -1900,7 +1899,7 @@ export function createGraphEngine(options: GraphEngineOptions) {
     run: RunContext,
     nodeId: string,
     lastActionAt: number | undefined,
-  ): { stalls: number; total: number; worked: boolean } {
+  ): { stalls: number; worked: boolean } {
     // 边界：这个节点的 attempt 起点；用户 `/ralphflow-continue` 之后重新计数。
     let from = -1;
     for (let i = 0; i < run.state.history.length; i++) {
@@ -1908,19 +1907,18 @@ export function createGraphEngine(options: GraphEngineOptions) {
       if (h.step === nodeId && h.event === "node_start") from = i;
       else if (h.event === "resume" && from >= 0) from = i;
     }
-    let total = 0;
     let stalls = 0;
     let last = -1;
     for (let i = from + 1; i < run.state.history.length; i++) {
       const h = run.state.history[i]!;
       if (h.step !== nodeId) continue;
-      if (h.event === "submit_activity") { stalls = 0; total++; last = i; }
-      else if (h.event === "submit_reminder") { stalls++; total++; last = i; }
+      if (h.event === "submit_activity") { stalls = 0; last = i; }
+      else if (h.event === "submit_reminder") { stalls++; last = i; }
     }
     const anchor = last >= 0 ? run.state.history[last]!.ts : from >= 0 ? run.state.history[from]!.ts : undefined;
     const anchorMs = anchor ? Date.parse(anchor) : Number.NaN;
     const worked = lastActionAt !== undefined && Number.isFinite(anchorMs) && lastActionAt > anchorMs;
-    return { stalls, total, worked };
+    return { stalls, worked };
   }
 
   function remindToSubmit(sessionId: string): { remind: boolean; message?: string; summary?: string } {
@@ -1928,37 +1926,35 @@ export function createGraphEngine(options: GraphEngineOptions) {
     if (!main) return { remind: false };
     const { run, node, attempt } = main;
     if (run.state.graph.status !== "running") return { remind: false };
-    const { stalls, total, worked } = reminderStateOf(run, node.id, ports.lastActionAt?.(sessionId));
+    const { stalls, worked } = reminderStateOf(run, node.id, ports.lastActionAt?.(sessionId));
 
-    // 与 Flow 同一条：两个上限都只在**这一轮也是空回合**时生效（干着活不被次数掐停）。
+    // 与 Flow 同一条：只有连续空回合到上限才暂停（干着活不被次数掐停）。
     const stalledOut = !worked && stalls >= SUBMIT_REMINDER_STALL_LIMIT;
-    const budgetOut = !worked && total >= SUBMIT_REMINDER_TOTAL_LIMIT;
-    if (stalledOut || budgetOut) {
-      const why = stalledOut
-        ? `连续 ${stalls} 次回合结束都没有任何动作`
-        : `已提醒 ${total} 次仍未交卷`;
+    if (stalledOut) {
+      const emptyRounds = stalls + 1;
+      const why = `连续 ${emptyRounds} 个回合没有调用任何工具`;
       // 先记轨迹再改状态：setStatus 会 persist，顺序反了磁盘上就少了这条暂停原因。
       history(run, "reminder_exhausted", why, node.id, "warn");
       setStatus(run, "paused", "no_submit");
-      logEvent(run.instId, "warn", "submit_reminder_exhausted", { node: node.id, stalls, total });
+      logEvent(run.instId, "warn", "submit_reminder_exhausted", { node: node.id, emptyRounds });
       return {
         remind: false,
-        summary: `⏸ Graph 节点 ${node.id} ${why}，已暂停等你处理`,
-        message: `⏸ Graph 主执行节点 \`${node.id}\` ${why}，已暂停等你处理。\n\n- 它其实做完了：先 \`/ralphflow-continue\` 恢复（会重新投递继续指令），再让它写产物并交卷。\n- 它在等你：直接回复它要的信息，再 \`/ralphflow-continue\` 恢复。\n- 它卡住了：\`/ralphflow-cancel\` 结束。`,
+        summary: `⏸ Graph 节点 ${node.id} 已暂停：${why}`,
+        message: `⏸ Graph 主执行节点 \`${node.id}\` 已暂停等你处理。\n\n${why}。\n\n- \`/ralphflow-continue\` 会清零连续计数，然后重新投递继续指令。\n- \`ralphflow_submit\` 没有次数上限；这里暂停只因为连续没有动作。\n- 它其实做完了：continue 后让它写产物并交卷。\n- 它在等你：先回复它要的信息，再 continue。\n- 它卡住了：\`/ralphflow-cancel\` 结束。`,
       };
     }
 
-    history(run, worked ? "submit_activity" : "submit_reminder", worked ? `第 ${total + 1} 次` : `第 ${stalls + 1}/${SUBMIT_REMINDER_STALL_LIMIT} 次空回合`, node.id);
+    history(run, worked ? "submit_activity" : "submit_reminder", worked ? "有动作" : `第 ${stalls + 1}/${SUBMIT_REMINDER_STALL_LIMIT} 次连续无工具回合`, node.id);
     persist(run);
     const head = worked
-      ? `[ralphflow] 提醒：Graph 节点 \`${node.id}\` 还没结束。`
-      : `[ralphflow] 提醒（第 ${stalls + 1}/${SUBMIT_REMINDER_STALL_LIMIT} 次空回合）：Graph 节点 \`${node.id}\` 还没结束，上次提醒之后没有任何工具调用。`;
+      ? `[ralphflow] 提醒：本轮继续，Graph 节点 \`${node.id}\` 还没结束。`
+      : `[ralphflow] 提醒（第 ${stalls + 1}/${SUBMIT_REMINDER_STALL_LIMIT} 次连续无工具回合）：本轮继续，Graph 节点 \`${node.id}\` 还没结束，上一轮没有调用任何工具。需要用户决定就调用 \`ask_user_question\`；否则继续做本轮清单。`;
     return {
       remind: true,
       summary: worked
-        ? `⚠️ Graph 节点 ${node.id} 还没结束（第 ${total + 1} 次提醒）`
-        : `⚠️ Graph 节点 ${node.id} 还没结束（连续 ${stalls + 1} 次空回合）`,
-      message: `${head}\n\n${nodeRecap(run, node, attempt)}\n\n本轮结束前：产物写好后，还有没完成的事项就写进 \`unfinished\`（交卷会被退回）；没有就留空，调用 \`ralphflow_submit\` 结束本轮。\n在等我回答或需要我介入：直接说明，不必交卷。`,
+        ? `▶️ Graph 节点 ${node.id} 还没结束：本轮任务书`
+        : `▶️ Graph 节点 ${node.id} 还没结束：本轮任务书（连续 ${stalls + 1} 个回合没有工具调用）`,
+      message: `${head}\n\n${nodeRecap(run, node, attempt)}\n\n本轮清单做完再交卷；确实被阻塞时，把还没完成的事项逐条写进 \`unfinished\`（交卷会被退回）。\n需要用户决定：调用 \`ask_user_question\`。其余情况继续做本轮清单。`,
     };
   }
 

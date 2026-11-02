@@ -322,10 +322,10 @@ console.log("\nA6) submit_reminder：按本次进入该步起算（step_start �
 {
   const E = mkEngine({ wfrw: WF_RW });
   const sid = "session-rw-6";
-  const id = E.start("wfrw", "提醒预算任务书", sid);
+  const id = E.start("wfrw", "连续空回合任务书", sid);
   const r1 = E.engine.remindToSubmit(sid);
   const r2 = E.engine.remindToSubmit(sid);
-  check("前置：s1 上先耗尽提醒预算（两次提醒）",
+  check("前置：s1 上先连续两次空回合（到上限）",
     r1.remind === true && r1.message.includes("第 1/2 次") && r2.remind === true && r2.message.includes("第 2/2 次"),
     JSON.stringify({ r1: r1.message?.slice(0, 40), r2: r2.message?.slice(0, 40) }));
   E.queue({ status: "passed", reason: "ok" });
@@ -334,7 +334,7 @@ console.log("\nA6) submit_reminder：按本次进入该步起算（step_start �
   E.engine.onSubmit(sid, "s2 完成"); await settle();
   check("前置：已推进到 s3", E.st(id).current_step === "s3", E.st(id).current_step);
 
-  E.engine.rewindTo(sid, "s1", "回到用光提醒预算的步骤");
+  E.engine.rewindTo(sid, "s1", "回到连续空回合到上限的步骤");
   await settle();
   const s = E.st(id);
   const rawCount = s.history.filter((h) => h.event === "submit_reminder" && h.step === "s1").length;

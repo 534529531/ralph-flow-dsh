@@ -598,7 +598,7 @@ steps:
   check("主节点 attempt 进入 running", !!entry && entry.state.graph.attempts.some((a) => a.status === "running"), entry?.state.graph.status);
 
   const r1 = facade.remindToSubmit(mainSession);
-  check("第 1 次空回合：提醒并标明次数", r1.remind === true && r1.message.includes("第 1/2 次空回合"), r1.message?.slice(0, 60));
+  check("第 1 次连续无工具回合：提醒并标明次数", r1.remind === true && r1.message.includes("第 1/2 次连续无工具回合"), r1.message?.slice(0, 60));
   check("长上下文：提醒自带节点回顾（任务/交付/工作区）",
     r1.remind === true && (r1.message ?? "").includes("## 本节点回顾") && (r1.message ?? "").includes("任务：做节点的工作")
     && (r1.message ?? "").includes("ralphflow_artifact_write") && (r1.message ?? "").includes("工作区："),
@@ -606,7 +606,7 @@ steps:
   await sleep(5);
   facade.noteAction(mainSession, Date.now());
   const r2 = facade.remindToSubmit(mainSession);
-  check("有动作的提醒：不算空回合", r2.remind === true && !r2.message.includes("空回合") && r2.message.includes("ralphflow_artifact_write"), r2.message?.slice(0, 80));
+  check("有动作的提醒：不算连续无工具回合", r2.remind === true && !r2.message.includes("连续无工具回合") && r2.message.includes("ralphflow_artifact_write"), r2.message?.slice(0, 80));
   facade.remindToSubmit(mainSession);
   const r4 = facade.remindToSubmit(mainSession);
   check("空回合重新累计到 2/2 仍只提醒", r4.remind === true && r4.message.includes("第 2/2 次"), r4.message?.slice(0, 60));

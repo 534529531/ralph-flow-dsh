@@ -303,7 +303,7 @@ steps:
 ## 回合收尾检查：从「催交卷」改成「问做完了吗」（2026-10-22）
 
 作者判断：`agent/turn-stopping` 那条提醒问错了问题。它原本说「你还没交卷」，但正确的语义是
-「做完了吗」——做完了就交卷、没做完就接着做、在等用户就直接说。同时 goal 机制被排除了：
+「做完了吗」——做完了就交卷、没做完就接着做、在等用户就调用 `ask_user_question`。同时 goal 机制被排除了：
 
 - goal 判断「做完没做完」也是**模型自报**（`update_goal complete` 只校验状态与身份，不校验目标是否达成；
   `dsh-goal-round-driver` 的 README 自己写着 *No independent evaluator*），driver 只是「active + armed +
@@ -313,9 +313,9 @@ steps:
 
 判定改成两条线：
 
-- `submit_activity`：上次提醒之后发生过 `tool/call`。只计入总次数，**清零**连续空回合累计。
+- `submit_activity`：上次提醒之后发生过 `tool/call`。只**清零**连续空回合累计。
 - `submit_reminder`：空回合。连续 `SUBMIT_REMINDER_STALL_LIMIT = 2` 次且这一轮仍是空回合 → 暂停
-  （`no_submit`）；总提醒 `SUBMIT_REMINDER_TOTAL_LIMIT = 20` 次仍未交卷 → 同样暂停（防「一直调工具但没进展」）。
+  （`no_submit`）；没有累计总预算（旧的总提醒上限已移除，干着活的循环不设天花板）。
 - 提醒次数仍**从 history 派生**（不新增落盘字段）；`step_start` / `rework_rewind` / `do_submitted` / `resume`
   仍是新一轮的边界。
 

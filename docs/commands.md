@@ -151,7 +151,7 @@
 | `check_skipped` | 本步无检查依据，跳过对抗性验证（**绝不写成检查通过**） |
 | `rework_rewind` | 判定失败，按 `on_fail` 返工 |
 | `pause` / `resume` | 暂停（`user_stop` / `max_failures` / `check_infra` / `no_submit`）与恢复 |
-| `submit_reminder` / `submit_activity` / `reminder_exhausted` | 回合收尾提醒（空回合 / 有动作）与到上限后的暂停 |
+| `submit_reminder` / `submit_activity` / `reminder_exhausted` | 回合收尾提醒（空回合 / 有动作）与连续空回合达上限后的暂停 |
 | `manual_reset` / `manual_reset_dropped` | 手动重置生效 / 未生效（绝不静默作废） |
 | `rewind` | 用户回退到更早的步骤（含 `from → to：reason`） |
 | `reset_surface` / `reset_surface_skipped` / `reset_skipped_first_step` | 上下文重置落地 / 放弃 / 首步结构上无法重置 |

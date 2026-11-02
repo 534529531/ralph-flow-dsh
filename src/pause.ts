@@ -25,7 +25,7 @@ const PAUSE_LABELS: Record<PauseReason, string> = {
   host_restarted: "属主运行时失联",
   max_failures: "返工达到上限",
   rework_limit: "返工达到上限",
-  no_submit: "反复没有交卷",
+  no_submit: "连续没有动作",
   check_infra: "验证或定义故障",
   node_failure: "节点执行失败",
   no_schedulable_node: "没有可调度的节点",

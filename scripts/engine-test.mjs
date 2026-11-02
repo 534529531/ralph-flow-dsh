@@ -876,7 +876,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     // 回合收尾检查（模型可见）：问「还有没有剩余事项」，并说明交卷之后才开始独立验证
     const remCheck = engine.remindToSubmit(s);
     check("17a 有 check 的回合收尾提醒只催剩余事项，不预告验证",
-      remCheck.remind === true && remCheck.message.includes("还有没完成的事项") && !remCheck.message.includes("交卷后引擎才会开始独立验证"), remCheck.message);
+      remCheck.remind === true && remCheck.message.includes("还没完成的事项") && !remCheck.message.includes("交卷后引擎才会开始独立验证"), remCheck.message);
     // 诚实标注：任何通知都不得出现「检查通过」
     check("17a 通知里不出现「检查通过」", !deliveries.some((t) => t.includes("检查通过")), deliveries.find((t) => t.includes("检查通过"))?.slice(0, 120));
     // b 步照常验证通过 → 完成并归档
@@ -910,7 +910,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     check("17b start 回执不预告独立验证、写明停在审查门",
       !r.text.includes("取证判定") && r.text.includes("停在审查门等你 `/ralphflow-continue` 放行"), r.text.slice(0, 360));
     check("17b 无 check 的 DO 同样注入「剩余事项清单」（不泄露验证触发）",
-      r.text.includes("还没完成的事项") && r.text.includes("没有就留空") && r.text.includes("没有时按「本步要做什么」与「交付物」")
+      r.text.includes("还没完成的事项") && r.text.includes("留空") && r.text.includes("没有时按「本步要做什么」与「交付物」")
       && !r.text.includes("引擎会启动独立验证"), r.text.slice(-300));
     // 回合收尾提醒（模型可见）不得谎称会开始独立验证 —— 本步本来就不验证
     const remGate = engine.remindToSubmit(s);
@@ -1030,6 +1030,29 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     check("17d 归档报告：有 check_skipped、无判定、无独立验证承诺、无「检查通过」",
       report.includes("check_skipped") && report.includes("（无判定记录）") && !report.includes("取证判定") && !report.includes("检查通过"),
       report.slice(0, 800));
+  }
+
+  // ── 17e) 无 check 的暂停恢复：continue 的 DO 也要写明跳过验证 ──
+  {
+    wfFile("skip-continue", [
+      "description: 无 check 的暂停恢复", "steps:",
+      "  - id: only", "    input: 上游产出", "    output: 本步产出", "    desc: 唯一一步", "    do: 做唯一的事",
+      "    on_pass: done", "    on_fail: only", "    max_fail_count: 3",
+    ]);
+    const s = S();
+    const { id } = start("skip-continue", "无 check 暂停恢复用例", s);
+    // 两轮无工具回合 → no_submit 暂停（do_submitted=false，走 DO 重投路径）
+    engine.remindToSubmit(s);
+    engine.remindToSubmit(s);
+    const paused = engine.remindToSubmit(s);
+    check("17e 前置：连续无工具回合 → no_submit 暂停", paused.remind === false && engine.readState(id)?.paused === true, JSON.stringify({ remind: paused.remind, paused: engine.readState(id)?.paused }));
+    deliveries.length = 0;
+    const c = engine.continueInstance(s);
+    const text = deliveries.at(-1) ?? "";
+    check("17e continue 的 DO 写明跳过对抗性验证",
+      c.ok && text.includes("## 验证方式") && text.includes("跳过对抗性验证"), text.slice(-300));
+    check("17e continue 的 DO 仍是任务书（任务 / 本步要做什么）",
+      text.includes("## 任务") && text.includes("做唯一的事") && text.includes("## 交卷方式"), text.slice(0, 300));
   }
 }
 

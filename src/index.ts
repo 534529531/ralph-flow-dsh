@@ -492,7 +492,7 @@ export function apply(ctx: Context): void {
         if (ev.type === "tool/call") {
           // 交卷本身不算「在干活」：否则连续空交卷会把空回合计数清零，催促机制失效。
           const toolName = (ev.data as { name?: unknown } | undefined)?.name;
-          if (toolName !== "ralphflow_submit" && typeof ev.time === "number") existingEngineFor(sid)?.noteAction(sid, ev.time);
+          if (toolName !== SUBMIT_TOOL_NAME && typeof ev.time === "number") existingEngineFor(sid)?.noteAction(sid, ev.time);
           return;
         }
         if (ev.type !== "assistant/message") return;

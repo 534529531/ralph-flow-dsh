@@ -41,7 +41,9 @@ try {
   assert(propose.includes("## 本步验收依据（供自查）"));
   // 交卷的前置条件由引擎统一注入（不靠每个工作流自己写）：
   assert(propose.includes("还没完成的事项"));
-  assert(propose.includes("没有就留空"));
+  assert(propose.includes("留空"));
+  assert(propose.includes("完成条件"));
+  assert(propose.includes("确实被阻塞"));
   assert(propose.includes("剩余工作清单"));
   assert(propose.includes("不是完成声明"));
   assert(propose.includes("每一条都能指出可复核的证据"));

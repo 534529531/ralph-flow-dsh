@@ -2,7 +2,7 @@
  * DO 交卷新机制（dsh 原生）：
  *   1. 交卷 = 调用 `ralphflow_submit` 工具（不再靠正则扫自由文本）
  *   2. 「忘了交卷」兜底 = 原生 `agent/turn-stopping` 在回合关闭前提醒
- *   3. 提醒有上限，达上限暂停等用户（绝不死循环催促）
+ *   3. 只按连续空回合暂停，达上限暂停等用户（绝不死循环催促）
  *
  * 用真实 apply() + 真实 Session，宿主服务用最小 stub。
  */
@@ -174,7 +174,7 @@ console.log("\nS5 工具/命令/技能描述：无 check 的步骤不得被描�
   check("ralphflow_start 描述限定「有 check 的步骤」才独立验证、无 check 则跳过",
     startDesc.includes("有 `check`") && startDesc.includes("没有 `check`") && startDesc.includes("跳过对抗性验证"), startDesc);
   check("ralphflow_submit 描述只讲交卷/剩余事项，不预告验证或 CHECK",
-    submitDesc.includes("`unfinished`") && submitDesc.includes("没有就留空")
+    submitDesc.includes("`unfinished`") && submitDesc.includes("留空") && submitDesc.includes("没有次数上限")
     && !submitDesc.includes("独立验证") && !submitDesc.includes("CHECK"), submitDesc);
   check("ralphflow-start 已是技能（同名命令不存在），技能正文同样限定（有 check → 独立验证；无 check → 跳过）",
     !registered.commands.some((c) => c.name === "ralphflow-start")

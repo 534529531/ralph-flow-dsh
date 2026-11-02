@@ -764,19 +764,13 @@ export interface Delegation {
 // 这样 DO 阶段（没有委派）与验证阶段共用同一个事实，恢复逻辑也只有一条。
 
 /**
- * 回合收尾检查的两道上限。**两道都只在「这一轮没干活」时才算数** —— 模型每轮都在动手就是
- * 在推进，不该被次数上限掐断（opencode 版同形：`MAX_DO_REINJECT` 只在 `!hasToolUse` 时生效）。
+ * 回合收尾检查的阈值。只在「这一轮没干活」时才算数 —— 模型每轮都在动手就是在推进，
+ * 不该被次数掐断（opencode 版同形：`MAX_DO_REINJECT` 只在 `!hasToolUse` 时生效）。
  *
- * `STALL` 只在**空回合**上累计：一次提醒之后模型一个工具都没调用，又停了一次 —— 连续这么多次，
- * 多半是在等人或卡住了，先暂停让用户处理。
- *
- * `TOTAL` 是本步的提醒预算（与 opencode 的 `MAX_DO_REINJECT = 5` 对齐）：累计到这个数之后，
- * **再出现空回合**就暂停。它兜的是「反复收尾又反复被叫回来」的消耗，而不是「一直在干活」的消耗
- * —— 真在干活的循环没有天花板（RA2 那种月级任务本来就要跑很久；用户能随时停）。
- *
- * 预算只该消耗在空回合上：`worked` 的回合不累计，一直在动手的循环不设天花板。
+ * `STALL` 只累计**连续空回合**：一次提醒之后模型一个工具都没调用，又停了一次。连续这么多次，
+ * 多半是在等人或卡住了，先暂停让用户处理。有动作的回合把连续计数清零；没有累计总预算 —
+ * 干活的循环不设天花板，单次停顿也不会因为「历史提醒多」而被立刻暂停。
  */
-export const SUBMIT_REMINDER_TOTAL_LIMIT = 5;
 export const SUBMIT_REMINDER_STALL_LIMIT = 2;
 
 export interface HistoryEntry {
@@ -2320,6 +2314,11 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 写进 DO 提示词，而不是只写进交接稿 —— 交接稿是「换上下文成功」才有的东西，而原因是
    * 换方向这件事本身的一部分：替换失败时 DO 照样带着原因落地（没有 `keep_session` 这类逃生口）。
    * 那一段同时点明**下游旧产出仍在盘上、基于旧方向**（回退不删除、不作废任何已有产出）。
+   *
+   * `continuation` = 上一轮进度交卷留下的清单。提醒与 continue 都把它作为**本轮清单**注入，
+   * 并在「交卷方式」里把完成条件写成「清单做完或被阻塞」—— 这样 start / continue / 提醒
+   * 三个入口拿到的是同一份任务书，轮长不再由入口决定（旧版提醒只有回顾短卡，实测同一模型
+   * 在完整 DO 下做 93/140 次工具调用，在短卡下只做 3 次）。
    */
   function doPrompt(
     instId: string,
@@ -2328,6 +2327,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     step: StepDef,
     rework?: string,
     rewind?: { from: string; reason: string },
+    continuation?: { count: number; items: string[] },
   ): string {
     const idx = wf.steps.findIndex((s) => s.id === step.id) + 1;
     const rel = artifactsRelDirOf(instId);
@@ -2373,6 +2373,15 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         `（这一节说的是本步**产出什么**；它们落在**哪里**由「产出目录」一节决定 —— 过程文档写裸文件名就落产出目录，不因为列在这一节就改写进工作目录。）`,
       );
     }
+    if (continuation && continuation.items.length > 0) {
+      parts.push(
+        "",
+        `## 本轮清单（上一轮记下的 ${continuation.count} 项未完成）`,
+        ...continuation.items.map((item, index) => `${index + 1}. ${item}`),
+        "",
+        "本轮的目标是把这份清单做完；会话时长和上下文用量不改变本轮的完成条件。",
+      );
+    }
     if (rework) {
       parts.push(
         "", "## 上一轮验证未通过（反馈）", rework.trim(),
@@ -2398,12 +2407,15 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           : "⚠️ **本步是工作流顺序上的最后一步**：它自己的既有产出仍在盘上、基于旧方向，重做时以新方向为准；交卷时请说明旧产出里哪些已不再适用。",
       );
     }
+    const hasRoundList = continuation !== undefined && continuation.items.length > 0;
     parts.push(
       "",
       "## 交卷方式",
-      "1. 结束本轮前，把**还没完成的事项**逐条写进 `unfinished`；没有就留空。`unfinished` 是剩余工作清单，不是完成声明。留空之前，逐条核对本步的完成条件（有验收依据时按上面每一条判据；没有时按「本步要做什么」与「交付物」），每一条都能指出可复核的证据（文件位置、命令与结果）；被打回会整步返工，并占用一次返工预算。调用 `ralphflow_submit` 结束本轮。",
-      "2. 把跨步需要的用户决定、验证方法与结果写进本步已有过程文档；过程文档里把计划与完成分开写，无法验证的事项标成未验证；需要用户补充信息时说明阻塞项，等信息齐全再完成本步。",
-      "3. 面向用户简短说明本步交付内容及自查结果，然后**调用 `ralphflow_submit` 工具交卷**。验证者看不到 summary 参数：需要验收的证据应能从文件或命令结果独立取得。不要给任何时长预估。",
+      `1. 完成条件：${hasRoundList ? "本轮清单上的每一项都完成（或确认被阻塞），并且" : ""}本步的完成条件逐条满足（有验收依据时按上面每一条判据；没有时按「本步要做什么」与「交付物」），每一条都能指出可复核的证据（文件位置、命令与结果）。全部满足后把 \`unfinished\` 留空，调用 \`ralphflow_submit\` 结束本轮。`,
+      "2. 阻塞只算三种：缺用户决定、缺外部输入、环境不可用。确实被阻塞时，把**还没完成的事项**逐条写进 `unfinished` 再交卷；`unfinished` 是剩余工作清单，不是完成声明，引擎会把清单还给你接着做。其余情况继续做本轮清单。被打回会整步返工，并占用一次返工预算。",
+      "3. 把跨步需要的用户决定、验证方法与结果写进本步已有过程文档；过程文档里把计划与完成分开写，无法验证的事项标成未验证；需要用户补充信息时调用 `ask_user_question`，等信息齐全再完成本步。",
+      "4. 面向用户简短说明本步交付内容及自查结果，然后**调用 `ralphflow_submit` 工具交卷**。验证者看不到 summary 参数：需要验收的证据应能从文件或命令结果独立取得。不要给任何时长预估。",
+      "5. 需要用户决定：调用 `ask_user_question`。其余情况继续做本轮清单。",
       "交卷后由引擎处理；期间不需要用户做任何操作，可用 `/ralphflow-status` 查进度或 `/ralphflow-cancel` 中止。交卷工具会结束当前回合，随后等待引擎或用户的下一条指令。通知与状态入口由插件展示，不需要重复播报。",
     );
     return parts.join("\n");
@@ -3520,7 +3532,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       try { ports.noteAction?.(sessionId, Date.now()); } catch {}
       return {
         ok: true,
-        text: `已记下这轮进度：本步还有 ${remaining.length} 项没完成。\n\n${remaining.map((item) => `- ${item}`).join("\n")}\n\n继续做这些；做完后再交卷。\n需要我决定的事：直接说明并结束回合，不必交卷。`,
+        text: `已记下这轮进度：本步还有 ${remaining.length} 项没完成。\n\n${remaining.map((item) => `- ${item}`).join("\n")}\n\n继续做这些；做完后再交卷。\n需要我决定的事：调用 \`ask_user_question\`。`,
       };
     }
 
@@ -3624,9 +3636,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     state: InstanceState,
     stepId: string,
     lastActionAt: number | undefined,
-  ): { stalls: number; total: number; worked: boolean } {
+  ): { stalls: number; worked: boolean } {
     // **次数按「本次进入该步」起算**：`step_start` 就是那条边界（回退也会记一条）。
-    // 若统计整段 history，回退到一个已经用光预算的步骤会**立刻** `no_submit` 暂停 ——
+    // 若统计整段 history，回退到一个已经连续空过两次的步骤会**立刻** `no_submit` 暂停 ——
     // 用户刚换了方向，工作流却一步没跑就停下。同理，返工（`rework_rewind` 换步、
     // `do_submitted` 开启本步新一轮）与 `/ralphflow-continue` 恢复（`resume` 后重投 DO）
     // 也都是新一轮的边界；只有**同一轮里**的提醒才累积。
@@ -3636,71 +3648,50 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       const h = state.history[i]!;
       if (h.step === stepId && boundaries.has(h.event)) from = i;
     }
-    // 两种提醒分开记（都从 history 派生，不新增落盘字段）：
-    //   · submit_reminder = 空回合（上次提醒之后没有任何工具调用），累计到 STALL 上限；
-    //   · submit_activity = 有动作的提醒（模型干过活又停下来），清零空回合累计，只计入总上限。
-    let total = 0;
+    // 连续空回合（从 history 派生，不新增落盘字段）：`submit_reminder` 加一，
+    // 一条有动作的 `submit_activity` 清零。只关心「最近连续几次没干活」，
+    // 不关心历史总次数 —— 总次数会把干活的轮也算进去，反而让单次停顿被误暂停。
     let stalls = 0;
     let last = -1;
     for (let i = from + 1; i < state.history.length; i++) {
       const h = state.history[i]!;
       if (h.step !== stepId) continue;
-      if (h.event === "submit_activity") { stalls = 0; total++; last = i; }
-      else if (h.event === "submit_reminder") { stalls++; total++; last = i; }
+      if (h.event === "submit_activity") { stalls = 0; last = i; }
+      else if (h.event === "submit_reminder") { stalls++; last = i; }
     }
     const anchor = last >= 0 ? state.history[last]!.ts : from >= 0 ? state.history[from]!.ts : undefined;
     const anchorMs = anchor ? Date.parse(anchor) : Number.NaN;
     const worked = lastActionAt !== undefined && Number.isFinite(anchorMs) && lastActionAt > anchorMs;
-    return { stalls, total, worked };
+    return { stalls, worked };
+  }
+
+  /** 把 history 里的 rewind detail（`from → step：reason`）还原成 doPrompt 需要的形状。 */
+  function rewindOf(detail: string): { from: string; reason: string } {
+    const cut = detail.indexOf("：");
+    const head = cut >= 0 ? detail.slice(0, cut) : detail;
+    const reason = cut >= 0 ? detail.slice(cut + 1).trim() : "";
+    const arrow = head.indexOf(" → ");
+    return { from: arrow >= 0 ? head.slice(0, arrow).trim() : head.trim(), reason };
   }
 
   /**
-   * 催促消息里的**自包含步骤卡**。
-   *
-   * 为什么需要：长程任务里原始 DO 会随上下文压缩而不可见；只发「你还没交卷」或
-   * 「还有 N 项」等于让模型猜要做什么。这里只带恢复方向必需的事实（任务 / 输入 /
-   * 要做什么 / 产出目录 / 交付物 / 自查依据 / 回退原因 / 未完成清单），
-   * **不重复 DO 里「交卷方式」那段长文** —— 催促本来就是低频的（≤2 次空回合 / 20 次总上限）。
+   * 无 `check` / `check_voting` 时，提醒与 continue 要如实写明的「跳过验证」说明。
+   * DO 本身不写（`rewind` 契约：DO 只讲任务）；但「模型每一轮都会重新读到的通道」
+   * 必须说清，否则它会误以为交卷后会启动验证者。
    */
-  function stepRecap(
-    instId: string,
-    wf: WorkflowDef,
-    state: InstanceState,
-    step: StepDef,
-    checkpoint?: { count: number; items: string[] } | null,
-  ): string {
-    const idx = wf.steps.findIndex((s) => s.id === step.id) + 1;
-    const hasCheck = stepHasVerification(step);
-    const checks = voterCountOf(step) > 0
-      ? (step.check_voting ?? []).map((voter, index) => `${index + 1}. ${voter.check.trim()}`)
-      : step.check ? [step.check.trim()] : [];
-    const rewind = [...state.history].reverse().find((h) => h.event === "rewind" && h.step === step.id);
-    const detail = rewind?.detail ?? "";
-    const cut = detail.indexOf("：");
-    const rewindReason = cut >= 0 ? detail.slice(cut + 1).trim() : "";
-    const failed = state.verdicts.filter((verdict) => verdict.step_id === step.id && verdict.status === "failed");
-    const lines = [
-      "## 本步回顾（上下文可能已被压缩，以这里为准）",
-      `- 工作流：\`${wf.name}\` · 步骤 ${idx}/${wf.steps.length}：**${step.id}**${step.desc ? ` — ${step.desc}` : ""}`,
-      `- 任务：${effectiveTaskOf(step, state.user_task)}`,
-      ...(step.input ? [`- 输入：${step.input}`] : []),
-      `- 本步要做什么：${(step.do || step.desc || step.id).trim()}`,
-      `- 产出目录：\`${artifactsRelDirOf(instId)}/\``,
-      `- 交付物：${String(step.output ?? "").trim() || "（未声明）"}`,
-      ...(rewindReason ? [`- 用户要求换方向的原因：${rewindReason}`] : []),
-      ...(hasCheck
-        ? ["- 自查依据（独立验证者按这些判据验收）：", ...checks.map((check) => `  ${check}`)]
-        : ["- 本步未配置 `check` / `check_voting`：交卷后跳过对抗性验证。"]),
-      ...(failed.length > 0
-        ? ["- 上一轮检查未通过（只修本步；原因）：", ...failed.map((verdict) => `  - ${verdict.reason.trim() || "（未给出原因）"}`)]
-        : []),
-      ...(checkpoint && checkpoint.items.length > 0
-        ? [`- 上一轮记下的未完成项（${checkpoint.count} 项）：`, ...checkpoint.items.map((item, index) => `  ${index + 1}. ${item}`)]
-        : []),
-    ];
-    return lines.join("\n");
+  function verificationNoteOf(wf: WorkflowDef, step: StepDef): string {
+    if (stepHasVerification(step)) return "";
+    return `\n\n## 验证方式\n本步不配置对抗性检查：${isGate(wf, step) ? "交卷后停在审查门等用户放行（跳过对抗性验证）。" : "交卷后跳过对抗性验证。"}`;
   }
 
+  /**
+   * 回合收尾检查：**每一轮都投递同一份 doPrompt**。
+   *
+   * 旧实现给提醒单独写了一份「回顾 + 催办」的短卡，省 token；实测同一模型在完整 DO 下
+   * 做 93/140 次工具调用，在短卡下只做 3 次 —— 轮长由入口决定，不是任务决定的。
+   * 现在 start（工具结果）、continue（重投）、提醒（turn-stopping）都走 doPrompt：
+   * 任务、验收依据、产出目录、交付物、交卷方式逐字相同，只有「本轮清单」和开头一行状态不同。
+   */
   function remindToSubmit(sessionId: string): { remind: boolean; message?: string; summary?: string } {
     const info = activeInstanceOfSession(sessionId);
     if (!info) return { remind: false };
@@ -3714,52 +3705,58 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const step = wf ? stepOf(wf, state.current_step) : undefined;
     if (!wf || !step) return { remind: false };
 
-    const { stalls, total, worked } = reminderStateOf(state, step.id, ports.lastActionAt?.(sessionId));
+    const { stalls, worked } = reminderStateOf(state, step.id, ports.lastActionAt?.(sessionId));
 
-    // 空回合暂停只在**这一轮也是空回合**时生效：模型中途干过活，连续计数就被打破，
+    // 连续空回合到上限才暂停：模型中途干过活，连续计数就被打破，
     // 不该因为「历史上有过两次空回合」在它回来干活的这一轮把它停掉。
     const stalledOut = !worked && stalls >= SUBMIT_REMINDER_STALL_LIMIT;
-    // 预算只在**这一轮也是空回合**时才触发：干着活被「次数到顶」掐停是另一种缺陷（见上）。
-    const budgetOut = !worked && total >= SUBMIT_REMINDER_TOTAL_LIMIT;
-    if (stalledOut || budgetOut) {
-      // 连续空回合够多，或总提醒次数到顶 → 停下来让用户处理，不再自动催（避免死循环）
-      const why = stalledOut
-        ? `连续 ${stalls} 次回合结束都没有任何动作`
-        : `已提醒 ${total} 次仍未交卷`;
+    if (stalledOut) {
+      // 不是交卷次数上限，也不是「提醒总次数到顶」：只是连续几个回合一个工具都没调用。
+      const emptyRounds = stalls + 1;
+      const why = `连续 ${emptyRounds} 个回合没有调用任何工具`;
       state.paused = true;
       state.pause_reason = "no_submit";
       pushHistory(state, "reminder_exhausted", why, step.id);
-      logPause(instId, state, "no_submit", { stalls, total });
+      logPause(instId, state, "no_submit", { emptyRounds });
       writeState(state, instId);
-      log("warn", "submit_reminder_exhausted", { instId, step: step.id, stalls, total });
+      log("warn", "submit_reminder_exhausted", { instId, step: step.id, emptyRounds });
       return {
         remind: false,
-        summary: `⏸ 步骤 ${step.id} ${why}，已暂停等你处理`,
-        message: `⏸ 步骤 \`${step.id}\` ${why}，已暂停等你处理。\n\n- 它其实做完了：先 \`/ralphflow-continue\` 恢复，再让它调用 \`ralphflow_submit\`。\n- 它在等你：直接回复它要的信息，再 \`/ralphflow-continue\` 恢复。\n- 它卡住了：\`/ralphflow-cancel\` 结束。`,
+        summary: `⏸ 步骤 ${step.id} 已暂停：${why}`,
+        message: `⏸ 步骤 \`${step.id}\` 已暂停等你处理。\n\n${why}。\n\n- \`/ralphflow-continue\` 会清零连续计数，然后重新投递本步任务书。\n- \`ralphflow_submit\` 没有次数上限；这里暂停只因为连续没有动作。\n- 它其实做完了：continue 后让它交卷（\`unfinished\` 留空）。\n- 它在等你：先回复它要的信息，再 continue。\n- 它卡住了：\`/ralphflow-cancel\` 结束。`,
       };
     }
 
     // 上次提醒之后有工具调用 = 模型在干活：不累计空回合，只记一条「有动作」的提醒。
-    pushHistory(state, worked ? "submit_activity" : "submit_reminder", worked ? `第 ${total + 1} 次` : `第 ${stalls + 1}/${SUBMIT_REMINDER_STALL_LIMIT} 次空回合`, step.id);
+    pushHistory(state, worked ? "submit_activity" : "submit_reminder", worked ? "有动作" : `第 ${stalls + 1}/${SUBMIT_REMINDER_STALL_LIMIT} 次连续无工具回合`, step.id);
     writeState(state, instId);
     const head = worked
-      ? `[ralphflow] 提醒：本步（\`${step.id}\`）还没结束。`
-      : `[ralphflow] 提醒（第 ${stalls + 1}/${SUBMIT_REMINDER_STALL_LIMIT} 次空回合）：本步（\`${step.id}\`）还没结束，上次提醒之后没有任何工具调用。`;
-    // 上一轮是「进度记录」不是完成声明：接着做那份清单，而不是再问一遍「做完了吗」。
+      ? `[ralphflow] 提醒：本轮继续，本步（\`${step.id}\`）还没结束。`
+      : `[ralphflow] 提醒（第 ${stalls + 1}/${SUBMIT_REMINDER_STALL_LIMIT} 次连续无工具回合）：本步（\`${step.id}\`）还没结束，上一轮没有调用任何工具。需要用户决定就调用 \`ask_user_question\`；否则继续做本轮清单。`;
+    // 每一轮都拿同一份任务书：start 的工具结果、continue 的重投、这里的提醒都走 doPrompt。
+    // 旧 stepRecap 是「催办 + 回顾」；实测同一模型在完整 DO 下做 93/140 次工具调用，
+    // 在回顾下只做 3 次 —— 轮长由入口决定，不是任务决定的。统一成完整 DO 才能让每轮同形。
     const checkpoint = lastCheckpointOf(state, step.id);
-    if (checkpoint) {
-      return {
-        remind: true,
-        summary: `▶️ 步骤 ${step.id} 继续：上一轮记下 ${checkpoint.count} 项未完成`,
-        message: `${head}\n\n${stepRecap(instId, wf, state, step, checkpoint)}\n\n接着做上一轮记下的 ${checkpoint.count} 项未完成（条目见上方步骤回顾）；这些项都完成后，交卷时把 \`unfinished\` 留空。\n在等我回答或需要我介入：直接说明，不必交卷。`,
-      };
-    }
+    const failed = state.verdicts.filter((verdict) => verdict.step_id === step.id && verdict.status === "failed");
+    const rework = failed.length > 0
+      ? failed.map((verdict) => `- ${verdict.reason.trim() || "（未给出原因）"}`).join("\n")
+      : undefined;
+    const rewindEvent = [...state.history].reverse().find((h) => h.event === "rewind" && h.step === step.id);
+    const brief = doPrompt(
+      instId, wf, state, step, rework,
+      rewindEvent ? rewindOf(rewindEvent.detail ?? "") : undefined,
+      checkpoint ?? undefined,
+    );
+    // 无 check / check_voting 的步骤：提醒要如实写明跳过验证。
+    // DO 本身不写（`rewind` 契约要求 DO 只讲任务）；提醒是模型每轮重新读到的通道，
+    // 不能让它误以为交卷后会启动验证者。
+    const verificationNote = verificationNoteOf(wf, step);
     return {
       remind: true,
       summary: worked
-        ? `⚠️ 步骤 ${step.id} 还没结束（第 ${total + 1} 次提醒）`
-        : `⚠️ 步骤 ${step.id} 还没结束（连续 ${stalls + 1} 次空回合）`,
-      message: `${head}\n\n${stepRecap(instId, wf, state, step)}\n\n本轮结束前：还有没完成的事项，逐条写进 \`unfinished\`；没有就留空。调用 \`ralphflow_submit\` 结束本轮。\n在等我回答或需要我介入：直接说明，不必交卷。`,
+        ? `▶️ 步骤 ${step.id} 还没结束：本轮任务书`
+        : `▶️ 步骤 ${step.id} 还没结束：本轮任务书（连续 ${stalls + 1} 个回合没有工具调用）`,
+      message: `${head}\n\n${brief}${verificationNote}`,
     };
   }
 
@@ -3904,7 +3901,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         void launchVerification(instId, state, wf, step);
         return { ok: true, text: `▶️ 已解除暂停（原因：${pauseLabel(reason)}），正在重新委派独立验证者检查步骤 \`${step.id}\`。` };
       }
-      deliverDirective(state, doPrompt(instId, wf, state, step), `▶️ 步骤 ${step.id} 继续执行`);
+      const checkpoint = lastCheckpointOf(state, step.id);
+      deliverDirective(state, doPrompt(instId, wf, state, step, undefined, undefined, checkpoint ?? undefined) + verificationNoteOf(wf, step), `▶️ 步骤 ${step.id} 继续执行`);
       return { ok: true, text: `▶️ 已解除暂停（原因：${pauseLabel(reason)}），已让模型继续步骤 \`${step.id}\`。` };
     }
 

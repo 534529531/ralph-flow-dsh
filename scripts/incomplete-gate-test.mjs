@@ -106,9 +106,9 @@ console.log("G1 未完成项非空：只记进度，不启动验证");
   delivered.length = 0;
   await listeners.get("agent/turn-stopping")({ agent: { id: pid } });
   const reminder = cli(delivered.at(-1));
-  check("只交卷不干活 → 按空回合计（第 1/2 次空回合）", reminder.includes("1/2 次空回合"), reminder.slice(0, 200));
+  check("只交卷不干活 → 按连续无工具回合计（第 1/2 次）", reminder.includes("1/2 次连续无工具回合"), reminder.slice(0, 200));
   check("提醒接着做那份清单（不再问「做完了吗」）",
-    reminder.includes("接着做上一轮记下的 3 项") && !reminder.includes("做完了："), reminder.slice(0, 300));
+    reminder.includes("本轮清单（上一轮记下的 3 项未完成）") && !reminder.includes("做完了："), reminder.slice(0, 300));
   check("提醒里点名 unfinished 这条通道", reminder.includes("unfinished"), reminder.slice(0, 300));
 
   fs.rmSync(ws, { recursive: true, force: true });
@@ -130,15 +130,15 @@ console.log("\nG1b 记录进度之后干过活：提醒仍是接着做，但不�
   emit("ralphflow_submit");
   delivered.length = 0;
   await listeners.get("agent/turn-stopping")({ agent: { id: pid } });
-  check("交卷工具调用不被算成干活（仍是空回合）", cli(delivered.at(-1)).includes("次空回合"), cli(delivered.at(-1)).slice(0, 160));
+  check("交卷工具调用不被算成干活（仍是连续无工具回合）", cli(delivered.at(-1)).includes("连续无工具回合"), cli(delivered.at(-1)).slice(0, 160));
 
   await sleep(5);
   emit("bash");
   delivered.length = 0;
   await listeners.get("agent/turn-stopping")({ agent: { id: pid } });
   const after = cli(delivered.at(-1));
-  check("干过活之后的记录 → 提醒不算空回合", !after.includes("次空回合"), after.slice(0, 160));
-  check("仍然是接着做（不是重新问做完了吗）", after.includes("接着做上一轮记下的 2 项") && !after.includes("做完了："), after.slice(0, 200));
+  check("干过活之后的记录 → 提醒不算连续无工具回合", !after.includes("连续无工具回合"), after.slice(0, 160));
+  check("仍然是接着做（不是重新问做完了吗）", after.includes("上一轮记下的 2 项") && !after.includes("做完了："), after.slice(0, 200));
 
   fs.rmSync(ws, { recursive: true, force: true });
 }

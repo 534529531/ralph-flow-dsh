@@ -154,12 +154,12 @@ export function registerTools(deps: ToolContext): Map<string, ToolHandler> {
     },
     {
       name: SUBMIT_TOOL_NAME,
-      description: "【交卷】Flow 主会话交卷，或 Graph 节点 agent 提交本 attempt 的产物。`unfinished` 列出本轮结束时还没完成的事项；没有就留空。交卷结束本轮；被拒绝时不结束。",
+      description: "【交卷】Flow 主会话交卷，或 Graph 节点 agent 提交本 attempt 的产物。`unfinished` 列出本轮结束时还没完成的事项；本轮清单做完就留空。交卷结束本轮；`ralphflow_submit` 没有次数上限。被拒绝时不结束。",
       params: {
         summary: { type: "string", description: "可选：简述本步做了什么。**验证者看不到它**（T1：验证请求不含执行者自述），它仅供审查门重交去重，不是验证证据，也不作持久交接；跨步信息应写入过程文档。" },
         unfinished: {
           type: "array", items: { type: "string" }, required: true,
-          description: "本轮结束时还没完成的事项，每条一句话。没有就留空；有就逐条写（报进度：引擎把清单还给你接着做）。",
+          description: "本轮结束时还没完成的事项，每条一句话。本轮清单做完就留空；确实被阻塞时逐条写（引擎把清单还给你接着做）。",
         },
       },
       handler: submitHandler,
