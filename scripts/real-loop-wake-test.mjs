@@ -36,6 +36,16 @@ import { RALPHFLOW_SOURCE_KIND } from "../lib/message-source.js";
 import { buildPluginCopy, REPO } from "./helpers/reverted-build.mjs";
 import { cleanupTmp, mkTmp, textOf } from "./helpers/plugin-harness.mjs";
 
+// 工具执行器：rc.5 的 `dsh-tools` 已内置执行器；alpha2 把它拆成独立插件
+// （`setExecutor`），缺少它时回合进不了 step。只在宿主提供该包时装配，
+// 其余找不到模块的错误照常抛出。
+let ToolExecutorNative = null;
+try {
+  ToolExecutorNative = await import("@deepseek-ai/dsh-tool-executor-native");
+} catch (error) {
+  if (error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
+}
+
 // HOME 隔离（工作协议）：测试绝不读写真实 ~/.dsh。必须在 apply 之前设置。
 process.env.HOME = mkTmp("home");
 fs.mkdirSync(path.join(process.env.HOME, ".dsh"), { recursive: true });
@@ -117,6 +127,8 @@ async function runScenario(entryUrl, label) {
   ctx.plugin(SessionProjectionRegistry);
   ctx.plugin(SystemPrompt);
   ctx.plugin(ToolRuntime);
+  // alpha2 的执行器是独立插件（rc.5 内置在 dsh-tools 里）；缺它时回合进不了 step。
+  if (ToolExecutorNative) ctx.plugin(ToolExecutorNative);
   ctx.plugin(AgentRegistry);
   ctx.plugin(AgentLoop);
   await sleep(120);
