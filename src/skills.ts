@@ -22,8 +22,10 @@
  * `/ralphflow-status`、`/ralphflow-list`、`/ralphflow-doctor`（纯读）、`/ralphflow-create`
  * 保持命令 —— 详见 `docs/v2/skills-vs-commands.md` 的逐条归类。
  */
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import yaml from "js-yaml";
 import type { Context } from "@deepseek-ai/cordis";
 import type { SkillRegistration } from "@deepseek-ai/dsh-skill";
 
@@ -84,39 +86,42 @@ const START_SKILL_CONTENT = `启动用户要求的 Ralph Flow 工作流。请调
 
 ${SHARED_MECHANISM}`;
 
-/** 创建/修改 RalphFlow 资产的技能名与触发器。 */
-export const CREATE_SKILL_NAME = "ralphflow-create";
+/**
+ * `ralphflow-create` 的技能目录：正文（`SKILL.md`）与创建期参考（YAML 方言、Graph 写法、
+ * Matt 原文）在同一处，资源按这个目录解析 —— 与 dsh 的文件技能同构
+ * （`<name>/SKILL.md` 的根就是这个目录）。
+ *
+ * 与运行期资产分开：资产目录放资产自己引用的材料，创建期参考跟着 skill 走、由 `skill` 工具
+ * 的资源根注入。
+ */
+export const CREATE_SKILL_RESOURCES = fileURLToPath(new URL("../skills/ralphflow-create", import.meta.url));
 
-export const CREATE_SKILL_DESCRIPTION = "创建或修改 RalphFlow 工作流或 DAG：用户想把流程做成工作流、设计多 agent DAG，或修改现有 Flow/Graph 资产时使用。";
+/**
+ * 读一个**文件技能**的 `SKILL.md`：frontmatter 给 `name` / `description`，其后是正文。
+ *
+ * 格式与 `dsh-skill-filesystem` 的 `parseSkillFile` 同一条（`---` 包一段 YAML，正文取
+ * `body.trim()`）；只认这两项，`invocation` 由注册方给出 —— 内置技能的两面行为是固定的。
+ *
+ * **单一真相源**：名字、描述、正文只写在这个文件里，代码不留副本，否则改一处生效、改另一处
+ * 静默失效。缺文件或 frontmatter 坏了是**打包错误**，直接抛出，不静默回落。
+ */
+function readSkillFile(dir: string): { name: string; description: string; content: string } {
+  const file = path.join(dir, "SKILL.md");
+  const raw = fs.readFileSync(file, "utf-8");
+  const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(raw);
+  if (!match) throw new Error(`${file} 缺少 YAML frontmatter（\`---\` 包一段 name/description）`);
+  const meta = yaml.load(match[1]!) as { name?: unknown; description?: unknown } | null;
+  const name = typeof meta?.name === "string" ? meta.name.trim() : "";
+  const description = typeof meta?.description === "string" ? meta.description.trim() : "";
+  const content = (match[2] ?? "").trim();
+  if (!name || !description || !content) {
+    throw new Error(`${file} 的 frontmatter 必须有 name 与 description，且正文不能为空`);
+  }
+  return { name, description, content };
+}
 
-const CREATE_SKILL_CONTENT = `# RalphFlow 创建
-
-先判断产物是 Flow 还是 Graph，再走对应分支。两条分支都以「资产已保存、\`ralphflow_doctor\` 通过、没有启动实例」为完成条件。
-
-## Flow
-
-Flow 是顺序状态机，不走 Matt 的 grill/spec/tickets。
-
-1. 问清目标、触发条件、输入、产出和结束条件；只问会改变步骤或验收的决定。
-2. 读 \`workflow-authoring.md\`，按它的字段与写法起草；写 DO/CHECK 前读 \`matt/writing-for-agents.md\`。它只管写法，不引入 Graph 的 grill/spec/tickets。
-3. 把资产写到项目根的 \`.dsh/ralph-flow/workflows/<slug>.yaml\`（项目根 = 从当前目录向上最近的含 \`.git\` 的祖先目录；没有就用当前目录）。
-4. 用 \`ralphflow_doctor\` 校验，修到全部通过。
-5. 把路径和用法交给用户；生成的工作流只在用户明确要求时启动。
-
-完成条件：doctor 通过，文件存在，没有启动实例。
-
-## Graph / DAG
-
-Graph 用 ticket DAG。启动内置 \`create-graph\` Flow，由它承载 grill → spec → tickets → graph，以及 spec/tickets 的独立 CHECK 和人工门：
-
-\`ralphflow_start({ workflow: "create-graph", task: "<用户想法>" })\`
-
-然后按它返回的步骤执行；方法由 create-graph 的步骤从 \`ralphflow-create\` skill 的资源目录读取随包 Matt 参考。
-
-如果你已经在 \`create-graph\` 的某个步骤中，只执行当前步骤，不再启动新的 \`create-graph\`。
-
-完成条件：create-graph 完成并给出 Graph 资产路径；没有启动生成的 Graph。
-`;
+/** `ralphflow-create` 的技能定义：正文与元数据都在 `skills/ralphflow-create/SKILL.md`。 */
+const CREATE_SKILL = readSkillFile(CREATE_SKILL_RESOURCES);
 
 /**
  * 某个工作流的快捷技能描述：**直接用该工作流 YAML 里的 `description`**（它本来就是面向人的
@@ -148,7 +153,7 @@ ${SHARED_MECHANISM}`;
  * `ralphflow_start` 按名字加载工作流，`/ralphflow-start <工作流> <任务>` 仍能启动它。
  */
 export function workflowSkillNameRejection(workflowName: string, skillName: string): string {
-  return `工作流 \`${workflowName}\` 没能注册成快捷技能：技能名必须是小写 kebab（\`[a-z0-9]+(-[a-z0-9]+)*\`），而 \`${skillName}\` 不满足（只允许小写字母、数字与单个连字符）。把工作流文件重命名成小写 kebab（例如 \`my-flow.yaml\`）就能拿到 \`/ralphflow-my-flow\` 这个快捷入口；在那之前它仍可用 \`/ralphflow-start ${workflowName} <任务>\` 启动。`;
+  return `工作流 \`${workflowName}\` 没能注册成快捷技能：技能名必须是小写 kebab（\`[a-z0-9]+(-[a-z0-9]+)*\`），而 \`${skillName}\` 不满足（只允许小写字母、数字与单个连字符）。把工作流改成小写 kebab 名（目录 \`my-flow/workflow.yaml\`，单文件形态 \`my-flow.yaml\` 同理）就能拿到 \`/ralphflow-my-flow\` 这个快捷入口；在那之前它仍可用 \`/ralphflow-start ${workflowName} <任务>\` 启动。`;
 }
 
 /** 注册技能所需的宿主能力（`skills` 由 `inject` 保证；`deliverNotice` 用于把拒绝理由说给人听）。 */
@@ -231,13 +236,13 @@ export function registerSkills(deps: SkillContext): SkillRegistrar {
     if (deps.deliverNotice(sessionId, `[ralphflow] ${reason}`, "⚠️ ralphflow：有工作流没能做成快捷技能")) told.add(key);
   };
 
-  // ── 创建技能（`/ralphflow-create`）：作者知识按需加载，不进任何执行上下文 ──
-  taken.add(CREATE_SKILL_NAME);
+  // ── 创建技能（`/ralphflow-create`）：正文与元数据读 `skills/ralphflow-create/SKILL.md` ──
+  taken.add(CREATE_SKILL.name);
   registerOne({
-    name: CREATE_SKILL_NAME,
-    description: CREATE_SKILL_DESCRIPTION,
-    content: CREATE_SKILL_CONTENT,
-    resourceBase: { kind: "directory", path: fileURLToPath(new URL("../references", import.meta.url)) },
+    name: CREATE_SKILL.name,
+    description: CREATE_SKILL.description,
+    content: CREATE_SKILL.content,
+    resourceBase: { kind: "directory", path: CREATE_SKILL_RESOURCES },
     source: "custom",
   });
 

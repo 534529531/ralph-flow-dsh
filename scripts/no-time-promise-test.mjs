@@ -9,7 +9,8 @@
  * 本文件断言：
  *   T1  扫描器本身分得清「承诺」与「实测」（预置承诺必须被抓；`3 分钟前` 这类实测不误报）；
  *   T2  真跑一遍插件，把**所有用户/模型可见的文本**收集起来 → 零时长承诺，且新措辞在；
- *   T3  静态扫描运行时面（src/*.ts 剥注释、workflows/*.yaml、README.md）→ 零时长承诺；
+ *   T3  静态扫描运行时面（src/*.ts 剥注释、workflows/ 与 graphs/ 下的 YAML、README.md）→ 零时长承诺；
+ *   T3b 新布局（目录形态入口与兼容单文件）确实在扫描范围内，且新布局里的承诺同样被抓；
  *   T4【负对照】把文案还原成修复前那句编造的时长承诺 → **同一个判据必然判不通过**。
  *
  * 纪律（任务书 §4）：一切临时资产走 mkdtemp + 隔离 HOME。
@@ -140,12 +141,48 @@ const fixed = await collectVisibleTexts(PLUGIN_ENTRY, "");
   cleanupTmp(fixed.ws);
 }
 
-console.log("\nT3 静态扫描运行时面（src/*.ts 剥注释、workflows/*.yaml、README.md）");
+console.log("\nT3 静态扫描运行时面（src/*.ts 剥注释、workflows/ 与 graphs/ 下的 YAML、README.md）");
 {
   const files = scanRuntimeSurfaces(REPO);
   const bad = files.filter((f) => f.hits.length > 0);
   check(`扫描 ${files.length} 个文件（${files.map((f) => f.path).join("、")}）零时长承诺`,
     bad.length === 0, bad.map((f) => `${f.path}:${f.hits.map((h) => `${h.line}(${h.match})`).join(",")}`).join(" | "));
+  const paths = files.map((f) => f.path);
+  for (const rel of [
+    "workflows/loop/workflow.yaml",
+    "workflows/spec/workflow.yaml",
+    "workflows/create-graph/workflow.yaml",
+    "graphs/codewiki/graph.yaml",
+  ]) {
+    check(`内置资产的目录形态入口在扫描清单里：${rel}`, paths.includes(rel), paths.join("、"));
+  }
+}
+
+console.log("\nT3b 新布局（目录形态入口与兼容单文件）真的在扫描范围内");
+{
+  const repo = mkTmp("layout-scan");
+  const write = (rel, body) => {
+    const file = path.join(repo, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, body, "utf-8");
+  };
+  const promises = [
+    "workflows/folder/workflow.yaml",
+    "workflows/single.yaml",
+    "graphs/folder/graph.yaml",
+    "graphs/single.yaml",
+  ];
+  for (const rel of promises) write(rel, "steps:\n  - id: only\n    do: 预计 3 分钟完成。\n");
+  write("workflows/measured/workflow.yaml", "steps:\n  - id: only\n    do: 实测耗时 3m12s。\n");
+  const scanned = scanRuntimeSurfaces(repo);
+  const paths = scanned.map((f) => f.path);
+  for (const rel of promises) check(`扫描器覆盖 ${rel}`, paths.includes(rel), paths.join("、"));
+  const hits = scanned.filter((f) => f.hits.length > 0).map((f) => f.path).sort();
+  check("目录形态与单文件形态里的时长承诺全部命中（不是空集）",
+    hits.length === promises.length && promises.every((rel) => hits.includes(rel)), hits.join("、"));
+  const measured = scanned.find((f) => f.path === "workflows/measured/workflow.yaml");
+  check("新布局里的实测耗时仍不误报", measured?.hits.length === 0, JSON.stringify(measured?.hits));
+  cleanupTmp(repo);
 }
 
 console.log("\nT4【负对照】把文案还原成修复前那句编造的时长承诺 → 同一判据必然判不通过");

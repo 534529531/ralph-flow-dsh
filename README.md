@@ -76,7 +76,7 @@ CHECK 不是同一个会话再问一遍"你做完了吗"。它是一个**全新�
 | 诊断与创建 | `/ralphflow-doctor` 提前抓定义错误与实例体检；`/ralphflow-create` 交互式设计并校验到零告警 |
 | 日志与报告 | JSONL 执行日志（含验证者提示词与判定原文）+ 逐步耗时/重试的归档报告 |
 | 方言共享 | 同一份 Flow YAML 在 opencode / claude / dsh 三端可跑；本端对"会让资产不再表示它所说的话"的配置一律加载期 fail-fast |
-| Graph DAG | `graphs/*.yaml`：无环依赖、就绪节点并行、逐节点产物与 CHECK、人工审查门；每个节点在自己的 Git worktree 与节点分支上提交，交卷前把集成分支合进来，引擎只接受快进（否则退回节点重做） |
+| Graph DAG | `graphs/<名字>/graph.yaml`：无环依赖、就绪节点并行、逐节点产物与 CHECK、人工审查门；每个节点在自己的 Git worktree 与节点分支上提交，交卷前把集成分支合进来，引擎只接受快进（否则退回节点重做） |
 | 统一门面 | 一个插件、一套 `/ralphflow-*` 与 `ralphflow_*`；按资产的 `kind` 路由到 Flow 或 Graph，两种实例共用 `.dsh/ralph-flow/` 与报告 |
 | 只读查看器 | 右侧栏一个只读 tab：按 Flow/Graph 分组浏览步骤链 / DAG、节点 DO/CHECK 与当前状态；没有控制面 |
 
@@ -118,7 +118,7 @@ dsh plugin --profile web add ralphflow-dsh
 ### 定义你自己的工作流
 
 ```yaml
-# <项目根>/.dsh/ralph-flow/workflows/my-flow.yaml
+# <项目根>/.dsh/ralph-flow/workflows/my-flow/workflow.yaml
 description: 实现、测试并文档化一个功能
 
 steps:
@@ -237,7 +237,7 @@ Graph 资产放在 `graphs/`，与 Flow 的 `workflows/` 分开；一个运行�
 - Graph 实例完成后**保留** `state.json`、执行日志与产物（供复核与交付验收），与 Flow 的“跑完归档报告并销毁实例目录”不同；取消也保留。`/ralphflow-cleanup` 只清干净、已登记的节点 worktree。
 - 只读查看器在右侧栏：顶部选 Flow/Graph 资产，Graph 显示 DAG 与节点详情；启动与审查放行仍在聊天/命令里完成；暂停点发送键旁的停止按钮，Graph 后台节点在飞时点输入区的「暂停」。
 
-> **内置工作流不落盘**（对齐 opencode/claude）：它们只存在于插件目录，加载时回落取用，因此**始终是随插件发布的最新版本**。要定制，就在 `<项目根>/.dsh/ralph-flow/workflows/` 放一个同名文件——它会遮蔽内置（这是唯一的定制入口，也是有意行为）。Graph 的同名定制文件放 `<项目根>/.dsh/ralph-flow/graphs/`；跨类别同名是冲突，必须改名。
+> **内置工作流不落盘**（对齐 opencode/claude）：它们只存在于插件目录，加载时回落取用，因此**始终是随插件发布的最新版本**。要定制，就在 `<项目根>/.dsh/ralph-flow/workflows/` 放一个同名资产（`<名字>/workflow.yaml`）——它会遮蔽内置（这是唯一的定制入口，也是有意行为）。Graph 的同名资产放 `<项目根>/.dsh/ralph-flow/graphs/<名字>/graph.yaml`；跨类别同名是冲突，必须改名。
 
 ## 与 opencode 和 claude 版的关系
 

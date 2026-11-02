@@ -13,7 +13,7 @@ import { Session, SESSION_FORMAT_VERSION } from "@deepseek-ai/dsh-session";
 import { fileURLToPath } from "node:url";
 
 const repo = fileURLToPath(new URL("../", import.meta.url));
-const VOTE_COUNT = yaml.load(fs.readFileSync(new URL("../workflows/loop.yaml", import.meta.url), "utf8")).steps[0].check_voting.length;
+const VOTE_COUNT = yaml.load(fs.readFileSync(new URL("../workflows/loop/workflow.yaml", import.meta.url), "utf8")).steps[0].check_voting.length;
 const voterNotice = new RegExp(`验证者 \\d+/${VOTE_COUNT}`);
 const source = fs.readFileSync(path.join(repo, "src/client/status.tsx"), "utf8");
 assert.doesNotMatch(source, /rgba?\(|#[0-9a-f]{3,8}\b|fontSize\s*:\s*\d|font-size\s*:\s*\d|borderRadius\s*:\s*\d|border-radius\s*:\s*\d|boxShadow\s*:\s*["']|box-shadow\s*:\s*(?!var\()[\d]/i,

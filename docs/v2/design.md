@@ -283,12 +283,12 @@
   src/tools.ts     工具与命令注册（含 ralphflow_submit）；命令面 8 条（启动类不在这里；cleanup 只对 Graph 有实际动作）
   src/skills.ts    技能面：ralphflow-start（两面）+ ralphflow-<工作流>（只给人看）+ 名字校验与如实拒绝
   src/voting.ts    多验证者投票（聚合优先级 / infra 重试）
-  src/create.ts    自定义工作流创建指引（CREATE_GUIDE）+ kind 分流指针
+  src/asset-path.ts 资产形态与参考根（目录/单文件入口、发现、资产名推导、提示词片段）
   src/facade.ts    按 kind 路由：Flow 引擎 / Graph 引擎；门面只编排，不写第二遍
   src/assets.ts    统一资产发现（Flow/Graph 清单、跨类别同名冲突）
   src/graph/       Graph 资产契约、状态与派生投影、调度、Git worktree/分支快进、报告
-  workflows/loop.yaml  spec.yaml   内置 Flow 工作流（发货）
-  graphs/codewiki.yaml                  内置 Graph 工作流（发货）
-  references/      随包写作/资产/CodeWiki 参考
+  workflows/<name>/workflow.yaml   内置 Flow 资产（loop / spec / create-graph）
+  graphs/codewiki/                 内置 Graph 资产（graph.yaml + format.md 契约）
+  skills/ralphflow-create/         ralphflow-create 文件技能：SKILL.md（正文）+ 创建期参考 + matt/
   ```
 - 包名 `ralphflow-dsh` 沿用；成熟后发 2.0.0。

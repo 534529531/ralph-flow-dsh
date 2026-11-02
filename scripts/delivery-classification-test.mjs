@@ -208,6 +208,8 @@ console.log("\nS3 运行期投递调用点清单（改了清单就必须来改�
     };
   }
   const expected = {
+    // 资产路径与参考根：纯路径推导与提示词片段，不投递任何东西。
+    "src/asset-path.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
     "src/assets.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
     "src/client/definition.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
     "src/client/index.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },

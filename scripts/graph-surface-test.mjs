@@ -160,7 +160,7 @@ console.log("P4 create 已迁成 skill");
 {
   const createSkill = env.registered.skills.find((skill) => skill.name === "ralphflow-create");
   check("注册了 ralphflow-create skill", !!createSkill && /工作流或 DAG/.test(createSkill.description), JSON.stringify(createSkill?.description));
-  check("skill 自带随包参考目录", createSkill?.resourceBase?.kind === "directory" && /references$/.test(createSkill.resourceBase.path), JSON.stringify(createSkill?.resourceBase));
+  check("skill 自带创建期参考目录", createSkill?.resourceBase?.kind === "directory" && /skills[\\/]ralphflow-create$/.test(createSkill.resourceBase.path), JSON.stringify(createSkill?.resourceBase));
   check("skill 的 Graph 分支启动 create-graph", /create-graph/.test(createSkill?.content ?? ""), createSkill?.content?.slice(0, 200));
   check("不再注册 create 命令", !env.registered.commands.some((command) => command.name === "ralphflow-create"));
 }

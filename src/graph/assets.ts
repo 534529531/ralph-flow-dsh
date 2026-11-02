@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 import { RALPH_FLOW_DIR } from "../engine.js";
 import { userRalphFlowDir } from "../paths.js";
+import { GRAPH_ENTRY_FILE, assetCandidates, discoverAssetsIn } from "../asset-path.js";
 import { validateGraphAsset, type GraphAsset } from "./asset.js";
 
 export const GRAPH_DIRNAME = "graphs";
@@ -51,12 +52,12 @@ export function graphGlobalDir(): string {
   return userRalphFlowDir(GRAPH_DIRNAME);
 }
 
-/** 内置 Graph 资产路径（不落盘，随包发布；`lib/graph/assets.js` → `<pkg>/graphs/<name>.yaml`）。 */
+/** 内置 Graph 资产路径（不落盘，随包发布；`lib/graph/assets.js` → `<pkg>/graphs/<name>/graph.yaml`）。 */
 export function builtinGraphPath(name: string): string | undefined {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    path.resolve(here, "..", "..", GRAPH_DIRNAME, `${name}.yaml`),
-    path.resolve(here, "..", "..", "..", GRAPH_DIRNAME, `${name}.yaml`),
+    ...assetCandidates(path.resolve(here, "..", "..", GRAPH_DIRNAME), name, GRAPH_ENTRY_FILE),
+    ...assetCandidates(path.resolve(here, "..", "..", "..", GRAPH_DIRNAME), name, GRAPH_ENTRY_FILE),
   ];
   return candidates.find((candidate) => {
     try { return fs.statSync(candidate).isFile(); } catch { return false; }
@@ -119,8 +120,7 @@ function graphCandidatePaths(workspace: string, name: string): Array<{ file: str
     [graphWorkspaceDir(workspace), "workspace"],
     [graphGlobalDir(), "global"],
   ] as const) {
-    out.push({ file: path.join(dir, `${name}.yaml`), source });
-    out.push({ file: path.join(dir, `${name}.yml`), source });
+    for (const file of assetCandidates(dir, name, GRAPH_ENTRY_FILE)) out.push({ file, source });
   }
   const builtin = builtinGraphPath(name);
   if (builtin) out.push({ file: builtin, source: "builtin" });
@@ -131,13 +131,8 @@ function graphCandidatePaths(workspace: string, name: string): Array<{ file: str
 export function listGraphWorkflows(workspace: string): GraphWorkflowEntry[] {
   const found = new Map<string, { file: string; source: GraphWorkflowEntry["source"] }>();
   const addDir = (dir: string, source: GraphWorkflowEntry["source"]): void => {
-    let files: string[] = [];
-    try { files = fs.readdirSync(dir); } catch { return; }
-    for (const file of files) {
-      if (!/\.ya?ml$/i.test(file)) continue;
-      const name = file.replace(/\.ya?ml$/i, "");
-      if (found.has(name)) continue;
-      found.set(name, { file: path.join(dir, file), source });
+    for (const [name, file] of discoverAssetsIn(dir, GRAPH_ENTRY_FILE)) {
+      if (!found.has(name)) found.set(name, { file, source });
     }
   };
   addDir(graphWorkspaceDir(workspace), "workspace");
@@ -190,7 +185,7 @@ export function loadGraphWorkflow(workspace: string, name: string): GraphLoadRes
     } catch {}
   }
   if (!chosen) {
-    problems.push(`未找到 Graph 工作流 "${name}"。把 YAML 放到 ${graphWorkspaceDir(workspace)}/<name>.yaml 即可被识别。`);
+    problems.push(`未找到 Graph 工作流 "${name}"。把资产放到 ${graphWorkspaceDir(workspace)}/<name>/graph.yaml（目录形态；单文件 ${graphWorkspaceDir(workspace)}/<name>.yaml 也识别）即可被加载。`);
     return { def: null, problems, warnings };
   }
   const { doc, problem } = readYamlFile(chosen.file);
@@ -211,10 +206,10 @@ export function loadGraphWorkflow(workspace: string, name: string): GraphLoadRes
     return { def: null, problems, warnings, path: chosen.file };
   }
   const asset = validation.asset;
-  const fileBase = path.basename(chosen.file).replace(/\.ya?ml$/i, "");
-  if (asset.id !== fileBase) {
-    // 文件名是启动名与技能名，id 是资产自身标识；不一致会让“报告里的 id”与“启动的名字”分叉。
-    warnings.push(`资产 id "${asset.id}" 与文件名 "${fileBase}" 不一致：启动名以文件名为准，报告会同时记录两者。`);
+  if (asset.id !== name) {
+    // 启动名与技能名来自目录名（单文件形态是文件名），id 是资产自身标识；不一致会让“报告里的 id”
+    // 与“启动的名字”分叉。
+    warnings.push(`资产 id "${asset.id}" 与启动名 "${name}" 不一致：启动名以资产名（目录名）为准，报告会同时记录两者。`);
   }
   return { def: asset, problems, warnings, path: chosen.file };
 }
@@ -229,9 +224,7 @@ export function crossKindNameConflicts(flowNames: readonly string[], graphEntrie
 export function graphAssetFiles(workspace: string): string[] {
   const files: string[] = [];
   for (const dir of [graphWorkspaceDir(workspace), graphGlobalDir()]) {
-    try {
-      for (const entry of fs.readdirSync(dir)) if (/\.ya?ml$/i.test(entry)) files.push(path.join(dir, entry));
-    } catch {}
+    files.push(...discoverAssetsIn(dir, GRAPH_ENTRY_FILE).values());
   }
   for (const name of BUILTIN_GRAPHS) {
     const file = builtinGraphPath(name);

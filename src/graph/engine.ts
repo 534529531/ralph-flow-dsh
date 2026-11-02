@@ -22,8 +22,8 @@ import { pauseLabel } from "../pause.js";
 import { OWNER_HEARTBEAT_REFRESH_MS, ownerAlive, ownerRecheckMs, runtimeId, stampOwner } from "../owner.js";
 import {
   RALPH_FLOW_DIR,
-  SUBMIT_REMINDER_STALL_LIMIT,
   SUBMIT_REMINDER_TOTAL_LIMIT,
+  SUBMIT_REMINDER_STALL_LIMIT,
   makeArtifactsDirName,
   type EnginePorts,
   type HistoryEntry,
@@ -39,9 +39,8 @@ import {
   type GraphNode,
 } from "./asset.js";
 import { checkDefinition, checkVersion, type CheckDefinition } from "./check.js";
+import { assetReferenceSection, assetRootOf } from "../asset-path.js";
 import {
-  BUILTIN_GRAPHS,
-  builtinGraphPath,
   graphGlobalDir,
   graphWorkspaceDir,
   listGraphWorkflows,
@@ -487,12 +486,6 @@ export function createGraphEngine(options: GraphEngineOptions) {
     return { ok: true, text: receipt };
   }
 
-  function isBuiltinAsset(assetPath: string | undefined): boolean {
-    if (!assetPath) return false;
-    const builtins = BUILTIN_GRAPHS.map((name) => builtinGraphPath(name)).filter(Boolean) as string[];
-    return builtins.some((builtin) => path.resolve(builtin) === path.resolve(assetPath));
-  }
-
   // ── 调度 ────────────────────────────────────────────────────────────────────
 
   function wake(run: RunContext): void {
@@ -839,10 +832,8 @@ export function createGraphEngine(options: GraphEngineOptions) {
     } else {
       lines.push("## 工作区", `项目工作区：\`${workspace}\`（主会话节点；直接读写）。`, "");
     }
-    if (isBuiltinAsset(run.state.graph.asset_path)) {
-      const referenceRoot = path.join(path.dirname(path.dirname(run.state.graph.asset_path!)), "references");
-      lines.push("## 随包参考", `参考目录：\`${referenceRoot}\`；DO 里的 \`references/...\` 相对这个目录，用原生 read 读取。`, "");
-    }
+    const assetRef = assetReferenceSection(assetRootOf(run.state.graph.asset_path));
+    if (assetRef) lines.push(assetRef, "");
     if (rework) {
       lines.push("## 上一轮 CHECK 未通过（只修本节点）", rework, "");
     }
@@ -869,9 +860,8 @@ export function createGraphEngine(options: GraphEngineOptions) {
   function nodeRecap(run: RunContext, node: GraphNode, attempt: GraphAttempt): string {
     const artifactPath = path.join(graphNodeArtifactDirOf(workspace, run.state, node.id, attempt.id), node.artifact);
     const refs = inputRefs(run, node);
-    const referenceRoot = run.state.graph.asset_path
-      ? path.join(path.dirname(path.dirname(run.state.graph.asset_path)), "references")
-      : undefined;
+    const assetRoot = assetRootOf(run.state.graph.asset_path);
+
     const lines = [
       "## 本节点回顾（上下文可能已被压缩，以这里为准）",
       `- 实例：\`${run.instId}\`　节点：\`${node.id}\`${node.name ? `（${node.name}）` : ""}　尝试：\`${attempt.id}\``,
@@ -882,9 +872,7 @@ export function createGraphEngine(options: GraphEngineOptions) {
       ...(run.state.graph.project.mode === "git" && attempt.workspace?.path
         ? [`- 工作区：\`${attempt.workspace.path}\`（独立 worktree；直接 read/write/edit/bash）`, `- 基线：\`${attempt.workspace.baseline}\``]
         : [`- 工作区：\`${workspace}\`（主会话节点；直接读写）`]),
-      ...(isBuiltinAsset(run.state.graph.asset_path) && referenceRoot
-        ? [`- 随包参考：\`${referenceRoot}\``]
-        : []),
+      ...(assetRoot ? [`- 资产目录：\`${assetRoot}\``] : []),
       ...(attempt.rework_reason ? [`- 上一轮 CHECK 未通过（只修本节点）：${attempt.rework_reason}`] : []),
       ...(attempt.manual_rework_reason ? [`- 人工审查要求改稿：${attempt.manual_rework_reason}`] : []),
     ];
@@ -1194,6 +1182,7 @@ export function createGraphEngine(options: GraphEngineOptions) {
       step: syntheticStep(node, check.criteriaText),
       workflow: syntheticWorkflow(run.state.graph.asset),
       userTask: run.state.user_task,
+      assetPath: run.state.graph.asset_path,
       ...(run.state.owner_session ? { ownerSession: run.state.owner_session } : {}),
       checkIndex: 0,
       artifactsRelDir: `${RALPH_FLOW_DIR}/artifacts/${run.state.artifacts_dir_name}/nodes/${node.id}/${attempt.id}`,
@@ -1919,8 +1908,8 @@ export function createGraphEngine(options: GraphEngineOptions) {
       if (h.step === nodeId && h.event === "node_start") from = i;
       else if (h.event === "resume" && from >= 0) from = i;
     }
-    let stalls = 0;
     let total = 0;
+    let stalls = 0;
     let last = -1;
     for (let i = from + 1; i < run.state.history.length; i++) {
       const h = run.state.history[i]!;

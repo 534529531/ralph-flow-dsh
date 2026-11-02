@@ -684,7 +684,7 @@ console.log("\n7) 装配面（不把 reset 门误当成 /ralphflow-reset 命令�
 console.log("\n8) 内置 spec.yaml（propose / implement 的 reset 已启用）");
 {
   // 文件层面：两行确实是**生效的键**（不是注释），且首步 explore 没标
-  const specRaw = fs.readFileSync(new URL("../workflows/spec.yaml", import.meta.url), "utf-8");
+  const specRaw = fs.readFileSync(new URL("../workflows/spec/workflow.yaml", import.meta.url), "utf-8");
   const specActive = specRaw.replace(/^\s*#.*$/gm, "");
   check("spec.yaml 里 propose / implement 的 reset 是生效的键（不再是注释）",
     (specActive.match(/^\s*reset:\s*true\b/gm) ?? []).length === 2, specActive.slice(0, 300));

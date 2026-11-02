@@ -23,7 +23,8 @@ import { buildCheckPrompt, VERIFIER_PRESET_ID } from "../lib/verify.js";
 import {
   decideVotingOutcome, formatVotingFailureReason, formatVotingPassReason, voterProgressLine, voterStatusLabel,
 } from "../lib/voting.js";
-import { CREATE_GUIDE, AUTHORING_REFERENCE_PATH } from "../lib/create.js";
+import { CREATE_SKILL_RESOURCES } from "../lib/skills.js";
+const AUTHORING_REFERENCE_PATH = `${CREATE_SKILL_RESOURCES}/workflow-authoring.md`;
 
 import { deliveryPorts } from "./helpers/ports.mjs";
 import { captureAppends } from "./helpers/plugin-harness.mjs";
@@ -139,11 +140,12 @@ console.log("== A. 加载期校验 ==");
   check("单票且无 model → doctor 告警（等同单验证者）", !!singleVoter.def && singleVoter.warnings.some((w) => w.includes("等同单验证者")), JSON.stringify(singleVoter.warnings));
   check("投票步不再收到「不会被独立验证」告警", !!singleVoter.def && !singleVoter.warnings.some((w) => w.includes("不会被独立验证")), JSON.stringify(singleVoter.warnings));
 
-  check("CREATE_GUIDE 教了 check_voting", CREATE_GUIDE.includes("check_voting"), CREATE_GUIDE.slice(0, 120));
-  check("CREATE_GUIDE 不再说 check_voting 未支持", !CREATE_GUIDE.includes("check_voting`（多验证者投票，v0 按单验证者执行"));
-  check("CREATE_GUIDE 写明互斥与 1-5 票硬规则", fs.readFileSync(AUTHORING_REFERENCE_PATH, "utf8").includes("互斥") && fs.readFileSync(AUTHORING_REFERENCE_PATH, "utf8").includes("1-5"));
-  check("CREATE_GUIDE 仍不提 system_prompt/timeout_ms（引擎未兑现的键不进指引）",
-    !CREATE_GUIDE.includes("system_prompt") && !CREATE_GUIDE.includes("timeout_ms"));
+  const authoringText = fs.readFileSync(AUTHORING_REFERENCE_PATH, "utf8");
+  check("作者参考教了 check_voting", authoringText.includes("check_voting"), authoringText.slice(0, 120));
+  check("作者参考不再说 check_voting 未支持", !authoringText.includes("check_voting`（多验证者投票，v0 按单验证者执行"));
+  check("作者参考写明互斥与 1-5 票硬规则", authoringText.includes("互斥") && authoringText.includes("1-5"));
+  check("作者参考仍不提 system_prompt/timeout_ms（引擎未兑现的键不进指引）",
+    !authoringText.includes("system_prompt") && !authoringText.includes("timeout_ms"));
 }
 
 console.log("== B. 提示词：投票变体 vs 单 check 变体 ==");

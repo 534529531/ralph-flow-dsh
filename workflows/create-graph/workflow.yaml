@@ -38,7 +38,7 @@ steps:
       1. grill 的每个决定都在 spec 中有对应条目；未决项已解决或写成明确的非目标。
       2. spec 的目标、非目标、约束、实现决定、测试决定和验收都可执行、可验证，没有“待定”或空章节。
       3. 每条验收都能在未来 ticket 中被单独验证，没有把实现细节写成不可验收的愿望。
-      4. spec 中面向 agent 的文本符合 `matt/writing-for-agents.md`：完成条件清晰、指针带触发条件、正面表述、单一事实来源。
+      4. spec 中面向 agent 的文本符合 `ralphflow-create` skill 资源目录中的 `matt/writing-for-agents.md`：完成条件清晰、指针带触发条件、正面表述、单一事实来源。
     on_pass: tickets
     on_fail: spec
     max_fail_count: 2
@@ -59,7 +59,7 @@ steps:
       1. 每个 spec 验收项至少被一个 ticket 覆盖；没有重复覆盖或计划外 ticket。
       2. 每个 ticket 是垂直切片，依赖完成后可独立实现；写明 What to build、Blocked by、acceptance 和涉及面。
       3. tickets.json 与 ticket 文件一一对应，依赖都存在且无环；没有悬空依赖。
-      4. ticket 的 `do` 与 acceptance 符合 `matt/writing-for-agents.md`：完成条件可核查、动作具体、正面表述。
+      4. ticket 的 `do` 与 acceptance 符合 `ralphflow-create` skill 资源目录中的 `matt/writing-for-agents.md`：完成条件可核查、动作具体、正面表述。
     on_pass: graph
     on_fail: tickets
     max_fail_count: 2
@@ -67,19 +67,19 @@ steps:
   - id: graph
     desc: 按 ticket 依赖生成 Graph 资产并校验
     input: tickets.json 与 tickets/
-    output: .dsh/ralph-flow/graphs/<slug>.yaml
+    output: .dsh/ralph-flow/graphs/<slug>/graph.yaml
     do: |
       按 `ralphflow-create` skill 资源目录中的 `graph-authoring.md`、`ralphflow-authoring.md` 和 `matt/writing-for-agents.md` 生成资产。
 
-      按 tickets.json 生成 `.dsh/ralph-flow/graphs/<slug>.yaml`：一个 ticket 一个步骤，`id` 用 ticket id，`depends_on` 来自 ticket 依赖，`do` 指向 spec 与 ticket 的绝对路径，`check` 来自 ticket acceptance。资产只写任务与验收，不复制 Matt 参考正文。
+      按 tickets.json 生成 `.dsh/ralph-flow/graphs/<slug>/graph.yaml`：一个 ticket 一个步骤，`id` 用 ticket id，`depends_on` 来自 ticket 依赖，`do` 指向 spec 与 ticket 的绝对路径，`check` 来自 ticket acceptance。资产只写任务与验收；DO/CHECK 引用的契约与模板放进同一个资产目录，用相对路径指向，不复制 Matt 参考正文。
 
-      用 `ralphflow_doctor` 校验；修到全部通过。把资产路径、ticket 图和下一步写进交付消息；不启动生成的 Graph。
+      用 `ralphflow_doctor({ "path": ".dsh/ralph-flow/graphs/<slug>/graph.yaml" })` 校验；修到全部通过。把资产路径、ticket 图和下一步写进交付消息；不启动生成的 Graph。
 
-      完成条件：资产通过 doctor，ticket 与步骤一一对应，交付消息给出路径和用户下一步。
+      完成条件：资产通过 doctor，目录名与启动名一致，ticket 与步骤一一对应，交付消息给出路径和用户下一步。
     check: |
       1. 每个 ticket 恰好对应一个 Graph 步骤；id、depends_on 与 tickets.json 一致，依赖无环。
       2. 每个步骤的 do 指向 spec 与 ticket，动作具体，完成条件可核查；check 来自 ticket acceptance，可观察、可复核。
-      3. 生成的 DO/CHECK 符合 `matt/writing-for-agents.md`；资产自包含，不引用插件内部 `references/`。
+      3. 生成的 DO/CHECK 符合 `ralphflow-create` skill 资源目录中的 `matt/writing-for-agents.md`；可复用的契约与模板放进资产目录并由相对路径指向，没有把它们复制进节点提示词；入口是 `.dsh/ralph-flow/graphs/<slug>/graph.yaml`，每条相对路径都指向同目录里存在的文件。
       4. `ralphflow_doctor` 对保存的资产全部通过；交付声明没有启动生成的 Graph。
     on_pass: done
     on_fail: graph

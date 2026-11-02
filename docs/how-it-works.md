@@ -328,7 +328,8 @@ check_voting 条目 model  >  步骤 check_model  >  全局 adversarial_check.mo
 
 ```
 <项目根>/.dsh/ralph-flow/
-├── workflows/          # 本项目自定义工作流（最高优先级）
+├── workflows/          # 本项目自定义 Flow 资产（<名字>/workflow.yaml，最高优先级）
+├── graphs/             # 本项目自定义 Graph 资产（<名字>/graph.yaml）
 ├── instances/<实例ID>/  # 活跃实例：state.json + execution.log（结束时销毁）
 ├── reports/            # 完成/取消后归档（永久）
 └── artifacts/<产出目录名>/  # 每实例隔离的交付物（永久；只有空目录会随实例销毁）

@@ -1,5 +1,5 @@
 /**
- * Graph 工作流资产契约（`graphs/*.yaml`）。
+ * Graph 工作流资产契约（目录形态 `graphs/<name>/graph.yaml`，兼容单文件 `graphs/<name>.yaml`）。
  *
  * 用户格式与 Flow 对齐：`steps` / `id` / `desc` / `do` / `output` / `check`；
  * Graph 只额外用 `depends_on` 表达 DAG。运行时内部仍用 `GraphNode`

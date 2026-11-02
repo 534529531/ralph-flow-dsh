@@ -7,8 +7,10 @@ import os from "node:os";
 import path from "node:path";
 import { createEngine, resolveCheckModel, makeArtifactsDirName, stepHasCheck, listWorkflowsIn, stepStats, voterCountOf, expectedVerdicts, REQUIRED_STEP_FIELDS } from "../lib/engine.js";
 import { buildCheckPrompt, VERIFIER_PERSONA } from "../lib/verify.js";
-import { CREATE_GUIDE, AUTHORING_REFERENCE_PATH } from "../lib/create.js";
-const AUTHORING_GUIDE = CREATE_GUIDE + "\n" + fs.readFileSync(AUTHORING_REFERENCE_PATH, "utf8");
+import { CREATE_SKILL_RESOURCES } from "../lib/skills.js";
+const AUTHORING_GUIDE = fs.readFileSync(path.join(CREATE_SKILL_RESOURCES, "workflow-authoring.md"), "utf8")
+  + "\n" + fs.readFileSync(path.join(CREATE_SKILL_RESOURCES, "ralphflow-authoring.md"), "utf8")
+  + "\n" + fs.readFileSync(path.join(CREATE_SKILL_RESOURCES, "graph-authoring.md"), "utf8");
 
 import { deliveryPorts } from "./helpers/ports.mjs";
 // HOME 隔离（任务书 §4 工作协议）：测试绝不读写真实 ~/.dsh（索引/全局工作流目录都在这里）。
@@ -81,12 +83,12 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
     && !/测试|基线|lint|构建/.test(loopStep.check_voting[2].check), loopStep.check_voting[2].check);
   {
     // 与 opencode 一致：reset 抄进来（**生效键**）；timeout_ms 不抄（加载期告警忽略的键）
-    const raw = fs.readFileSync(new URL("../workflows/loop.yaml", import.meta.url), "utf-8");
+    const raw = fs.readFileSync(new URL("../workflows/loop/workflow.yaml", import.meta.url), "utf-8");
     const active = raw.replace(/^\s*#.*$/gm, "");
     check("内置 loop 抄 opencode 的 reset: true（生效键，与 opencode 一致）",
       loopStep.reset === true && /^\s*reset:\s*true\b/m.test(active), JSON.stringify({ reset: loopStep.reset }));
     // 工作流资产不写引擎内部说明：timeout_ms 的差异放在 workflow-authoring 参考里。
-    const authoring = fs.readFileSync(new URL("../references/workflow-authoring.md", import.meta.url), "utf-8");
+    const authoring = fs.readFileSync(new URL("../skills/ralphflow-create/workflow-authoring.md", import.meta.url), "utf-8");
     check("内置 loop 不抄 timeout_ms（差异说明在 workflow-authoring 参考）",
       !/timeout_ms\s*:/m.test(active) && /验证超时/.test(authoring), active);
     const loaded = engine.loadWorkflow("loop");
@@ -1061,7 +1063,7 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
   check("reset 写成列表 = 加载期硬错误", !badList.def && badList.problems.some((p) => p.includes("reset")), JSON.stringify(badList.problems));
 
   // 内置 spec：那两行 reset 已启用（生效的键），且新键不产生任何告警
-  const specRaw = fs.readFileSync(new URL("../workflows/spec.yaml", import.meta.url), "utf-8");
+  const specRaw = fs.readFileSync(new URL("../workflows/spec/workflow.yaml", import.meta.url), "utf-8");
   const specActive = specRaw.replace(/^\s*#.*$/gm, "");
   const specLoaded = engine.loadWorkflow("spec");
   check("内置 spec 的 propose / implement 已启用 reset（生效的键，不是注释）",

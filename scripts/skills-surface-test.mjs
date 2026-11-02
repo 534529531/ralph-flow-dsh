@@ -164,7 +164,7 @@ console.log("T1 真 SkillRegistry：注册了什么、哪一面看得见（判�
     ralphflowSkills.every((s) => isSkillName(s.name)), ralphflowSkills.map((s) => s.name).join(","));
 
   check("ralphflow-<工作流> 的描述直接用工作流 YAML 的 description（loop 那句）",
-    ralphflowSkills.find((s) => s.name === "ralphflow-loop")?.description === yaml.load(fs.readFileSync(path.join(REPO, "workflows/loop.yaml"), "utf8")).description,
+    ralphflowSkills.find((s) => s.name === "ralphflow-loop")?.description === yaml.load(fs.readFileSync(path.join(REPO, "workflows/loop/workflow.yaml"), "utf8")).description,
     JSON.stringify(ralphflowSkills.find((s) => s.name === "ralphflow-loop")?.description));
 
   const createDef = await fixed.ctx.skills.get("ralphflow-create", { cwd: fixed.ws });
@@ -178,8 +178,23 @@ console.log("T1 真 SkillRegistry：注册了什么、哪一面看得见（判�
       && !flowSection.includes("matt/grilling") && !flowSection.includes("matt/to-spec") && !flowSection.includes("matt/to-tickets"),
     createDef?.content.slice(0, 500));
   check("ralphflow-create 带随包参考目录",
-    createDef?.resourceBase?.kind === "directory" && /references$/.test(createDef.resourceBase.path),
+    createDef?.resourceBase?.kind === "directory" && /skills[\\/]ralphflow-create$/.test(createDef.resourceBase.path),
     JSON.stringify(createDef?.resourceBase));
+
+  // 正文的**唯一真相源**是 SKILL.md：目录在 dsh 里叫 skills/ 就必须是合法文件技能，
+  // 代码里留副本会让「改文件不生效 / 改代码不生效」变成静默陷阱。
+  const createSkillFile = path.join(REPO, "skills/ralphflow-create/SKILL.md");
+  const createSkillRaw = fs.readFileSync(createSkillFile, "utf8");
+  const createSkillFm = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(createSkillRaw);
+  const createSkillMeta = createSkillFm ? yaml.load(createSkillFm[1]) : null;
+  check("skills/ralphflow-create/ 是合法文件技能：SKILL.md 的 frontmatter 有 name/description",
+    createSkillMeta?.name === "ralphflow-create" && typeof createSkillMeta?.description === "string" && createSkillMeta.description.length > 0,
+    JSON.stringify(createSkillMeta));
+  check("注册的正文与 SKILL.md 正文逐字一致（代码不留第二份）",
+    !!createSkillFm && createDef?.content === createSkillFm[2].trim(),
+    `registered=${createDef?.content.slice(0, 60)}`);
+  check("注册的描述来自 SKILL.md frontmatter（不是代码常量）",
+    createDef?.description === createSkillMeta?.description, JSON.stringify(createDef?.description));
 
   const startDef = await fixed.ctx.skills.get("ralphflow-start", { cwd: fixed.ws });
   check("真 registry 能按名字加载正文（get）", !!startDef && startDef.content.length > 0);
@@ -280,8 +295,9 @@ console.log("\nT4 名字合语法：非法工作流名**如实拒绝并说清原
   const notices = fixed.session.snapshotEvents().filter((e) => e.type === "user/message" && /没能做成快捷技能/.test(e.data?.source?.summary ?? ""));
   check("不合语法时投了一条可见播报（绝不静默跳过）", notices.length >= 1, `n=${notices.length}`);
   const reason = (notices.at(-1)?.data?.content ?? []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
-  check("理由点名那个工作流、给出技能名语法、并给出改法（重命名成小写 kebab）",
-    reason.includes("Bad_Name") && reason.includes("[a-z0-9]+(-[a-z0-9]+)*") && reason.includes("my-flow.yaml"), reason.slice(0, 400));
+  check("理由点名那个工作流、给出技能名语法、并给出目录形态的改法",
+    reason.includes("Bad_Name") && reason.includes("[a-z0-9]+(-[a-z0-9]+)*")
+      && reason.includes("my-flow/workflow.yaml") && reason.includes("my-flow.yaml"), reason.slice(0, 400));
   check("理由说清它**仍可用** /ralphflow-start <工作流> 启动（拒绝的是快捷入口，不是工作流本身）",
     reason.includes("/ralphflow-start Bad_Name"), reason.slice(0, 400));
   check("合语法的工作流不受影响（my-flow 仍登记着）", snapshot.skills.some((s) => s.name === "ralphflow-my-flow"));

@@ -41,13 +41,15 @@ export function buildPluginCopy(patches, label) {
   for (const f of ["tsconfig.json", "package.json"]) {
     fs.copyFileSync(path.join(REPO, f), path.join(dir, f));
   }
-  // 内置工作流（loop/spec）由 `lib/../workflows/*.yaml` 解析：漏了它，还原构建里连
-  // `ralphflow_start loop` 都跑不起来（负对照会变成「构建不全」的证据，而不是修复的证据）
+  // 内置工作流（loop/spec/create-graph）由 `lib/../workflows/<name>/workflow.yaml` 解析：
+  // 漏了它，还原构建里连 `ralphflow_start loop` 都跑不起来（负对照会变成「构建不全」的证据，
+  // 而不是修复的证据）。
   fs.cpSync(path.join(REPO, "workflows"), path.join(dir, "workflows"), { recursive: true });
   if (fs.existsSync(path.join(REPO, "graphs"))) {
     fs.cpSync(path.join(REPO, "graphs"), path.join(dir, "graphs"), { recursive: true });
   }
-  fs.cpSync(path.join(REPO, "references"), path.join(dir, "references"), { recursive: true });
+  // 创建期参考跟着 `ralphflow-create` skill 的资源目录走（`src/skills.ts` 的 CREATE_SKILL_RESOURCES）。
+  fs.cpSync(path.join(REPO, "skills"), path.join(dir, "skills"), { recursive: true });
   // 依赖解析：软链仓库的 node_modules（rmSync 不会跟进软链，清理是安全的）
   fs.symlinkSync(path.join(REPO, "node_modules"), path.join(dir, "node_modules"), "dir");
 

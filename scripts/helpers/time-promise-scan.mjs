@@ -87,8 +87,13 @@ function scanTsSource(relPath, src) {
 }
 
 /**
- * 扫一个仓库的「运行时面」：`src/**\/*.ts`（只扫字符串字面量）、`workflows/*.yaml`
- * （剥 `#` 注释）、`README.md`（整篇都是给人看的，不剥）。
+ * 扫一个仓库的「运行时面」：`src/*.ts`（只扫字符串字面量）、`workflows/` 与 `graphs/` 下的
+ * 全部 YAML（目录形态入口 `workflows/<name>/workflow.yaml`、`graphs/<name>/graph.yaml`
+ * 与兼容的单文件 `<name>.yaml` 一视同仁；剥 `#` 注释）、`README.md`（整篇都是给人看的，不剥）。
+ *
+ * 资产目录化之后，内置 Flow 的入口从 `workflows/loop.yaml` 变成 `workflows/loop/workflow.yaml`。
+ * 扫描器必须跟着**布局规则**走（递归找资产根下的 YAML），而不是记住某个固定层级：否则
+ * 资产迁进目录的一刻，静态守卫就对它们失明了 —— 测试仍绿，但守的是空集。
  *
  * **不扫 docs/**：那里是历史证据与设计记录，里面的分钟数是**实测值**（如 7–8.5 分钟），
  * 是事实不是承诺；把历史记录改掉才是销毁证据。
@@ -102,14 +107,25 @@ export function scanRuntimeSurfaces(repo) {
       files.push(scanTsSource(path.relative(repo, p), fs.readFileSync(p, "utf-8")));
     }
   }
-  const wfDir = path.join(repo, "workflows");
-  if (fs.existsSync(wfDir)) {
-    for (const f of fs.readdirSync(wfDir).filter((f) => /\.ya?ml$/i.test(f)).sort()) {
-      const p = path.join(wfDir, f);
+  for (const dirname of ["workflows", "graphs"]) {
+    const dir = path.join(repo, dirname);
+    if (!fs.existsSync(dir)) continue;
+    for (const p of yamlFilesUnder(dir)) {
       files.push({ path: path.relative(repo, p), hits: findDurationPromises(stripYamlComments(fs.readFileSync(p, "utf-8"))) });
     }
   }
   const readme = path.join(repo, "README.md");
   if (fs.existsSync(readme)) files.push({ path: "README.md", hits: findDurationPromises(fs.readFileSync(readme, "utf-8")) });
   return files;
+}
+
+/** 递归列出目录里的全部 YAML/YML 文件（结果排序，命中顺序可复现）。 */
+function yamlFilesUnder(dir) {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...yamlFilesUnder(p));
+    else if (/\.ya?ml$/i.test(entry.name)) out.push(p);
+  }
+  return out.sort();
 }

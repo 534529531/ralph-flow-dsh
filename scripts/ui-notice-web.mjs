@@ -13,7 +13,7 @@ import { Session, SESSION_FORMAT_VERSION } from "@deepseek-ai/dsh-session";
 import { fileURLToPath } from "node:url";
 
 const repo = fileURLToPath(new URL("../", import.meta.url));
-const VOTE_COUNT = yaml.load(fs.readFileSync(new URL("../workflows/loop.yaml", import.meta.url), "utf8")).steps[0].check_voting.length;
+const VOTE_COUNT = yaml.load(fs.readFileSync(new URL("../workflows/loop/workflow.yaml", import.meta.url), "utf8")).steps[0].check_voting.length;
 const voterNotice = new RegExp(`验证者 \\d+/${VOTE_COUNT}`);
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "/home/yj/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/index.mjs");
 const out = process.env.RALPHFLOW_UI_EVIDENCE_DIR ?? path.join(repo, "docs/v2/evidence/ui-notice");

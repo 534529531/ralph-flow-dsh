@@ -50,7 +50,7 @@ const waitFor = async (pred, ms = 6000) => {
 };
 const RUN = Math.random().toString(36).slice(2, 8);
 const DO_MARK = "本步要做什么";
-const VOTE_COUNT = yaml.load(fs.readFileSync(new URL("../workflows/loop.yaml", import.meta.url), "utf8")).steps[0].check_voting.length;
+const VOTE_COUNT = yaml.load(fs.readFileSync(new URL("../workflows/loop/workflow.yaml", import.meta.url), "utf8")).steps[0].check_voting.length;
 
 /**
  * 用**内置 `loop` 工作流**（真·真实 loop 实例）：单步、`reset: true`、全部票 `check_voting`、

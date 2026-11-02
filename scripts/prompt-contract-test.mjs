@@ -1,12 +1,12 @@
 /** Verify the assembled context after reset and the shipped disclosure pointer. */
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { createEngine } from "../lib/engine.js";
 import { buildCheckPrompt, VERIFIER_PERSONA } from "../lib/verify.js";
-import { CREATE_GUIDE, AUTHORING_REFERENCE_PATH } from "../lib/create.js";
-import { SHARED_MECHANISM } from "../lib/skills.js";
+import { CREATE_SKILL_RESOURCES, SHARED_MECHANISM } from "../lib/skills.js";
 import { mkTmp, cleanupTmp } from "./helpers/plugin-harness.mjs";
 
 const root = mkTmp("prompt-contract");
@@ -112,16 +112,20 @@ try {
   assert(loopChecks.filter((prompt) => prompt.includes("## 你的检查依据（专属视角）\n用户任务的每一条要求都已落实")).length === 2);
 
   // The pointer must resolve in the published layout, not merely in this source checkout.
-  assert(CREATE_GUIDE.includes(AUTHORING_REFERENCE_PATH));
+  const authoringRef = `${CREATE_SKILL_RESOURCES}/workflow-authoring.md`;
+  assert(fs.readFileSync(authoringRef, "utf8").includes("进 DO 与 CHECK 提示词"));
   const packResult = JSON.parse(execFileSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", root], { encoding: "utf8" }));
   const pack = Array.isArray(packResult) ? packResult[0] : Object.values(packResult)[0];
-  assert(pack.files.some((f) => f.path === "references/workflow-authoring.md"));
+  assert(pack.files.some((f) => f.path === "skills/ralphflow-create/workflow-authoring.md"));
+  assert(pack.files.some((f) => f.path === "skills/ralphflow-create/SKILL.md"));
   fs.mkdirSync(`${root}/packed`);
   execFileSync("tar", ["-xzf", `${root}/${pack.filename}`, "-C", `${root}/packed`]);
-  const packedGuide = await import(pathToFileURL(`${root}/packed/package/lib/create.js`).href);
-  assert(packedGuide.AUTHORING_REFERENCE_PATH.startsWith(`${root}/packed/package/references/`));
-  assert(packedGuide.CREATE_GUIDE.includes(packedGuide.AUTHORING_REFERENCE_PATH));
-  assert(fs.readFileSync(packedGuide.AUTHORING_REFERENCE_PATH, "utf8").includes("进 DO 与 CHECK 提示词"));
+  // 解包目录不是 `npm install` 的产物：依赖从仓库的 node_modules 借，模拟安装后的解析
+  // （lib/skills.js 现在要读 SKILL.md，import 时会用到 js-yaml）。
+  fs.symlinkSync(path.join(CREATE_SKILL_RESOURCES, "..", "..", "node_modules"), `${root}/packed/package/node_modules`, "dir");
+  const packedSkills = await import(pathToFileURL(`${root}/packed/package/lib/skills.js`).href);
+  assert(packedSkills.CREATE_SKILL_RESOURCES.startsWith(`${root}/packed/package/skills/ralphflow-create`));
+  assert(fs.readFileSync(`${packedSkills.CREATE_SKILL_RESOURCES}/workflow-authoring.md`, "utf8").includes("进 DO 与 CHECK 提示词"));
   console.log("prompt contract checks passed — reset inputs, gate, independent evidence, host-specific checks, shipped reference");
 } finally {
   for (const { state } of engine.listInstances()) engine.cancelInstance(state.owner_session);

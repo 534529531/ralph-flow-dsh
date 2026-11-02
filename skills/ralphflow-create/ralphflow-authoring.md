@@ -14,7 +14,7 @@ Matt 的 `to-spec` / `to-tickets` 默认发布到 issue tracker。RalphFlow 使�
 - `tickets.json`：ticket 图，字段 `id`、`title`、`depends_on`、`acceptance`、`files`
 - `design-delivery.json`：交付摘要
 
-`<slug>` 用小写 kebab-case，与最终 `.dsh/ralph-flow/graphs/<slug>.yaml` 同名。
+`<slug>` 用小写 kebab-case，与最终资产目录 `.dsh/ralph-flow/graphs/<slug>/` 同名。
 
 ## 生成的 Graph
 
@@ -23,7 +23,7 @@ Matt 的 `to-spec` / `to-tickets` 默认发布到 issue tracker。RalphFlow 使�
 - `do` 指向 spec 与 ticket 的绝对路径，写清本 ticket 的完整动作与完成条件
 - `check` 来自 ticket 的 acceptance，写成可观察、可复核的判据
 - 资产生成后用 `ralphflow_doctor` 校验；不自动启动
-- 生成资产自包含：只引用用户项目的 spec/ticket 文件，不引用插件内部 `references/`
+- 生成资产把可复用的契约、模板放进自己的资产目录，DO/CHECK 用相对路径指向它们（参考根 = 入口文件所在目录）；用户项目的事实用项目内路径
 
 ## 写作规范
 

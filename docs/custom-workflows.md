@@ -1,6 +1,6 @@
 # 自定义工作流
 
-把 `.yaml`（或 `.yml`）文件放到下面这些位置之一即可定义自己的工作流，或运行 `/ralphflow-create` 交互式设计并校验（先问 Flow / Graph）：
+把资产放到下面这些位置之一即可定义自己的工作流，或运行 `/ralphflow-create` 交互式设计并校验（先问 Flow / Graph）。资产是**一个目录**：`workflows/<名字>/workflow.yaml`（Flow）或 `graphs/<名字>/graph.yaml`（Graph），目录里的其它文件就是 DO/CHECK 可以按相对路径引用的资源；单文件形态 `<名字>.yaml`（或 `.yml`）仍然识别，作为兼容形态。
 
 | 位置 | 作用范围 | 优先级 |
 |------|----------|--------|
@@ -12,11 +12,23 @@
 
 **项目根**与 dsh 原生 Skill 同一条规则：从会话的当前目录（`/cd` 之后按新目录）向上最近的含 `.git` 的祖先目录；没有 `.git` 就用该目录本身。同一仓库的任意子目录会话共享同一套资产与实例。**用户根** = `$DSH_HOME`（支持 `~`，空值视为未设置）或 `~/.dsh`。
 
-**工作流名 = 文件名去掉扩展名**：`design-flow.yaml` 用 `/ralphflow-start design-flow <任务>` 或 `/ralphflow-design-flow <任务>` 启动。快捷入口 `/ralphflow-<工作流名>` 是**技能**，名字必须是小写 kebab（`[a-z0-9]+(-[a-z0-9]+)*`）；名字不合语法时**注册不了快捷入口**，我们会**如实告诉你原因与改法**（不静默跳过），而 `/ralphflow-start <工作流名> <任务>` 照旧可用。目录不存在时自己建（`mkdir -p .dsh/ralph-flow/workflows`）；只读操作（list / doctor / status）对目录缺失是容错的。
+**工作流名 = 目录名**（单文件形态取文件名去掉扩展名）：`design-flow/workflow.yaml` 用 `/ralphflow-start design-flow <任务>` 或 `/ralphflow-design-flow <任务>` 启动。快捷入口 `/ralphflow-<工作流名>` 是**技能**，名字必须是小写 kebab（`[a-z0-9]+(-[a-z0-9]+)*`）；名字不合语法时**注册不了快捷入口**，我们会**如实告诉你原因与改法**（不静默跳过），而 `/ralphflow-start <工作流名> <任务>` 照旧可用。目录不存在时自己建（`mkdir -p .dsh/ralph-flow/workflows`）；只读操作（list / doctor / status）对目录缺失是容错的。
 
 解析顺序是**项目根 → 用户根 → 内置**（同一类别内）：同名工作流靠前的层**遮蔽**靠后的。Flow 与 Graph 不互相遮蔽；**跨类别同名是冲突**。所以你可以用用户级层覆盖内置，或在某个项目覆盖用户级版本。内置工作流只存在于插件目录，因此**始终是随插件发布的最新版本**；要定制就在项目根（或用户根）放一个同名文件。
 
 > 写完后运行 **`/ralphflow-doctor`**。输出里 `✅` = 该工作流可用，其下 `⚠️` 子项 = 能启动但有告警（不生效的键、成本提示等），`❌` = 加载期硬错误（该工作流无法加载）。**如果你刚写的工作流没出现在 doctor 的清单里，就是位置放错了**——它只会扫描上表列出的位置。
+
+## 资产目录与参考根
+
+资产的**参考根就是入口文件所在目录**：`do` / `check` 引用的**资产资源**（契约、模板、校验清单）用相对路径按它解析，执行者与验证者的提示词里都会带上同一个目录。于是这些资源放在资产目录里，用 `format.md`、`templates/page.md` 这样的相对路径指向，而不是复制进每一步的提示词：
+
+```text
+.dsh/ralph-flow/graphs/codewiki/
+├── graph.yaml          # 入口：只写流程与验收
+└── format.md           # 页面契约等长文：DO/CHECK 按相对路径引用
+```
+
+**这个根不决定要写出的交付物**：`output` 与「产出目录」一节声明的文件按各自的落点（例如 `summary.md` 落实例产出目录），见下文「产出目录与模板变量」。两条规则并行，互不改写。单文件形态 `<名字>.yaml` 的参考根是它所在的目录（`workflows/` 或 `graphs/`），共享资源放那里即可。
 
 > 本端把两类问题分得很清：
 >
@@ -140,7 +152,7 @@ Graph 依靠 Git worktree 做写隔离：每个步骤在自己的 worktree 写�
 | `max_fail_count` | ✅ | 暂停前的最大返工次数（整数 ≥ 1，每步独立） |
 | `reset` | ❌ | `true` 时，**进入**本步骤前换入干净上下文（见[上下文重置门](#上下文重置门reset)） |
 
-> **`do` 只写这一步的工作**：做什么、交付什么、怎么自查。不要写引擎内部协议（交卷/报进度、`unfinished`、CHECK 如何委派、状态字段、心跳/恢复、产出目录落点）——这些由 DO/CHECK 提示词自动追加。完整规则见[工作流 YAML 参考](../references/workflow-authoring.md)。
+> **`do` 只写这一步的工作**：做什么、交付什么、怎么自查。不要写引擎内部协议（交卷/报进度、`unfinished`、CHECK 如何委派、状态字段、心跳/恢复、产出目录落点）——这些由 DO/CHECK 提示词自动追加。完整规则见[工作流 YAML 参考](../skills/ralphflow-create/workflow-authoring.md)。
 
 > **必填字段**：`id`、`desc`、`do`、`input`、`output`、`on_pass`、`on_fail`、`max_fail_count`。
 >
@@ -180,7 +192,7 @@ Graph 依靠 Git worktree 做写隔离：每个步骤在自己的 worktree 写�
 
 目录名 = 任务摘要 slug + 实例 id 尾段（按**码点**截断，中文/emoji 不会被切碎），实例启动时建好、工作流结束后**保留**（非空目录整个保留，只有空目录才随实例销毁被删）。
 
-- 每个 DO 和 CHECK 提示词都自动携带「产出目录」一节，并写明**落点边界**：每个实例的**过程文档**（清单、方案、报告、摘要、草稿等）只落产出目录 —— `do` / `output` 里写**裸文件名**（如 `summary.md`、`design.md`）即落到该实例的目录，跨任务不串味、也不进仓库根；写了**明确路径**的按写的路径来。工作目录只放本步的**产物**（代码、资源、可执行文件）；同一份过程文档只写一处，不要在工作目录里再留副本（CHECK 会点明：工作目录里的副本是落点错误，不算满足）。
+- 每个 DO 和 CHECK 提示词都自动携带「产出目录」一节，并写明**落点边界**：每个实例的**过程文档**（清单、方案、报告、摘要、草稿等）只落产出目录 —— 要产出的过程文档在 `do` / `output` 里写**裸文件名**（如 `summary.md`、`design.md`）即落到该实例的目录，跨任务不串味、也不进仓库根；写了**明确路径**的按写的路径来。工作目录只放本步的**产物**（代码、资源、可执行文件）；同一份过程文档只写一处，不要在工作目录里再留副本（CHECK 会点明：工作目录里的副本是落点错误，不算满足）。
 - `output` 应完整列出交付物，包括验收需要的过程文档。它声明**交付什么**，上面的产出目录规则决定**放在哪里**；列入 `output` 不会自动创建文件，也不会增加机械文件检查，需要在 `check` / `check_voting` 中明确验收条件。
 - **本版本不解析任何 `{{...}}` 模板变量**（连产出目录记号都没有——产出目录已自动注入提示词，不需要记号）。其它任何 `{{...}}` 会原样进入提示词，`/ralphflow-doctor` 会标记出来。
 
@@ -392,13 +404,13 @@ check_voting 条目 model  >  步骤 check_model  >  全局 adversarial_check.mo
 一步可以整段委托给另一个工作流，多层可嵌套，通用流程因此可以做成可复用资产：
 
 ```yaml
-# workflows/full-dev.yaml
+# workflows/full-dev/workflow.yaml
 steps:
   - id: analyze
     desc: 需求分析
     input: proposal.md
     output: analysis.md
-    workflow: analyze              # 调用 workflows/analyze.yaml
+    workflow: analyze              # 调用 workflows/analyze/workflow.yaml
     on_pass: build
     on_fail: analyze
     max_fail_count: 3
@@ -701,7 +713,7 @@ steps:
 ## 建议
 
 - **步骤要聚焦**——每个步骤把一件事做好。
-- **写自包含的 `check` 配方**——验证者完全没看过 DO 对话，所以要写明打开哪些文件、跑哪些命令、具体的通过/失败标准。模糊标准（"代码质量好"）让 CHECK 失效。
+- **写自包含的 `check` 配方**——验证者完全没看过 DO 对话，所以要写明打开哪些文件、跑哪些命令、具体的通过/失败标准。可复用的约定放进资产目录并用相对路径指向，验证者会拿到同一个参考根；模糊标准（"代码质量好"）让 CHECK 失效。
 - **轻量 persona 助推验证**——`check` 开头加一句如「你是一个挑剔的测试工程师：你的目标不是确认任务完成，而是想办法证明它没完成。」很有用。保持一行，别搞重型角色设定。
 - **合理设 `max_fail_count`**——有界步骤 3–5，磨到全绿的循环设大（如 100）。
 - **在错误方向代价高的地方用 `manual_step`**——方案、设计、破坏性操作。
@@ -709,4 +721,4 @@ steps:
 - **验证用更便宜的模型**——`adversarial_check.model` / `check_model` 能在保持质量的同时省钱。
 - **`do` / `check` 正文用用户的语言写。**
 
-执行提示与验证提示都会注入步骤的 `input`，用于定位上游输入。`reset: true` 后先从这些输入文件恢复需求、决定与证据；用户补充的重要约束应在交卷前写入已有过程文档。完整创建方言参考随 npm 包发布在 `references/workflow-authoring.md`，由 `ralphflow-create` skill 提供实际路径。
+执行提示与验证提示都会注入步骤的 `input`，用于定位上游输入。`reset: true` 后先从这些输入文件恢复需求、决定与证据；用户补充的重要约束应在交卷前写入已有过程文档。完整创建方言参考随 npm 包发布在 `ralphflow-create` skill 的资源目录（`skills/ralphflow-create/workflow-authoring.md`），由 `skill` 工具提供实际路径。

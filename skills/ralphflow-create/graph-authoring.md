@@ -7,7 +7,11 @@
 
 ## 结构
 
-Graph 资产用与 Flow 相同的 `steps` 数组，每个步骤有 `id`、`desc`、`do`；`output` 是交付文件路径（省略时默认 `<id>.md`），`depends_on` 是前驱步骤 id 数组。上游步骤的 `output` 会自动注入下游的只读材料，**不需要再写 `inputs` 映射**；只表达顺序时也写 `depends_on`。文件名就是启动名，不要再写 `id` 或 `name`。
+Graph 资产用与 Flow 相同的 `steps` 数组，每个步骤有 `id`、`desc`、`do`；`output` 是交付文件路径（省略时默认 `<id>.md`），`depends_on` 是前驱步骤 id 数组。上游步骤的 `output` 会自动注入下游的只读材料，**不需要再写 `inputs` 映射**；只表达顺序时也写 `depends_on`。目录名就是启动名（入口固定是 `graph.yaml`），不要再写 `id` 或 `name`。
+
+## 资产目录
+
+资产是一个目录：`graphs/<name>/graph.yaml` 加它引用的资源。**参考根是入口文件所在目录**：DO/CHECK 引用的**资产资源**（契约、页面模板、校验清单）用相对路径按它解析，执行者与验证者的提示词里都会带上同一个目录。所以这些资源放在资产自己的目录里，用 `format.md`、`templates/page.md` 这样的相对路径指向；不要把它们复制进每一步的提示词。这个根只解析资产资源，工作区路径与节点产物仍按各自一节的路径规则。单文件形态 `graphs/<name>.yaml` 仍可加载，参考根是 `graphs/`（兼容形态，共享资源放那里）。
 
 只有产物工作流中必须与用户讨论某个决定的步骤，才使用 `execution: "main"`；普通的自主工作使用 `background`。顶层 `manual_step` 标记在启用的 CHECK 通过后仍需用户明确审查的步骤。
 
@@ -35,8 +39,8 @@ Graph 需要工作区是 Git 仓库、有 HEAD、且工作区干净。不满足�
 
 - 当一条规则已经存在于共享参考资料中时，指明该参考资料及其触发条件，让执行者去读；步骤或判据只写依赖这条规则的结果。
 - CHECK 判据保持为用户可查看的验收结果。细节属于方法时，指向共享参考资料；细节属于任务特定结果时，把判据明确写出来。
-- 把多个节点共用的约定放进一个上游产物或共享参考资料，例如 `CONVENTIONS.md`，并让每个节点指向它。
-- 当辅助者或子 agent 无法解析指针时，显式传入解析后的内容并指明来源；这是唯一需要复制的理由。
+- 把多个节点共用的约定放进资产目录里的一份文件（例如 `format.md`），或放进一个上游产物（例如 `CONVENTIONS.md`），并让每个节点指向它。
+- 只有拿不到资产目录的辅助者才需要内联正文；拿到参考根的辅助者按相对路径自己读。
 
 完成条件：每条可复用的规则只有一个归属；方案指明这个归属；没有节点复述它。
 
@@ -55,8 +59,8 @@ Graph 不提供固定的默认 CHECK：每个步骤的独立验收都由资产�
 3. 把 writing-for-agents 应用到每个交付节点的 DO、CHECK 和面向用户的指引。完成条件：指针写明触发条件，每条规则只有一个归属，指引以正面方式陈述目标行为。
 4. 组装对象，包含其依赖、产物和 CHECK 选择。完成条件：对象中的每一处引用都指向该对象已声明的内容。
 5. 用 `ralphflow_doctor`（工作区资产路径） 校验该对象。修复每个报告的错误并重新校验。完成条件：`ralphflow_doctor` 报告全部 ✅ 且无告警，每个步骤的有效 CHECK 与方案一致。
-6. 把资产保存为 `.dsh/ralph-flow/graphs/<slug>.yaml`。完成条件：资产在该路径可读，文件名与启动名一致。
-7. 用 `ralphflow_doctor({ "path": ".dsh/ralph-flow/graphs/<slug>.yaml" })` 校验已保存的文件。完成条件：`valid` 为 true，且 doctor 无阻塞项。
+6. 把资产保存为 `.dsh/ralph-flow/graphs/<slug>/graph.yaml`，把 DO/CHECK 引用的契约与模板放在同一目录。完成条件：入口在该路径可读，目录名与启动名一致，每条相对路径都指向同目录里存在的文件。
+7. 用 `ralphflow_doctor({ "path": ".dsh/ralph-flow/graphs/<slug>/graph.yaml" })` 校验已保存的文件。完成条件：`valid` 为 true，且 doctor 无阻塞项。
 8. 用 `ralphflow_artifact_write` 写入交付产物：请求、`plan` 文本、`assetPath`、完整的资产、两次校验结果、每个步骤的有效 CHECK、针对保存资产的查看器指引、标记为 `choiceRequired` 且 `started: false` 的 `nextStep` 选项，以及 `generatedWorkflowStarted: false`。可复用场景的交付还要包含 `designKind`、`goalCoverage`、`assetAcceptance` 和 `realRun`。完成条件：产物指明方案文本、资产路径和已保存文件的校验结果，且可复用场景字段满足可复用场景分支；然后调用一次 `ralphflow_submit`。
 
 ## 打开已交付的资产

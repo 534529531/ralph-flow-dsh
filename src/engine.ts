@@ -14,6 +14,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 import { userRalphFlowDir } from "./paths.js";
+import {
+  FLOW_ENTRY_FILE,
+  assetCandidates,
+  assetReferenceSection,
+  assetRootOf,
+  discoverAssetsIn,
+} from "./asset-path.js";
 import { pauseLabel, type PauseReason } from "./pause.js";
 import { OWNER_HEARTBEAT_REFRESH_MS, ownerAlive, ownerRecheckMs, runtimeId, stampOwner } from "./owner.js";
 import type { WorkflowStatus } from "./status-contract.js";
@@ -322,6 +329,15 @@ export interface StepDef {
    * 纯措辞用途：对行为零影响（`stepWantsReset` 仍为真，替换照做）。
    */
   reset_from_call?: string;
+  /**
+   * **内部字段**（作者不可写；加载解析不从 YAML 读它，`KNOWN_STEP_KEYS` 不含它）：
+   * 本步引用资源的入口文件。**子工作流静态展开时**由 `prefixSubWorkflowSteps` 填成子工作流
+   * 自己的 `workflow.yaml`；普通步骤留空，按所在工作流的 `assetPath` 解析。
+   *
+   * 展开后「子工作流」对象已不存在，只有步骤；不把子资产路径带下来，DO/CHECK 会错用父级
+   * 参考根，子工作流目录里的 `notes.md` / `format.md` 这类资源不可达。
+   */
+  assetPath?: string;
 }
 
 /** 投票条目（`check_voting[i]`）：一条检查依据 +（可选）该票专用模型 */
@@ -568,7 +584,9 @@ function composeDesc(callDesc: string | undefined, subDesc: string | undefined):
  *   · 调用点 `reset: true` → **首个展开后子步骤** 的 `reset: true` + `reset_from_call`
  *     （进入子工作流 = 进入它的第一个步骤；来源标记记着调用点 id，措辞才说得出是谁标的）；
  *   · 调用点 `do` → 每个子步骤的 {@link StepDef.task}（**最内层优先**：内层调用点已经下沉出
- *     `task` 的子步骤不被覆盖，于是外层值只作继承、由更内层的那句说了算）。
+ *     `task` 的子步骤不被覆盖，于是外层值只作继承、由更内层的那句说了算）；
+ *   · 子资产入口 → 每个子步骤的 {@link StepDef.assetPath}（**保留更内层已带的路径**，否则父级
+ *     参考根会盖掉子工作流自己的目录）。
  *
  * `callTask` 是**调用点这一层**生效的任务：调用点自己写了 `do` 就是它，没写就是外层继承下来的
  * 值（`loadWorkflow` 的 `ctx.inheritedTask`）；两者都没有 = `undefined`（提示词回落父级任务）。
@@ -593,6 +611,8 @@ function prefixSubWorkflowSteps(
       on_pass: onPass,
       // 缺省 on_fail = 自身（展开后就是带前缀的那个 id，语义不变）
       on_fail: s.on_fail ? pre + s.on_fail : undefined,
+      // 子工作流的入口路径 = 它自己的参考根。嵌套时 s.assetPath 已有值（更内层），保留它。
+      assetPath: s.assetPath ?? sub.assetPath,
     };
     // 调用点的 `do` 下沉：这段子工作流「要做什么」= 提示词「## 任务」的内容。
     // **最内层优先、外层继承**：`s.task` 已经有值 = 更内层的调用点已经下沉过了（那次展开
@@ -672,6 +692,14 @@ function callPointKeyWarning(callId: string, key: string, subName: string): stri
 
 export interface WorkflowDef {
   name: string;
+  /**
+   * 资产的入口文件路径（目录形态是 `<name>/workflow.yaml`，单文件形态是 `<name>.yaml`）。
+   *
+   * 参考根由它推导（{@link assetRootOf} → 所在目录）；**只解析资产资源的相对引用**，要写出
+   * 的交付物仍按 `output` / 产出目录的落点。步骤若有自己的 `assetPath`（子工作流展开），以步骤为准
+   * （见 {@link assetPathOfStep}）。路径缺失（历史定义、测试桩）时提示词不带「资产目录」一节。
+   */
+  assetPath?: string;
   description?: string;
   /**
    * 审查门步骤（方言形态：**顶层** id 列表，与 `steps` 同级）。
@@ -748,8 +776,8 @@ export interface Delegation {
  *
  * 预算只该消耗在空回合上：`worked` 的回合不累计，一直在动手的循环不设天花板。
  */
-export const SUBMIT_REMINDER_STALL_LIMIT = 2;
 export const SUBMIT_REMINDER_TOTAL_LIMIT = 5;
+export const SUBMIT_REMINDER_STALL_LIMIT = 2;
 
 export interface HistoryEntry {
   ts: string;
@@ -1057,6 +1085,12 @@ export interface VerifyRequest {
    */
   graph?: GraphVerifyScope;
   /**
+   * 资产入口文件路径（子工作流展开后的步骤用它自己的入口）。参考根 = 它所在目录；CHECK
+   * 提示词据此注入与 DO **同一段**「资产目录」，判据才允许写成「按 `format.md` 的 schema」
+   * 这种短指针 —— 验证者自己读得到。该根**只解析资产资源**；要写出的交付物仍按产出目录。
+   */
+  assetPath?: string;
+  /**
    * 取消句柄（dsh 委派契约要求的 "caller's cancellation"；不是超时预算）
    *
    * 注意这里**没有** `submitSummary`：执行者的交卷自述**不进验证者视野**（T1）。
@@ -1190,7 +1224,7 @@ export function makeArtifactsDirName(task: string, instId: string): string {
 }
 
 /**
- * 内置工作流文件（不落盘，只存在于插件目录；lib/engine.js → ../workflows/<name>.yaml）。
+ * 内置工作流资产（不落盘，只存在于插件目录；lib/engine.js → ../workflows/<name>/workflow.yaml）。
  *
  * 取模块目录**必须**用 `fileURLToPath`：`new URL(import.meta.url).pathname` 不做百分号解码，
  * Windows 上还给出 `/C:/…`（盘符前多一个 `/`，`path.resolve` 之后盘符变成一个**字面目录名**）。
@@ -1203,8 +1237,8 @@ export function makeArtifactsDirName(task: string, instId: string): string {
 export function builtinWorkflowPath(name: string): string | undefined {
   const here = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    path.resolve(here, "..", "workflows", `${name}.yaml`),
-    path.resolve(here, "..", "..", "workflows", `${name}.yaml`),
+    ...assetCandidates(path.resolve(here, "..", "workflows"), name, FLOW_ENTRY_FILE),
+    ...assetCandidates(path.resolve(here, "..", "..", "workflows"), name, FLOW_ENTRY_FILE),
   ];
   return candidates.find((p) => { try { return fs.statSync(p).isFile(); } catch { return false; } });
 }
@@ -1225,14 +1259,10 @@ export function globalWorkflowsDirOf(): string {
  * `/ralphflow-loop`、`/ralphflow-spec` 消失。项目根里的同名文件遮蔽内置（有意行为）。
  */
 export function listWorkflowsIn(workspace: string): Array<{ name: string; desc: string }> {
-  const found = new Map<string, string>(); // name → 文件路径（项目根优先，其次用户级，最后内置）
+  const found = new Map<string, string>(); // name → 入口文件路径（项目根优先，其次用户级，最后内置）
   for (const dir of [path.join(workspace, RALPH_FLOW_DIR, "workflows"), globalWorkflowsDirOf()]) {
-    let files: string[] = [];
-    try { files = fs.readdirSync(dir); } catch { continue; }
-    for (const f of files) {
-      if (!/\.ya?ml$/i.test(f)) continue;
-      const name = f.replace(/\.ya?ml$/i, "");
-      if (!found.has(name)) found.set(name, path.join(dir, f));
+    for (const [name, file] of discoverAssetsIn(dir, FLOW_ENTRY_FILE)) {
+      if (!found.has(name)) found.set(name, file);
     }
   }
   for (const name of BUILTIN_WORKFLOWS) {
@@ -1507,21 +1537,13 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   }
 
   function workflowPaths(name: string): string[] {
-    const out: string[] = [];
-    for (const dir of knownWorkflowDirs()) {
-      out.push(path.join(dir, `${name}.yaml`), path.join(dir, `${name}.yml`));
-    }
-    return out;
+    return knownWorkflowDirs().flatMap((dir) => assetCandidates(dir, name, FLOW_ENTRY_FILE));
   }
 
   function listWorkflows(): WorkflowEntry[] {
     const names = new Set<string>(BUILTIN_WORKFLOWS);
     for (const dir of knownWorkflowDirs()) {
-      try {
-        for (const f of fs.readdirSync(dir)) {
-          if (/\.ya?ml$/i.test(f)) names.add(f.replace(/\.ya?ml$/i, ""));
-        }
-      } catch {}
+      for (const name of discoverAssetsIn(dir, FLOW_ENTRY_FILE).keys()) names.add(name);
     }
     return [...names].sort().map((n) => {
       const { def, problems, warnings } = loadWorkflow(n);
@@ -1579,7 +1601,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       if (p) { try { raw = fs.readFileSync(p, "utf-8"); usedPath = p; } catch {} }
     }
     if (raw === undefined) {
-      problems.push(`未找到工作流 "${name}"。把 YAML 放到 ${workflowsDir}/<name>.yaml 即可被识别。`);
+      problems.push(`未找到工作流 "${name}"。把资产放到 ${workflowsDir}/<name>/workflow.yaml（目录形态；单文件 ${workflowsDir}/<name>.yaml 也识别）即可被加载。`);
       return { def: null, problems, warnings };
     }
     raw = raw.replace(/^\uFEFF/, "");
@@ -1712,7 +1734,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
         if (subName === "") {
           problems.push(`步骤 \`${s.id}\` 写了 \`workflow\` 但没有给出要调用的工作流名（必须是非空字符串，例如 \`workflow: analyze\`）。调用点以 \`workflow:\` 声明委托（此时 \`do\` 可省略；写了就是这段子工作流的任务）。`);
         } else if (/[\\/]/.test(subName)) {
-          problems.push(`步骤 \`${s.id}\` 的 \`workflow: ${subName}\` 含路径分隔符：\`workflow\` 只能是工作流**名**（对应 \`${workflowsDir}/<名字>.yaml\`、全局目录或内置同名文件），不能是路径。`);
+          problems.push(`步骤 \`${s.id}\` 的 \`workflow: ${subName}\` 含路径分隔符：\`workflow\` 只能是工作流**名**（对应目录 \`${workflowsDir}/<名字>/workflow.yaml\`、全局目录或内置同名资产），不能是路径。`);
         }
         if (s.id.includes(SUBWORKFLOW_ID_SEP)) {
           problems.push(`调用点 \`${s.id}\` 的 id 含 \`${SUBWORKFLOW_ID_SEP}\`：展开后步骤 id 是 \`调用点id${SUBWORKFLOW_ID_SEP}子步骤id\`，调用点 id 含分隔符会与展开结果撞名。请把 id 改成不含 \`${SUBWORKFLOW_ID_SEP}\` 的名字。`);
@@ -1999,6 +2021,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     warnings.push(...lintWorkflow(steps, manualSet, autoReset));
     const def: WorkflowDef = {
       name,
+      assetPath: usedPath,
       description: typeof doc.description === "string" ? doc.description : "",
       manual_step: [...manualSet],
       // 只保留公开契约里的 `model`；其余字段已在上面告警忽略，绝不带进定义。
@@ -2274,6 +2297,15 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   // ─── 交卷与验证（三时刻①②）────────────────────────────────────────────────
 
   /**
+   * 本步引用资源的入口文件：子工作流展开时步骤自己带路径（子资产目录），普通步骤落在所在
+   * 工作流上。DO 与 CHECK（单票/投票）都从这里取**同一个值** —— 执行者与验证者拿到同一个
+   * 参考根，子工作流的资源才不会错用调用点的目录。
+   */
+  function assetPathOfStep(wf: WorkflowDef, step: StepDef): string | undefined {
+    return step.assetPath ?? wf.assetPath;
+  }
+
+  /**
    * DO prompt：宣告本步任务（交卷 = 调用 ralphflow_submit 工具，dsh 原生方式）。
    *
    * §1.7：每个 DO 提示词**各注入一节**「产出目录」（工作区相对路径），写明**过程文档**与
@@ -2301,6 +2333,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const rel = artifactsRelDirOf(instId);
     const hasCheck = stepHasVerification(step);
     const voters = voterCountOf(step);
+    const assetRef = assetReferenceSection(assetRootOf(assetPathOfStep(wf, step)));
     // 本步是不是审查门：无检查依据 + 门 = 纯人工审查，交卷后停在门等用户放行（不是「自动进入下一步」）。
     const parts = [
       `[ralphflow] 工作流 \`${wf.name}\` · 步骤 ${idx}/${wf.steps.length}：**${step.id}**${step.desc ? ` — ${step.desc}` : ""}`,
@@ -2312,6 +2345,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       String(step.input).trim(),
       "先读取本步所需输入；重置后从指定文件恢复需求、决定与验证依据。文件中的完成声明是待核对的记录，以当前产出与证据为准。",
       "",
+      ...(assetRef ? [assetRef, ""] : []),
       ...(hasCheck ? [
         "## 本步验收依据（供自查）",
         ...(voters > 0 ? step.check_voting!.map((v, i) => `${i + 1}. ${v.check.trim()}`) : [step.check!.trim()]),
@@ -2322,7 +2356,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       (step.do || step.desc || step.id).trim(),
       "",
       `## 产出目录`,
-      `\`${rel}/\` —— 本步的**过程文档**（清单、方案、报告、摘要、草稿等）只落这里：\`do\`/\`output\` 里写**裸文件名**的（如 \`summary.md\`）落到这个目录；写了**明确路径**的（如 \`docs/x.md\`）按写的路径来。`,
+      `\`${rel}/\` —— 本步的**过程文档**（清单、方案、报告、摘要、草稿等）只落这里：要产出的过程文档在 \`do\`/\`output\` 里写**裸文件名**（如 \`summary.md\`）就落到这个目录；写了**明确路径**的（如 \`docs/x.md\`）按写的路径来。`,
       "",
       `工作目录只放本步的**产物**（代码、资源、可执行文件）；过程文档除「写了明确路径」外不进工作目录，同一份过程文档只写一处、不要留副本（例如产出目录已有 \`summary.md\`、工作目录根又出现一份，那是落点错误）。`,
     ];
@@ -2471,6 +2505,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     try {
       verdict = await ports.verify({
         instId, step, workflow: wf, userTask: effectiveTaskOf(step, state.user_task),
+        assetPath: assetPathOfStep(wf, step),
         ownerSession: state.owner_session, checkIndex, artifactsRelDir: artifactsRelDirOf(instId),
         // 验证模型优先级链（对齐 opencode resolveVerifierModel）：
         //   步骤 check_model  >  全局 adversarial_check.model  >  发起会话当前模型
@@ -2572,6 +2607,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     try {
       verdict = await ports.verify({
         instId, step, workflow: wf, userTask: effectiveTaskOf(step, state.user_task),
+        assetPath: assetPathOfStep(wf, step),
         ownerSession: state.owner_session, checkIndex: index,
         // 该票的专属检查依据 + 序号：verify.ts 据此生成「你是 N 个之一」的投票提示词。
         voter: { index: index + 1, count, check: entry.check },
@@ -3603,8 +3639,8 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     // 两种提醒分开记（都从 history 派生，不新增落盘字段）：
     //   · submit_reminder = 空回合（上次提醒之后没有任何工具调用），累计到 STALL 上限；
     //   · submit_activity = 有动作的提醒（模型干过活又停下来），清零空回合累计，只计入总上限。
-    let stalls = 0;
     let total = 0;
+    let stalls = 0;
     let last = -1;
     for (let i = from + 1; i < state.history.length; i++) {
       const h = state.history[i]!;

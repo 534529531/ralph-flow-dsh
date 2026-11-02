@@ -2,7 +2,7 @@
  * 回归：**过程文档不得漏进工作目录** —— DO/CHECK 提示词的落点边界 + **拼装后自洽**。
  *
  * 病根不在「有没有 `## 产出目录` 这一节」。上一轮就是这么修的、也就这么漏过去的：
- * `workflows/loop.yaml` 的 `output: 实现的代码/文件 + summary.md（执行摘要）` 经引擎拼成 DO 的
+ * `workflows/loop/workflow.yaml` 的 `output: 实现的代码/文件 + summary.md（执行摘要）` 经引擎拼成 DO 的
  * `## 交付物`，把一份**过程文档**列成和代码并列的交付物，与紧邻的 `## 产出目录` 直接矛盾；
  * 那句话单独看没错、那一节单独看也没错，**两句拼到一起才打架**——按文件审永远看不见。
  *
@@ -11,7 +11,7 @@
  *   2. DO 提示词每节只说一种落点，`## 交付物` 不再把过程文档列成工作目录交付物；
  *   3. 任何 `output` 里写了过程文档名的自定义工作流，也要被同一句「落点由产出目录决定」兜住；
  *   4. CHECK 提示词同样写明边界，并明说「工作目录里的副本是落点错误、不算满足」（验证者曾被带偏）；
- *   5. 同一条规则的三份拷贝（DO 提示词 / CREATE_GUIDE / docs/custom-workflows.md）用同一批锚点，不分叉。
+ *   5. 同一条规则的拷贝（DO 提示词 / 作者参考 / docs/custom-workflows.md）用同一批锚点，不分叉。
  */
 import fs from "node:fs";
 import os from "node:os";
@@ -19,7 +19,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createEngine } from "../lib/engine.js";
 import { buildCheckPrompt } from "../lib/verify.js";
-import { CREATE_GUIDE } from "../lib/create.js";
+import { CREATE_SKILL_RESOURCES } from "../lib/skills.js";
 import { deliveryPorts } from "./helpers/ports.mjs";
 
 // HOME 隔离：绝不读写真实 ~/.dsh（全局工作流目录在那里）。
@@ -91,6 +91,20 @@ check("DO 提示词不再含旧的矛盾句「… + summary.md（执行摘要）
 const locationClaims = [...doSec.entries()].filter(([, body]) => body.includes("落到这个目录")).map(([t]) => t);
 check("位置指令句（裸文件名落到这个目录）只在 ## 产出目录 一节出现，别无第二处说法",
   locationClaims.length === 1 && locationClaims[0] === "产出目录", JSON.stringify(locationClaims));
+// 新增的资产目录一节必须是**资产资源**的参考根；不能把过程文档也说成相对它解析，
+// 否则「summary.md 落产出目录」与「相对路径都相对资产目录」两句拼在一起又打架。
+// 边界按**用途**划（读参考材料 vs 写交付物），不按「文件名是否带路径」划。
+const assetSec = doSec.get("资产目录") ?? "";
+check("DO 资产目录一节把参考根限定为资产自己的资源，并声明要写出的交付物按各自落点",
+  assetSec.includes("本资产自己的资源") && assetSec.includes("要写出的交付物") && assetSec.includes("不在这个目录"), assetSec);
+check("DO 资产目录一节按用途划界，不把「裸文件名」当成过程文档的判据",
+  assetSec.length > 0 && !assetSec.includes("裸文件名"), assetSec);
+check("DO 资产目录一节不再声称『DO/CHECK 里写的相对路径都相对这个目录解析』",
+  assetSec.length > 0 && !assetSec.includes("写的相对路径都相对这个目录解析"), assetSec);
+check("DO 资产目录一节不含过程文档名 summary.md（它只属于产出目录）",
+  assetSec.length > 0 && !assetSec.includes("summary.md"), assetSec);
+check("loop 的 summary.md 仍归产出目录（由 ## 产出目录 认领，资产目录一节不认领）",
+  started.text.includes("追加到 summary.md") && art.includes("summary.md") && !assetSec.includes("summary.md"), assetSec);
 
 // ── C) 任何 output 列了过程文档名的工作流，也被同一句兜住 ─────────────────────
 console.log("\nC) 自定义工作流的 output 列了过程文档名时，`## 交付物` 仍附「落点由产出目录决定」");
@@ -143,15 +157,15 @@ check("CHECK 的交付物一项点明落点看下一行「产出目录」",
   cpArt.includes("这一项只说产出**什么**") && cpArt.includes("产出目录"), cpArt);
 
 // ── E) 同一条规则的三份拷贝不分叉 ────────────────────────────────────────────
-console.log("\nE) 三份拷贝（DO 提示词 / CREATE_GUIDE / docs/custom-workflows.md）同说一条边界");
+console.log("\nE) 同一套边界（DO 提示词 / 作者参考 / docs/custom-workflows.md）不分叉");
 const docText = fs.readFileSync(path.join(repoRoot, "docs", "custom-workflows.md"), "utf-8");
+const authoringText = fs.readFileSync(path.join(CREATE_SKILL_RESOURCES, "workflow-authoring.md"), "utf-8");
 const anchors = ["过程文档", "工作目录只放本步的**产物**", "同一份过程文档只写一处", "明确路径"];
-for (const [name, text] of [["DO 提示词", art], ["CREATE_GUIDE", CREATE_GUIDE], ["docs/custom-workflows.md", docText]]) {
+for (const [name, text] of [["DO 提示词", art], ["作者参考", authoringText], ["docs/custom-workflows.md", docText]]) {
   const missing = anchors.filter((a) => !text.includes(a));
   check(`${name} 含全部 4 个边界锚点`, missing.length === 0, `缺：${missing.join(" / ")}`);
 }
-check("CREATE_GUIDE 的示例 output 不再把过程文档列成交付物", !/output:[^\n]*\n\s*实现的代码 \+ summary\.md/.test(CREATE_GUIDE));
-check("CREATE_GUIDE 点明 CHECK 会把副本判为落点错误", CREATE_GUIDE.includes("副本是落点错误"));
+check("作者参考点明 CHECK 会把副本判为落点错误", authoringText.includes("副本是落点错误"));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 try { fs.rmSync(ws, { recursive: true, force: true }); } catch {}

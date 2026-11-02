@@ -47,7 +47,7 @@
 - **自动注册**：引擎创建时、以及新会话创建时，枚举**工作区 → 全局 → 内置**三层的 **Flow 与 Graph** 资产各注册一个技能（如 `/ralphflow-loop`、`/ralphflow-codewiki`、`/ralphflow-create-graph`）。
 - **只给人看**：`modelInvocable: false` —— 模型目录里 ralphflow 相关的条目只有 `ralphflow-start` 一条（同义描述重复 = 一个触发分支写两遍）。
 - **同名先到先得**：与已登记的技能撞名时跳过（不影响 `/ralphflow-start <工作流> <任务>` 启动它）。
-- **名字必须是小写 kebab**：技能名必须匹配 `[a-z0-9]+(-[a-z0-9]+)*`。工作流名里带大写/下划线/空格时**注册不了快捷技能**——这时会**如实告诉你原因与改法**（投一条可见播报：重命名成小写 kebab，如 `my-flow.yaml`），**不静默跳过**；在那之前它仍可用 `/ralphflow-start <工作流> <任务>` 启动。
+- **名字必须是小写 kebab**：技能名必须匹配 `[a-z0-9]+(-[a-z0-9]+)*`。工作流名里带大写/下划线/空格时**注册不了快捷技能**——这时会**如实告诉你原因与改法**（投一条可见播报：改成小写 kebab 名，如目录 `my-flow/workflow.yaml`），**不静默跳过**；在那之前它仍可用 `/ralphflow-start <工作流> <任务>` 启动。
 - **无效定义不注册**：启动必然失败的工作流不会出现，用 `/ralphflow-doctor` 查看原因。
 - **Graph 的 Git 前置**：Graph 需要 Git 仓库、HEAD 基线和干净工作区。缺失时 `ralphflow_start` 返回提示；先问用户是否初始化，用户同意后由 AI 执行 `git init` / `git add -A` / `git commit -m baseline`，再重新启动。引擎不自动初始化。
 
@@ -207,8 +207,8 @@ tail -10 .dsh/ralph-flow/instances/<实例ID>/execution.log
 
 ```
 <项目根>/.dsh/ralph-flow/
-├── workflows/                      # Flow 资产（内置 loop/spec 不在此）
-├── graphs/                         # Graph 资产（内置 codewiki 不在此）
+├── workflows/<名字>/workflow.yaml  # Flow 资产（内置 loop/spec 不在此）
+├── graphs/<名字>/graph.yaml        # Graph 资产（内置 codewiki 不在此）
 ├── instances/                      # 活跃 Flow 实例 + 保留的 Graph 实例
 │   └── <实例ID>/
 │       ├── state.json              # 状态（勿手改；kind 区分 Flow/Graph）
@@ -225,8 +225,8 @@ tail -10 .dsh/ralph-flow/instances/<实例ID>/execution.log
 用户级工作流目录（`$DSH_HOME` 支持 `~`，空值视为未设置，缺省 `~/.dsh`）：
 
 ```
-$DSH_HOME/ralph-flow/workflows/     # Flow：所有项目可用
-$DSH_HOME/ralph-flow/graphs/        # Graph：同上
+$DSH_HOME/ralph-flow/workflows/     # Flow：所有项目可用（<名字>/workflow.yaml）
+$DSH_HOME/ralph-flow/graphs/        # Graph：同上（<名字>/graph.yaml）
 ```
 
 **Flow 实例状态字段**（`state.json`，由插件管理，勿手改）：`active`、`workflow_name`、`current_step`、`user_task`、`fail_counts`（每步一份）、`paused`、`pause_reason`、`do_submitted`、`owner_session`、`last_submit_summary`、`artifacts_dir_name`、`delegations`、`verdicts`、`history`、`started_at`、`updated_at`。

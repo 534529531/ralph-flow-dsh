@@ -1,6 +1,6 @@
 # CodeWiki 固定格式契约
 
-本文件是 `codewiki` 工作流的运行时格式契约。每个节点用 `read` 读取 `随包 codewiki-format 参考`；CHECK 也以本文件为准。
+本文件是 `codewiki` 工作流的运行时格式契约，放在资产目录里：节点与验证者都用 `read` 读取同目录的 `format.md`，CHECK 的判据按本文的章节引用。
 
 版本：`codewiki_schema: 1`。修改输出树、页面模板、schema 或校验清单时递增版本，并同步更新工作流资产。
 

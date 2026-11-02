@@ -30,7 +30,7 @@
 
 | 技能 | `invocation` | 面 | 内容 |
 |---|---|---|---|
-| `ralphflow-create` | 省略 ⇒ 两面都有 | 人敲 `/ralphflow-create` 或模型按描述触发 | 创建/修改 Flow/Graph 资产；Flow 分支直接设计，Graph 分支启动 `create-graph` Flow；`resourceBase` 指向随包 `references/` |
+| `ralphflow-create` | 省略 ⇒ 两面都有 | 人敲 `/ralphflow-create` 或模型按描述触发 | 创建/修改 Flow/Graph 资产；Flow 分支直接设计，Graph 分支启动 `create-graph` Flow；`resourceBase` 指向 `skills/ralphflow-create/` |
 | `ralphflow-start` | **省略** ⇒ 注册表默认 `{ modelInvocable: true, userInvocable: true }`（`dsh-skill/lib/index.js:203`；类型注释原文 *omission permits both model and user surfaces*） | **两面都有**：人敲 `/ralphflow-start <工作流> <任务>` → 普通 `user/message` + 宿主注入正文；模型按描述自然触发 → 调 `skill` 工具加载正文 | 描述 = 触发词（逐字，见下）；正文 = 「调 `ralphflow_start`，参数从用户那条消息里取」+ 工作流机制说明 |
 
 **触发词（`description`）逐字为**：

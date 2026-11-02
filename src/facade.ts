@@ -42,6 +42,7 @@ import {
   type GraphRunProjection,
 } from "./graph/state.js";
 import { findAssetByName, mergeAssets, type UnifiedAssetEntry } from "./assets.js";
+import { FLOW_ENTRY_FILE, GRAPH_ENTRY_FILE, assetEntryAt, assetFileIn } from "./asset-path.js";
 import type { ViewerAsset, WorkflowStatus } from "./status-contract.js";
 
 export interface FacadeOptions {
@@ -50,21 +51,13 @@ export interface FacadeOptions {
 }
 
 function flowFileExists(workspace: string, name: string): boolean {
-  for (const dir of [path.join(workspace, RALPH_FLOW_DIR, "workflows"), globalWorkflowsDirOf()]) {
-    for (const ext of [".yaml", ".yml"]) {
-      try { if (fs.statSync(path.join(dir, `${name}${ext}`)).isFile()) return true; } catch {}
-    }
-  }
-  return Boolean(builtinWorkflowPath(name));
+  const dirs = [path.join(workspace, RALPH_FLOW_DIR, "workflows"), globalWorkflowsDirOf()];
+  return dirs.some((dir) => assetFileIn(dir, name, FLOW_ENTRY_FILE)) || Boolean(builtinWorkflowPath(name));
 }
 
 function graphFileExists(workspace: string, name: string): boolean {
-  for (const dir of [graphWorkspaceDir(workspace), graphGlobalDir()]) {
-    for (const ext of [".yaml", ".yml"]) {
-      try { if (fs.statSync(path.join(dir, `${name}${ext}`)).isFile()) return true; } catch {}
-    }
-  }
-  return Boolean(builtinGraphPath(name));
+  const dirs = [graphWorkspaceDir(workspace), graphGlobalDir()];
+  return dirs.some((dir) => assetFileIn(dir, name, GRAPH_ENTRY_FILE)) || Boolean(builtinGraphPath(name));
 }
 
 export type AssetKind = "flow" | "graph";
@@ -106,7 +99,7 @@ export function createFacade(workspace: string, options: FacadeOptions) {
     const assets = listAssets().filter((asset) => asset.name === name);
     if (assets.length === 1) return { kind: assets[0]!.kind };
     return {
-      error: `未找到工作流 \`${name}\`。Flow 资产放 \`${path.join(workspace, RALPH_FLOW_DIR, "workflows")}/<name>.yaml\`，Graph 资产放 \`${path.join(workspace, RALPH_FLOW_DIR, "graphs")}/<name>.yaml\`。`,
+      error: `未找到工作流 \`${name}\`。Flow 资产放 \`${path.join(workspace, RALPH_FLOW_DIR, "workflows")}/<name>/workflow.yaml\`，Graph 资产放 \`${path.join(workspace, RALPH_FLOW_DIR, "graphs")}/<name>/graph.yaml\`。`,
     };
   }
 
@@ -287,24 +280,30 @@ export function createFacade(workspace: string, options: FacadeOptions) {
   }
 
   function diagnoseTarget(target: string): ToolResult {
-    // 1) 文件路径：工作区相对/绝对均可；目录决定期望的类别。
+    // 1) 路径：工作区相对/绝对均可；入口文件或资产目录。
     const absolute = path.isAbsolute(target) ? target : path.resolve(workspace, target);
-    let file = "";
-    try { if (fs.statSync(absolute).isFile()) file = absolute; } catch {}
-    if (file) {
+    const entry = assetEntryAt(absolute);
+    if (!entry) {
+      let isDirectory = false;
+      try { isDirectory = fs.statSync(absolute).isDirectory(); } catch {}
+      if (isDirectory) {
+        return { ok: false, text: `❌ \`${target}\` 里没有 \`workflow.yaml\` 或 \`graph.yaml\`：资产是目录加固定入口（\`workflows/<名字>/workflow.yaml\`、\`graphs/<名字>/graph.yaml\`）。` };
+      }
+    }
+    if (entry) {
+      const { file, name } = entry;
       let doc: unknown;
       try { doc = yaml.load(fs.readFileSync(file, "utf-8").replace(/^\uFEFF/, "")); } catch (error) {
         return { ok: false, text: `❌ \`${target}\` 读取失败：${error instanceof Error ? error.message : String(error)}` };
       }
       const classified = classifyYamlDocument(doc);
       if (classified.kind === "graph") {
-        const fileBase = path.basename(file).replace(/\.ya?ml$/i, "");
         const identity = doc && typeof doc === "object" && !Array.isArray(doc)
-          ? { ...(doc as Record<string, unknown>), id: (doc as Record<string, unknown>).id ?? fileBase, name: (doc as Record<string, unknown>).name ?? fileBase }
+          ? { ...(doc as Record<string, unknown>), id: (doc as Record<string, unknown>).id ?? name, name: (doc as Record<string, unknown>).name ?? name }
           : doc;
         const validation = validateGraphAsset(identity);
         const inGraphs = path.resolve(file).startsWith(path.resolve(graphWorkspaceDir(workspace)) + path.sep)
-          || path.resolve(file) === path.resolve(builtinGraphPath(fileBase) ?? "")
+          || path.resolve(file) === path.resolve(builtinGraphPath(name) ?? "")
           || path.resolve(file).startsWith(path.resolve(graphGlobalDir()) + path.sep);
         const valid = validation.asset !== null && inGraphs;
         const lines = [
@@ -312,6 +311,7 @@ export function createFacade(workspace: string, options: FacadeOptions) {
           "",
           `- 类别：Graph`,
           `- 路径：\`${file}\``,
+          `- 名字：\`${name}\``,
           ...(inGraphs ? [] : ["- ❌ 文件不在 graphs/ 目录：Graph 资产只放 `.dsh/ralph-flow/graphs/`。"]),
           "",
           ...(validation.asset
@@ -325,7 +325,6 @@ export function createFacade(workspace: string, options: FacadeOptions) {
         return { ok: valid, text: lines.join("\n") };
       }
       if (classified.kind === "flow") {
-        const name = path.basename(file).replace(/\.ya?ml$/i, "");
         const loaded = flow.loadWorkflow(name);
         const valid = !!loaded.def && !loaded.problems.length;
         const lines = [
