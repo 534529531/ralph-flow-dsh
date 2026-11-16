@@ -44,7 +44,6 @@ function mkEnv(ws, sid) {
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
   ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
-    list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
     startActivation: async () => ({ childId: "c", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) }),
   });
@@ -122,7 +121,9 @@ console.log("\nU2 交卷 → 验证播报 → 完成：每一步都对用户可�
   }));
   const node = client.nodes([eventOf(verifyNote)])[0];
   check("播报显式定位会话级（进行中的回合不能折叠吞掉）", node?.location.kind === "session");
-  check("kind 改回 context 的负对照：宿主真实过滤拒绝同一记录", !isVisibleChatNode({ ...node, kind: "context", data: { content: verifyNote.content } }));
+  // rc.3 的 `isVisibleChatNode` 不再单独排除 context（context 是否成为节点由客户端 Definition
+  // 的 match 决定）；负对照改用宿主谓词仍然拒绝的 system-prompt，证明断言走的是真实宿主过滤。
+  check("kind 改回 system-prompt 的负对照：宿主真实过滤拒绝同一记录", !isVisibleChatNode({ ...node, kind: "system-prompt" }));
   check("replacement 副本不重复出现在人类时间线", client.nodes([{ ...eventOf(verifyNote), surfaceOp: { op: "replace", sourceEventSeqs: [1] } }]).length === 0);
   check("重放的节点稳定（刷新可恢复）", JSON.stringify(client.nodes(sent.map(eventOf))) === JSON.stringify(loadNoticeClient().nodes(sent.map(eventOf))));
   cleanup(ws);
@@ -143,7 +144,6 @@ console.log("\nU3 暂停 / 审查门 / 返工：都必须对用户可见");
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
   ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
-    list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
     startActivation: async () => ({ childId: "c", result: Promise.resolve({ output: [], stopReason: "aborted" }) }),
   });

@@ -101,17 +101,17 @@ ralphflow 为什么成立，只有两句话：
 
 ## 独立会话验证
 
-### 后端按能力选择，不按名字
+### 后端按配置名解析，按能力校验
 
-验证者后端属于插件**内部**，工作流没有任何入口影响它。选择规则：
+验证者后端属于插件**内部**，工作流没有任何入口影响它。插件配置 `verifierProvider`（默认 `spawn`）指定 `ctx.subagents` provider 名。dsh 0.2.2-rc.3 的 `SubagentRuntime` 删除了 provider 枚举 `list()`，所以按名字 + `getProvider()` 解析；名字尚未注册时短暂等待 `subagent/provider-added`（有上限）。选择规则：
 
-1. 只考虑 `inheritsParentContext === false` 的 provider（全新上下文）——**绝不**回退到继承父级历史的 `fork`（那会让 T1 静默失效）；未声明该字段的同样不选（fail-closed）。
-2. 候选里优先 `capabilities.persona && capabilities.toolFilter` 都支持的（这是"独立 + 有纪律的只读裁判"的前置条件）。
-3. 一个都没有 → 记 `infra`，理由写明缺哪个能力或"本部署没有全新上下文的委派后端"，**绝不生成通过判定**。
+1. 名字只负责定位，不绕过能力校验：只接受 `inheritsParentContext === false` 的 provider（全新上下文）——**绝不**回退到继承父级历史的 `fork`（那会让 T1 静默失效）；未声明该字段的同样不选（fail-closed）。
+2. 优先 `capabilities.agentPreset === true`（0.2.1-rc.2+ 的身份与只读工具面通道）；旧版 `capabilities.persona && capabilities.toolFilter` 后端走 legacy 通道。
+3. 名字不存在、等待超时、或能力不符 → 记 `infra`，理由点名 `verifierProvider`、期望的 provider 名与缺失的能力，**绝不生成通过判定**。
 
 ### 身份是内部定义
 
-验证者的职责（独立性、只读取证、不采信自述、默认不通过）收敛为插件内的固定 persona，经 dsh 原生子代理的 `persona` 通道传入。工作流的 `check` 因此**只写判据与事实，不写角色设定**。
+验证者的职责（独立性、只读取证、不采信自述、默认不通过）收敛为插件内的固定 persona：0.2.1-rc.2+ 经 Agent Preset（`ralphflow-verifier`）的 persona 行传入，旧版宿主经子代理请求的 `persona` 传入。工作流的 `check` 因此**只写判据与事实，不写角色设定**。
 
 ### 只读约束
 

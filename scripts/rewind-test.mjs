@@ -463,7 +463,6 @@ function mkRealEnv(workflows, wfName) {
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
   ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
-    list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
     startActivation: async () => ({ childId: "child", result: Promise.resolve({ structured: { passed: true, reason: "取证通过" }, output: [], stopReason: "completed" }) }),
   });

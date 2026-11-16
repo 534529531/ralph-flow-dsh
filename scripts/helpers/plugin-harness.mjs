@@ -46,7 +46,6 @@ export function mkEnv(ws, sid, opts = {}) {
   // 用**真** registry 做的取证在 scripts/skills-surface-test.mjs）。
   ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
-    list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
     startActivation: opts.start
       ?? (async () => ({ childId: "child", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) })),

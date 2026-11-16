@@ -29,7 +29,6 @@ provide("tools", {
 provide("commands", { register() {} });
 provide("skills", { register() {} });
 provide("subagents", {
-  list() { return ["spawn"]; },
   getProvider() { return { capabilities: { outputSchema: false, agentPreset: true }, inheritsParentContext: false }; },
   start() { throw new Error("stub: no real subagent in smoke"); },
 });

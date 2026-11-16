@@ -19,13 +19,24 @@ import { createFacade, type Facade } from "./facade.js";
 import { projectRootOf } from "./paths.js";
 import { discoverAssetsIn } from "./assets.js";
 import { createResetSurface } from "./reset.js";
-import { runVerifier } from "./verify.js";
+import { DEFAULT_VERIFIER_PROVIDER, runVerifier } from "./verify.js";
 import { registerVerifierPreset } from "./verifier-preset.js";
 import { registerTools, registerCommands, SUBMIT_TOOL_NAME } from "./tools.js";
 import { registerSkills, type WorkflowSkillRegistrar } from "./skills.js";
 
 export const name = "ralphflow";
 export const inject = ["tools", "commands", "skills", "subagents", "agents", "sessions"];
+
+/**
+ * 插件配置。
+ *
+ * `verifierProvider` 是验证者委派使用的 `ctx.subagents` provider 名，默认 `spawn`
+ * （dsh 0.2.2 的全新上下文本后端）。键名带 `verifier` 前缀：本仓已有工作流的**模型**
+ * provider（`check_model` 的 `providerID`），单叫 `provider` 会让两件事共用一个词。
+ */
+export interface Config {
+  verifierProvider?: string;
+}
 
 /**
  * 本包版本 —— 从 `package.json` 读，**绝不硬编码**。
@@ -57,10 +68,14 @@ function lastAssistantText(data: unknown): string | undefined {
   return undefined;
 }
 
-export function apply(ctx: Context): void {
+export function apply(ctx: Context, config: Config = {}): void {
   // 0.2.1-rc.2+：验证者的 persona + 只读工具面只能经 Agent Preset 声明。
   // 注册是 best-effort；失败时验证委派会在 start() 处 fail-closed 成 infra。
   void registerVerifierPreset(ctx);
+  // 配置只决定「选哪个后端」；是否具备全新上下文 / Agent Preset 能力仍由 selectBackend 校验。
+  // 未声明 Config schema（宿主不需要额外依赖），非法类型按未配置处理，不让 apply 抛错。
+  const configuredProvider = typeof config?.verifierProvider === "string" ? config.verifierProvider.trim() : "";
+  const verifierProvider = configuredProvider || DEFAULT_VERIFIER_PROVIDER;
   /** 插件加载目录的项目根（没有会话可问时的唯一回落；不再有环境变量旁路）。 */
   const workspace = projectRootOf(process.cwd());
   const log = (level: "info" | "warn" | "error", event: string, data?: unknown) => {
@@ -333,7 +348,7 @@ export function apply(ctx: Context): void {
     statusChanged,
     /** 把挂起的播报在**安全边界**补齐（reset 门在整段替换前先调一次：让替换把它们一并遮蔽） */
     flushNotices,
-    verify: (req: VerifyRequest) => runVerifier({ ctx, ensurePreset: () => registerVerifierPreset(ctx) }, req),
+    verify: (req: VerifyRequest) => runVerifier({ ctx, ensurePreset: () => registerVerifierPreset(ctx), providerName: verifierProvider }, req),
     // 重置门（步骤级 `reset: true` / 工作流级 `auto_reset: true` / 手动 `/ralphflow-reset`）的载体：
     // 在步骤边界的空闲窗口里整段替换会话可见面。
     // 句柄就是这里已在用的 `ctx.agents`（Agent 的 `runMaintenance` + `session`）与 `ctx.sessions`。

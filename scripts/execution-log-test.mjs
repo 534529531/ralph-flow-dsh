@@ -133,7 +133,6 @@ console.log("L1 运行期 JSONL → 归档 → 报告指路 → 可复盘（验�
   const sentPrompts = [];
   const REASON = `验收判定原文：逐条核对通过 ✓\n第二行必须原样保留-${"长".repeat(400)}-END`;
   ctx.provide("subagents", {
-    list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
     startActivation: async (spec) => {
       sentPrompts.push(spec.request.prompt?.[0]?.text ?? null);

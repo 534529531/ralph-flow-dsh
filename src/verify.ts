@@ -48,7 +48,24 @@ export interface VerifyDeps {
    * 未提供（例如直接调用 runVerifier 的单元测试替身）时跳过检查。
    */
   ensurePreset?: () => Promise<boolean>;
+  /**
+   * 验证者后端名：来自插件配置键 {@link VERIFIER_PROVIDER_CONFIG_KEY}，默认
+   * {@link DEFAULT_VERIFIER_PROVIDER}。测试替身可直接传入。
+   */
+  providerName?: string;
 }
+
+/** 插件配置键：验证者使用哪个 `ctx.subagents` provider。 */
+export const VERIFIER_PROVIDER_CONFIG_KEY = "verifierProvider";
+
+/** 默认验证者后端：dsh 0.2.2 的 `spawn`（全新上下文 + Agent Preset）。 */
+export const DEFAULT_VERIFIER_PROVIDER = "spawn";
+
+/**
+ * 等待 provider 注册的上限。dsh 的 provider 在插件装载时注册，验证发生在模型回合之后，
+ * 正常部署远早于此；这个窗口只用来容忍「验证请求恰好早于 provider 注册」的竞态。
+ */
+const PROVIDER_WAIT_MS = 1_000;
 
 interface ProviderCapabilities {
   outputSchema?: boolean;
@@ -69,7 +86,6 @@ interface ProviderInfo {
 }
 
 interface SubagentsFace {
-  list(): string[];
   getProvider(n: string): ProviderInfo | undefined;
   /** 0.2.1-rc.2+ 的启动入口。 */
   startActivation?(spec: unknown): Promise<unknown>;
@@ -89,41 +105,100 @@ export interface BackendSelection {
 }
 
 /**
- * 选择独立验证者后端 —— **按能力判定，不按名字判定**。
+ * 选择独立验证者后端 —— **按配置名解析，按能力校验**。
  *
- * - 只考虑 `inheritsParentContext === false` 的 provider（全新上下文）。**绝不**回退到
+ * - provider 名来自插件配置（`verifierProvider`，默认 `spawn`）。dsh 0.2.2-rc.3 的
+ *   `SubagentRuntime` 已删除 `list()`：宿主自己的委派插件也按配置名 + `getProvider()`
+ *   解析，不认识的名字等 `subagent/provider-added`（有上限）。
+ * - 只接受 `inheritsParentContext === false` 的 provider（全新上下文）。**绝不**回退到
  *   `true` 的 provider：`fork` 会继承主会话历史，T1 会静默失效。未声明该字段的 provider
  *   同样不选（无法证明是全新上下文 → fail-closed）。
  * - 优先 `capabilities.agentPreset === true`（0.2.1-rc.2+：persona 与只读工具面
  *   只能经 Agent Preset 声明）；为兼容仍声明 `persona && toolFilter` 的旧版后端，
- *   在没有 preset 能力时回退到 legacy 通道。两者都没有 → fail-closed。
- * - provider 名可配置（`providerName`），**名字不参与判定**。
+ *   在缺少 preset 能力时使用 legacy 通道。两者都没有 → fail-closed。
  * - 没有可用后端时返回 `reason`，由调用方转成 infra 判定 —— 绝不生成通过判定。
+ *
+ * @param ctx - 插件上下文（`ctx.subagents` + 事件面）。
+ * @param providerName - 期望的 provider 名；缺省为 `spawn`。
+ * @param waitMs - 等待 `subagent/provider-added` 的上限；测试可缩短。
  */
-export function selectBackend(ctx: Context): BackendSelection {
-  let list: string[];
-  let providerOf: (n: string) => ProviderInfo | undefined;
-  try {
-    const svc = subagents(ctx);
-    list = svc.list() ?? [];
-    providerOf = (n) => { try { return svc.getProvider(n); } catch { return undefined; } };
-  } catch {
-    return { reason: "本部署没有全新上下文的委派后端（读取 subagents 服务失败），无法委派独立验证者。" };
+export async function selectBackend(
+  ctx: Context,
+  providerName: string = DEFAULT_VERIFIER_PROVIDER,
+  waitMs: number = PROVIDER_WAIT_MS,
+): Promise<BackendSelection> {
+  const name = typeof providerName === "string" && providerName.trim() ? providerName.trim() : DEFAULT_VERIFIER_PROVIDER;
+  let svc: SubagentsFace | undefined;
+  try { svc = subagents(ctx); } catch { svc = undefined; }
+  if (!svc || typeof svc.getProvider !== "function") {
+    return {
+      reason: `本部署没有可用的全新上下文委派后端：读取 \`ctx.subagents\` 服务失败。请在 ralphflow 配置的 \`${VERIFIER_PROVIDER_CONFIG_KEY}\` 键中填写已注册的 provider 名（当前期望 \`${name}\`）；服务不可用时无法读取 \`inheritsParentContext\`、\`capabilities.agentPreset\` 与旧版 \`capabilities.persona\`/\`toolFilter\`。`,
+    };
   }
-  const fresh = (list ?? []).filter((n) => !!n && providerOf(n)?.inheritsParentContext === false);
-  if (fresh.length === 0) {
-    return { reason: "本部署没有全新上下文的委派后端（没有任何 provider 声明 inheritsParentContext === false），无法保证验证者与执行者会话隔离（T1）。" };
+  const provider = await waitForProvider(ctx, svc, name, waitMs);
+  if (!provider) {
+    return {
+      reason: `本部署没有可用的全新上下文委派后端：等待 provider \`${name}\` 注册超时（\`subagent/provider-added\`，${waitMs}ms）。请检查部署是否加载了该后端；若后端使用其它名字，在 ralphflow 配置的 \`${VERIFIER_PROVIDER_CONFIG_KEY}\` 键中填写该名字。当前 provider 未注册，无法读取 \`inheritsParentContext\`、\`capabilities.agentPreset\` 与旧版 \`capabilities.persona\`/\`toolFilter\`，因此无法确认「全新上下文 + 可委派身份」能力。`,
+    };
   }
-  const preset = fresh.find((n) => providerOf(n)?.capabilities?.agentPreset === true);
-  if (preset) return { name: preset, mode: "preset" };
-  const legacy = fresh.find((n) => {
-    const c = providerOf(n)?.capabilities;
-    return c?.persona === true && c?.toolFilter === true;
-  });
-  if (legacy) return { name: legacy, mode: "legacy" };
+  if (provider.inheritsParentContext !== false) {
+    return {
+      reason: `本部署没有全新上下文的委派后端：\`${name}\` 声明 \`inheritsParentContext: ${String(provider.inheritsParentContext)}\`，验证者会继承执行者会话历史，无法保证 T1 隔离。请在 ralphflow 配置的 \`${VERIFIER_PROVIDER_CONFIG_KEY}\` 键中改指声明 \`inheritsParentContext === false\` 的 provider；当前缺少：全新上下文（\`inheritsParentContext === false\`）。`,
+    };
+  }
+  const caps = provider.capabilities;
+  if (caps?.agentPreset === true) return { name, mode: "preset" };
+  if (caps?.persona === true && caps?.toolFilter === true) return { name, mode: "legacy" };
   return {
-    reason: `本部署有全新上下文委派后端（${fresh.map((n) => `\`${n}\``).join("、")}），但既不支持 \`agentPreset\`（dsh 0.2.1-rc.2+），也不支持旧版 \`persona\`/\`toolFilter\`：无法委派「独立 + 有纪律的只读裁判」验证者。`,
+    reason: `本部署没有可用的全新上下文委派后端：\`${name}\` 是全新上下文，但缺少身份通道 —— \`capabilities.agentPreset === true\`（dsh 0.2.1-rc.2+）与旧版 \`capabilities.persona === true\` + \`capabilities.toolFilter === true\` 均不成立。请在 ralphflow 配置的 \`${VERIFIER_PROVIDER_CONFIG_KEY}\` 键中改指支持其一的 provider；当前缺少：\`capabilities.agentPreset\`，或旧版 \`capabilities.persona\` + \`capabilities.toolFilter\`。`,
   };
+}
+
+/** provider 的即时读取；读取失败按「未注册」处理，交给统一的事件等待/失败理由。 */
+function readProvider(svc: SubagentsFace, name: string): ProviderInfo | undefined {
+  try { return svc.getProvider(name); } catch { return undefined; }
+}
+
+type ProviderListener = (payload: unknown) => void;
+interface EventSource {
+  on?(name: string, listener: ProviderListener): (() => unknown) | void;
+}
+
+/**
+ * 等 `subagent/provider-added` 出现期望的名字（有上限）。
+ *
+ * 先即时读一次；没有事件面（纯单测替身）就只返回即时结果。监听器挂上后**再读一次**：
+ * 注册若发生在这两次读取之间，事件已经错过。
+ */
+function waitForProvider(
+  ctx: Context,
+  svc: SubagentsFace,
+  name: string,
+  waitMs: number,
+): Promise<ProviderInfo | undefined> {
+  const immediate = readProvider(svc, name);
+  if (immediate) return Promise.resolve(immediate);
+  const source = ctx as unknown as EventSource;
+  if (typeof source.on !== "function") return Promise.resolve(undefined);
+  return new Promise((resolve) => {
+    let settled = false;
+    let off: (() => unknown) | void;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settle = (provider: ProviderInfo | undefined): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      try { off?.(); } catch {}
+      resolve(provider);
+    };
+    timer = setTimeout(() => settle(readProvider(svc, name)), Math.max(0, waitMs));
+    off = source.on!.call(ctx, "subagent/provider-added", (payload) => {
+      const provider = payload as (ProviderInfo & { name?: unknown }) | undefined;
+      if (provider && provider.name === name) settle(provider);
+    });
+    const raced = readProvider(svc, name);
+    if (raced) settle(raced);
+  });
 }
 
 /** persona/toolFilter 通道（0.2.0/0.2.1-alpha）的只读工具白名单。 */
@@ -419,9 +494,9 @@ async function startWaitingForSlot<T>(signal: AbortSignal | undefined, start: ()
 
 export async function runVerifier(deps: VerifyDeps, req: VerifyRequest): Promise<Verdict> {
   const ctx = deps.ctx;
-  // 后端选择属于 Ralphflow 内部：按能力判定，工作流没有任何入口影响它（公开契约已无 agent）。
+  // 后端选择属于 Ralphflow 内部：按配置名解析、按能力校验，工作流没有任何入口影响它（公开契约已无 agent）。
   // 选不出来 → infra，理由说明缺什么；**绝不**生成通过判定。
-  const backend = selectBackend(ctx);
+  const backend = await selectBackend(ctx, deps.providerName);
   if (!backend.name) {
     return {
       check_index: req.checkIndex,
@@ -517,20 +592,35 @@ export async function runVerifier(deps: VerifyDeps, req: VerifyRequest): Promise
       }
       // 必须绑定：这是服务方法，内部用 this（expectProvider 等）；解构后裸调用会丢 this。
       const startActivation = activation.bind(svc);
-      const started = await startWaitingForSlot(req.signal, () => startActivation({
+      // ── 两个**已发布**宿主版本的 SubagentActivationSpec 形状并存 ─────────────────
+      // dsh 0.2.1-rc.5：{ provider, label, request: { parent, prompt, … }, signal, delivery }
+      // dsh 0.2.2-rc.3：{ provider, label, parent, prompt, … , signal, delivery }（request 被拍平）
+      // 两版都只读自己认识的键：rc.5 的 startActivation 只读 spec.request，rc.3 只读顶层；
+      // 另一形状的多余键不会被校验或拒绝（已对照两版宿主源码核实）。所以同一份
+      // activationRequest 同时放到顶层与 request：rc.3 读顶层、rc.5 读 request。
+      //
+      // 这是**两个已发布宿主版本的载荷并存**，不是面向未知版本的通用兜底。新增请求字段时
+      // 只改 activationRequest 一处（两处自动一致），不要加版本嗅探或按字段分别分支。
+      const activationRequest = {
+        ...(parent === undefined ? {} : { parent }),
+        prompt,
+        agentPreset: VERIFIER_PRESET_ID,
+        ...(outputSchema === undefined ? {} : { outputSchema }),
+        ...(Object.keys(agentOptions).length === 0 ? {} : { agentOptions }),
+      };
+      const spec = {
         provider: name,
         label,
-        request: {
-          ...(parent === undefined ? {} : { parent }),
-          prompt,
-          agentPreset: VERIFIER_PRESET_ID,
-          ...(outputSchema === undefined ? {} : { outputSchema }),
-          ...(Object.keys(agentOptions).length === 0 ? {} : { agentOptions }),
-        },
+        ...activationRequest,
+        request: activationRequest,
         signal: req.signal,
         // 结果只回给引擎（调用方），不注入主会话：T1 的「执行者看不到验证者」不依赖宿主投递。
         delivery: "caller",
-      })) as { childId?: unknown; result?: Promise<{ structured?: unknown; output?: unknown; stopReason?: string }> };
+      };
+      const started = await startWaitingForSlot(req.signal, () => startActivation(spec)) as {
+        childId?: unknown;
+        result?: Promise<{ structured?: unknown; output?: unknown; stopReason?: string }>;
+      };
       run = started;
     } else {
       // 旧版 0.2.0 / 0.2.1-alpha：persona + toolFilter 逐请求传入。

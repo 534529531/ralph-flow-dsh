@@ -95,7 +95,6 @@ async function mkSurfaceEnv(entryUrl, label) {
   const registered = { tools: [], skills: [] };
   ctx.provide("tools", { register: (d) => registered.tools.push(d), schemas: () => [] });
   ctx.provide("subagents", {
-    list: () => [],
     getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
     startActivation: async () => ({ childId: "child", result: Promise.resolve({ structured: { passed: true, reason: "ok" }, output: [], stopReason: "completed" }) }),
   });

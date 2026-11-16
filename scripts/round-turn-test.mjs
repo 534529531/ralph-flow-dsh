@@ -33,16 +33,11 @@ import AgentLoop from "@deepseek-ai/dsh-agent-loop";
 import { RALPHFLOW_SOURCE_KIND } from "../lib/message-source.js";
 import { buildPluginCopy } from "./helpers/reverted-build.mjs";
 import { cleanupTmp, mkTmp, textOf } from "./helpers/plugin-harness.mjs";
+import { loadToolExecutor } from "./helpers/tool-executor.mjs";
 
-// 工具执行器：rc.5 的 `dsh-tools` 已内置执行器；alpha2 把它拆成独立插件
-// （`setExecutor`），缺少它时回合进不了 step。只在宿主提供该包时装配，
-// 其余找不到模块的错误照常抛出。
-let ToolExecutorNative = null;
-try {
-  ToolExecutorNative = await import("@deepseek-ai/dsh-tool-executor-native");
-} catch (error) {
-  if (error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
-}
+// 0.2.2-rc.3 的 `dsh-tools` 只提供 `setExecutor`；不装原生执行器，回合在 pre-step 就报
+// "The selected tool executor is unavailable"，脚本模型的 stream 一次都不会被调用。
+const ToolExecutorNative = await loadToolExecutor();
 
 // HOME 隔离（工作协议）：测试绝不读写真实 ~/.dsh。必须在 apply 之前设置。
 process.env.HOME = mkTmp("home");
@@ -137,7 +132,6 @@ async function runScenario(entryUrl, label) {
 
   ctx.llm.registerAdapter(["stub"], mkStubAdapter());
   ctx.provide("subagents", {
-    list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
     startActivation: async () => ({
       childId: "verifier",

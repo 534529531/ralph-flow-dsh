@@ -57,7 +57,6 @@ function mkEnv(ws, opts = {}) {
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
   ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
-    list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
     startActivation: opts.startActivation ?? (async () => {
       const result = new Promise(() => {});

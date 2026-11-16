@@ -35,16 +35,11 @@ import AgentLoop from "@deepseek-ai/dsh-agent-loop";
 import { RALPHFLOW_SOURCE_KIND } from "../lib/message-source.js";
 import { buildPluginCopy, REPO } from "./helpers/reverted-build.mjs";
 import { cleanupTmp, mkTmp, textOf } from "./helpers/plugin-harness.mjs";
+import { loadToolExecutor } from "./helpers/tool-executor.mjs";
 
-// 工具执行器：rc.5 的 `dsh-tools` 已内置执行器；alpha2 把它拆成独立插件
-// （`setExecutor`），缺少它时回合进不了 step。只在宿主提供该包时装配，
-// 其余找不到模块的错误照常抛出。
-let ToolExecutorNative = null;
-try {
-  ToolExecutorNative = await import("@deepseek-ai/dsh-tool-executor-native");
-} catch (error) {
-  if (error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
-}
+// 0.2.2-rc.3 的 `dsh-tools` 只提供 `setExecutor`；不装原生执行器，回合进不了 step，
+// 验证委派与播报都会被卡在收尾前（本用例在 rc.3 上的假失败正是这个装配缺口）。
+const ToolExecutorNative = await loadToolExecutor();
 
 // HOME 隔离（工作协议）：测试绝不读写真实 ~/.dsh。必须在 apply 之前设置。
 process.env.HOME = mkTmp("home");
@@ -138,7 +133,6 @@ async function runScenario(entryUrl, label) {
   /** 全部票的悬挂 resolver（判据要的是「全部票都在飞」的那段窗口） */
   const votes = [];
   ctx.provide("subagents", {
-    list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
     startActivation: async () => {
       const d = Promise.withResolvers();

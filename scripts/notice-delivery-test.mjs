@@ -67,7 +67,6 @@ function mkEnv(ws, sid) {
   ctx.provide("commands", { register: (d) => { registered.commands.push(d); return () => {}; } });
   ctx.provide("skills", { register: (d) => { registered.skills.push(d); return () => {}; } });
   ctx.provide("subagents", {
-    list: () => ["spawn"],
     getProvider: () => ({ capabilities: { outputSchema: true, agentPreset: true }, inheritsParentContext: false }),
     // 验证委派永远悬挂：本文件只关心「投播报的那一瞬」，不关心判定
     startActivation: () => ({ childId: "child", result: new Promise(() => {}) }),
