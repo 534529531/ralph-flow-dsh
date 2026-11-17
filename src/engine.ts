@@ -309,15 +309,27 @@ export interface StepDef {
    */
   reset?: boolean;
   /**
-   * **按「模型自报未完成」计数重置**（`reset_every: N`，整数 N ≥ 2）：模型每次调用
-   * `ralphflow_submit` 并在 `unfinished` 里列出未完成项，本步计数 +1；计数攒到 N 的整数倍
-   * （N、2N、3N…）时，在**下一轮 DO 投递前**换一次干净上下文（复用同一根 `deliverStepDo`
+   * **按「模型自报未完成」计数重置** —— **引擎默认行为，不写就生效**（默认每 3 次换一次）。
+   *
+   * 模型每次调用 `ralphflow_submit` 并在 `unfinished` 里列出未完成项，本步计数 +1；计数攒到 N 的
+   * 整数倍（N、2N、3N…）时，在**下一轮 DO 投递前**换一次干净上下文（复用同一根 `deliverStepDo`
    * 接线，与 `reset: true` 是同一个动作，只是触发条件不同）。
    *
-   * 与 `reset: true` / `auto_reset: true` 的分工：那两个是「**每次进入**本步都换」，本字段是
-   * 「**同一轮循环里**模型连续自报 N 次未完成才换」—— 后者正对现场：模型报「没做完」超过三次，
-   * 多半是上下文脏了而不是任务变了，换一次干净上下文就能接着做很久。优先级
-   * **`reset` > `auto_reset` > `reset_every`**（同时写时本字段被覆盖，doctor 会告警）。
+   * 现场依据：模型报「没做完」超过三次，多半是上下文脏了而不是任务变了 —— 换一次干净上下文就能
+   * 接着做很久。所以这是**默认行为**，与「没输出 `<promise>done</promise>` 默认催 5 遍」同一口径：
+   * 作者不必写任何东西，长循环步天然有机械出口。
+   *
+   * 三种写法：
+   *   · **不写** → {@link DEFAULT_RESET_EVERY}（3）；
+   *   · `reset_every: N`（N ≥ 2 整数）→ 该步改频率；
+   *   · `reset_every: 0` → **关闭该步的按轮重置**（静态门 `reset` / `auto_reset` 不受影响）。
+   *
+   * 与 `reset: true` / `auto_reset: true` **不互相遮蔽**（两个维度，各管各的）：
+   *   · **静态门**管「进入本步前换」（重试/返工时由它换）；
+   *   · **按轮门**管「本步攒够 N 次自报未完成再换」（长循环里由它换）；
+   *   · **同一次 DO 投递最多替换一次**：静态门已经换了，就把本次到期的按轮阈值记为已用
+   *     （上下文已经干净，不重复换）；静态门没触发时按轮门照常补上。
+   *   于是同一步可以同时拥有两种触发：返工时静态门换、长循环里按轮门换。
    *
    * 三条硬语义（与 `fail_counts` 那条线**完全分开**）：
    *   · **唯一计数来源 = 模型自报未完成**（`submit_incomplete`）。CHECK 判定失败**不计入**，
@@ -434,7 +446,8 @@ export function expectedVerdicts(step: Pick<StepDef, "check" | "check_voting">):
  *   · `"step"` —— 作者在**这一步**上显式写了 `reset: true`；
  *   · `"auto"` —— 工作流级 `auto_reset: true`（等价于每一步都标 reset，作者并没有标这一步）；
  *   · `"call"` —— 子工作流**调用点**上写了 `reset: true`（进入子工作流 = 首个展开后子步骤的重置）；
- *   · `"every"` —— 这一步写了 `reset_every: N`，且**模型自报未完成的次数**又攒够了一个 N 的整数倍。
+ *   · `"every"` —— 本步的按轮门（默认每 {@link DEFAULT_RESET_EVERY} 次自报未完成，作者可用
+ *     `reset_every: N` 覆盖）又到期了。
  *
  * 四者的机械动作相同（换一次干净上下文），但**触发条件与措辞都不同**，分开是必须的：
  * 把 `auto`/`call` 说成「本步标了 `reset: true`」是**说错话**（作者没在这一步上标），
@@ -442,8 +455,9 @@ export function expectedVerdicts(step: Pick<StepDef, "check" | "check_voting">):
  * 启动回执 / 播报 / 推进回执一律按来源分述（见各处 `resetSourceText` / `describeResetCause`）。
  *
  * 同时标了步骤级 `reset: true` 与工作流级 `auto_reset: true` 时按 `"step"` 计：作者确实
- * 在这一步上标了，那么这句话本身是真的。优先级 **`reset` > `auto_reset` > `reset_every`**：
- * 前两者是「每次进入都换」，后者是「攒够 N 次才换」——同时写时后者被覆盖（doctor 会告警）。
+ * 在这一步上标了，那么这句话本身是真的。**静态门与按轮门不是优先级关系**（互不遮蔽）：
+ * 静态门管「进入本步前换一次」，按轮门管「本步攒够 N 次自报未完成再换」，同一次投递里
+ * 静态门先赢，按轮门的到期阈值由调用方记为已用（上下文已干净，不重复换）。
  *
  * **子工作流**的 `auto_reset` 在加载期静态展开时下沉为子步骤的 `reset: true`（见
  * `prefixSubWorkflowSteps`），但会同时打上 {@link StepDef.reset_from_auto} 标记 ——
@@ -451,6 +465,33 @@ export function expectedVerdicts(step: Pick<StepDef, "check" | "check_voting">):
  * 同理下沉到**首个展开后子步骤**并打 {@link StepDef.reset_from_call} 标记（记着调用点 id）。
  */
 export type ResetCause = "step" | "auto" | "call" | "every";
+
+/**
+ * 按轮重置的**默认阈值**：模型每自报未完成 3 次，引擎在下一轮 DO 投递前换一次干净上下文。
+ *
+ * 为什么是默认而不是可选字段：现场「报没做完超过三次」几乎都是上下文脏了，作者不该为了拿到
+ * 这个机械出口去学一个 YAML 键；与「没输出 `<promise>done</promise>` 默认催 5 遍」同一口径 ——
+ * 默认就该有。要改频率写 `reset_every: N`，要关掉写 `reset_every: 0`。
+ */
+export const DEFAULT_RESET_EVERY = 3;
+
+/**
+ * 该步**生效的按轮阈值**：`undefined` = 该步不做按轮重置。
+ *
+ *   · 不写 `reset_every` → {@link DEFAULT_RESET_EVERY}（默认行为，不需要 YAML 任何东西）；
+ *   · `reset_every: 0` → `undefined`（作者显式关闭该步的按轮重置）；
+ *   · `reset_every: N`（≥2 整数）→ `N`（覆盖默认频率）。
+ *
+ * 非法值（1 / 负数 / 小数 / 非数字）在**加载期就是硬错误**，走不到这里；这里对它们返回
+ * `undefined` 只是防御（绝不把坏值当成一个「阈值」去清空模型上下文）。
+ */
+export function resetEveryThresholdOf(step: Pick<StepDef, "reset_every">): number | undefined {
+  const n = step.reset_every;
+  if (n === undefined || n === null) return DEFAULT_RESET_EVERY;
+  if (!Number.isInteger(n)) return undefined;
+  if (n === 0) return undefined;
+  return n >= 2 ? n : undefined;
+}
 
 /**
  * `reset_every` 的计数快照（**纯值，不落盘形态**）：本步累计「模型自报未完成」次数 +
@@ -468,27 +509,65 @@ export interface ResetEveryCounter {
   applied: number;
 }
 
-/** 本步进入前是否要重置上下文，以及**为什么**（`undefined` = 不重置）。 */
+/**
+ * 一次 DO 投递的重置判定（**唯一判据点**：静态门 + 按轮门两个维度一起算）。
+ *
+ * `trigger` 就是这次投递要执行的替换来源（`undefined` = 不换）。**同一次投递最多替换一次**：
+ * 静态门（`step` / `auto` / `call`）优先，按轮门（`every`）在静态门没有触发时补上。
+ *
+ * `everySeq` 是本次到期的按轮阈值序号（0 = 没到期）。静态门赢了的时候它也可能是正数 ——
+ * 调用方在**替换成功之后**把它记为已用（`reset_every_marks`）：上下文已经干净，下一轮不该为
+ * 同一个阈值再换一次。替换失败则**不记**（阈值不消耗，下一轮自然重试）。
+ */
+export interface ResetDecision {
+  /** 本次投递实际使用的来源；`undefined` = 不替换 */
+  trigger?: ResetCause;
+  /** 本次到期的按轮阈值序号（`floor(count / N)`，0 = 没到期 / 该步按轮门关闭） */
+  everySeq: number;
+}
+
+/**
+ * 本步这次 DO 投递要不要重置上下文、**为什么**，以及按轮门的到期阈值 —— 纯函数。
+ *
+ * 两个维度各答各的（**互不遮蔽**）：
+ *   · **静态门**：`reset: true`（含子工作流 `auto_reset` / 调用点下沉，来源分别是 step/auto/call）
+ *     ∨ 工作流级 `auto_reset: true` —— 进入本步前换一次；
+ *   · **按轮门**：模型自报未完成次数攒够了一个没换过的阈值（默认每 3 次，见
+ *     {@link resetEveryThresholdOf}）—— 同一轮循环里换一次。
+ *
+ * `opts.skipStatic` 给「同一轮的再投递」用（回合收尾提醒 / 解除暂停）：那不是「进入本步」，
+ * 静态门不重复触发，但按轮门照常生效。
+ *
+ * 没有计数快照（`every` 省略：纯静态判定）时按轮门永远不会到期 —— 于是
+ * {@link stepWantsReset} 仍是纯粹的「作者声明了进入就换吗」。
+ */
 export function resetCauseOf(
   wf: Pick<WorkflowDef, "auto_reset">,
   step: Pick<StepDef, "reset" | "reset_from_auto" | "reset_from_call" | "reset_every">,
   every?: ResetEveryCounter,
-): ResetCause | undefined {
+  opts?: { skipStatic?: boolean },
+): ResetDecision {
+  // ── 维度一：静态门（进入本步前换）──
   // 子工作流 auto_reset 下沉出来的 `reset: true` 不是作者在本步标的 → 仍记 `"auto"`。
+  let staticCause: ResetCause | undefined;
   if (step.reset === true) {
-    if (step.reset_from_auto === true) return "auto";
-    if (typeof step.reset_from_call === "string" && step.reset_from_call !== "") return "call";
-    return "step";
+    staticCause = step.reset_from_auto === true
+      ? "auto"
+      : (typeof step.reset_from_call === "string" && step.reset_from_call !== "" ? "call" : "step");
+  } else if (wf.auto_reset === true) {
+    staticCause = "auto";
   }
-  if (wf.auto_reset === true) return "auto";
-  // `reset_every`：**只在模型自报未完成攒够一个未换过的 N 的整数倍时**触发。
-  // 没有计数快照（纯函数判定 / 该步没写 `reset_every`）时一律不触发 —— 默认零行为。
-  const n = step.reset_every;
-  if (typeof n === "number" && Number.isInteger(n) && n >= 2 && every) {
-    const seq = Math.floor(every.count / n);
-    if (seq > every.applied) return "every";
+  // ── 维度二：按轮门（本步攒够自报未完成再换）──
+  const n = resetEveryThresholdOf(step);
+  const everySeq = n !== undefined && every ? Math.floor(every.count / n) : 0;
+  const everyDue = everySeq > (every?.applied ?? 0);
+  if (staticCause !== undefined && opts?.skipStatic !== true) {
+    // 静态门先赢：**同一次投递只替换一次**。到期的按轮阈值一并交回（`everySeq`），
+    // 调用方在替换成功后把它记为已用 —— 否则下一轮会为同一个阈值再清一次。
+    return { trigger: staticCause, everySeq: everyDue ? everySeq : 0 };
   }
-  return undefined;
+  if (everyDue) return { trigger: "every", everySeq };
+  return { everySeq: 0 };
 }
 
 /**
@@ -497,14 +576,14 @@ export function resetCauseOf(
  * 这是「作者声明『进入就换』」的静态谓词：启动回执、措辞、迁移标记都用它。
  *
  * ⚠️ 这不是运行期的触发判据：真正决定「这次投递要不要换上下文」的只有一个地方 ——
- * `deliverStepDo` 调 {@link resetCauseOf} 并传入 `reset_every` 的计数快照。这里不带计数，
- * 所以 `reset_every` 恒为假（它答的是「作者有没有声明进入就换」，不是「这一轮该不该换」）。
+ * `deliverStepDo` 调 {@link resetCauseOf} 并传入按轮计数快照。这里不带计数，
+ * 所以按轮门恒不到期（它答的是「作者有没有声明进入就换」，不是「这一轮该不该换」）。
  */
 export function stepWantsReset(
   wf: Pick<WorkflowDef, "auto_reset">,
   step: Pick<StepDef, "reset" | "reset_every">,
 ): boolean {
-  return resetCauseOf(wf, step) !== undefined;
+  return resetCauseOf(wf, step).trigger !== undefined;
 }
 
 /**
@@ -740,7 +819,7 @@ function callPointKeyWarning(callId: string, key: string, subName: string): stri
     case "inputs":
       return head(`本实现的子工作流不接收参数：\`inputs\` 一律告警忽略。要在调用点上说明**这段子工作流要做什么**，请写调用点的 \`do\` —— 它在加载期静态展开时下沉到子工作流每个步骤的「## 任务」，不写就继承父级任务描述。`);
     case "reset_every":
-      return head(`\`reset_every\` 是**步骤字段**（按那一步的模型自报未完成次数计数）。调用点会被展开掉、没有自己的轮次，所以写在这里不生效：请写到子工作流内部需要它的步骤上；要在「进入子工作流」时换上下文，用调用点的 \`reset: true\`。`);
+      return head(`\`reset_every\` 是**步骤字段**（按那一步的模型自报未完成次数计数；不写默认每 ${DEFAULT_RESET_EVERY} 次，子工作流展开后的每个子步骤都拿默认值）。调用点会被展开掉、没有自己的轮次，所以写在这里不生效：请写到子工作流内部需要它的步骤上；要在「进入子工作流」时换上下文，用调用点的 \`reset: true\`。`);
     default:
       return head(`调用点只认 \`id\` / \`desc\` / \`do\` / \`input\` / \`output\` / \`workflow\` / \`on_pass\` / \`on_fail\` / \`max_fail_count\` / \`reset\`（外加工作流级 \`manual_step\` 列表里的调用点 id = 整段子工作流跑完后停门），其余键一律忽略。`);
   }
@@ -902,15 +981,18 @@ export interface InstanceState {
    * `submit_incomplete` 分支）。**CHECK 判定失败不计入** —— 它走 {@link fail_counts} /
    * `max_fail_count`，两条线互不干扰（前者是「任务还没做完」，后者是「产出没通过验证」）。
    *
-   * 用途只有一个：`reset_every` 的阈值计数。该步**验证通过时清零**、进入该步（推进/回退）时
-   * 也清零 —— 每次进入从 0 起算。跨 pause/resume 存活（落盘，不是派生量）。
+   * 用途只有一个：按轮重置门的阈值计数（**默认每 3 次自报未完成换一次上下文**，`reset_every`
+   * 改频率 / `0` 关闭）。该步**验证通过时清零**、进入该步（推进/回退）时也清零 —— 每次进入
+   * 从 0 起算。跨 pause/resume 存活（落盘，不是派生量）。
    */
   incomplete_counts: Record<string, number>;
   /**
-   * **每步已换过的 `reset_every` 阈值序号**（原始事实，落盘）。
+   * **每步已换过的按轮阈值序号**（原始事实，落盘）。
    *
-   * 值 = 最近一次**成功**替换时的 `floor(incomplete_counts[step] / N)`。同一阈值只换一次：
-   * 第 3 次自报未完成换过之后，第 4、5 次投递不再换；换失败不记（下一轮自然重试）。
+   * 值 = 最近一次**成功**替换时的 `floor(incomplete_counts[step] / N)`（N 默认 3）。同一阈值只换
+   * 一次：第 3 次自报未完成换过之后，第 4、5 次投递不再换；换失败不记（下一轮自然重试）。
+   * 静态门（`reset` / `auto_reset` / 调用点）或手动 / 回退替换成功时，若此时恰有一个按轮阈值
+   * 到期，也一并记在这里 —— 同一次投递最多替换一次，上下文已经干净，不该为同一个阈值再换。
    */
   reset_every_marks: Record<string, number>;
   /**
@@ -1266,17 +1348,9 @@ export function lintWorkflow(steps: StepDef[], manual: Set<string>, autoReset = 
   if (autoReset && steps.length > 0 && steps.every((s) => (s.on_fail ?? s.id) === s.id)) {
     warnings.push("`auto_reset: true` 且所有步骤的 `on_fail` 都指向自身（纯线性流）：每次失败重试也会重置上下文，token 成本较高。");
   }
-  // `reset_every` 被更高优先级覆盖 → 作者写了却不会生效。这必须说出来：优先级
-  // `reset` > `auto_reset` > `reset_every` 是刻意的（前两者 = 每次进入都换），
-  // 但「写了 reset_every 却一次都不会因此重置」若静默，作者会以为它在工作。
-  for (const s of steps) {
-    if (s.reset_every === undefined) continue;
-    if (s.reset === true) {
-      warnings.push(`步骤 \`${s.id}\` 同时写了 \`reset: true\` 与 \`reset_every: ${s.reset_every}\`：重置门优先级是 \`reset\` > \`auto_reset\` > \`reset_every\`，\`reset_every\` 不会生效（每次进入本步都已换上下文）。要让「按自报未完成次数换」生效，删掉 \`reset: true\`。`);
-    } else if (autoReset) {
-      warnings.push(`步骤 \`${s.id}\` 的 \`reset_every: ${s.reset_every}\` 被工作流级 \`auto_reset: true\` 覆盖，不会生效（优先级 \`reset\` > \`auto_reset\` > \`reset_every\`，而 auto_reset 已经是「每次进入都换」）。要按自报未完成次数换，请删掉顶层的 \`auto_reset\`。`);
-    }
-  }
+  // ⚠️ 刻意**不**告警「同一步既写 `reset: true` 又写 `reset_every`」：二者不是优先级关系、
+  // 互不遮蔽（静态门管「进入本步前换」，按轮门管「本步攒够自报未完成再换」）。同一步同时
+  // 拥有两种触发是正常配置（返工由静态门换、长循环由按轮门换），告警只会是噪音。
   return warnings;
 }
 
@@ -1894,17 +1968,18 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       if (s.reset !== undefined && s.reset !== null && typeof s.reset !== "boolean") {
         problems.push(`步骤 \`${s.id}\` 的 \`reset\` 必须是布尔值（当前是 ${describeValueKind(s.reset)}）：\`reset: true\` 表示进入本步前重置上下文。写成字符串（如 "true"）不会被当成真值，请改成布尔。`);
       }
-      // reset_every（按「模型自报未完成」计数重置）：给了就必须是**≥2 的整数**。
+      // reset_every（按「模型自报未完成」计数重置）：**默认就生效（每 3 次）**，写它是为了改频率
+      // 或关掉。给了就必须是 `0`（关闭该步的按轮重置）或 **≥2 的整数**（覆盖默认频率）。
       // 为什么 N=1 也拒：每次自报未完成都换一次上下文 = 模型每轮都被清空，工作永远做不完；
-      // 「每次进入本步都换」是 `reset: true` 的语义，不是这个字段。所以 1/0/负数/小数/字符串
-      // 一律**硬错误并指路 `reset: true`**，不做「悄悄当成 2」这类猜测。
+      // 「每次进入本步都换」是 `reset: true` 的语义，不是这个字段。负数 / 小数 / 字符串同样
+      // **硬错误并指路 `reset: true`**，不做「悄悄当成默认值」这类猜测。
       if (s.reset_every !== undefined && s.reset_every !== null) {
         const re = s.reset_every;
-        if (typeof re !== "number" || !Number.isInteger(re) || re < 2) {
+        if (typeof re !== "number" || !Number.isInteger(re) || (re !== 0 && re < 2)) {
           problems.push(
-            `步骤 \`${s.id}\` 的 \`reset_every\` 必须是 ≥2 的整数（当前是 ${describeValueKind(re)}）：`
-            + `\`reset_every: N\` 表示模型每自报未完成 N 次，就在下一轮投递前换一次干净上下文。`
-            + `写 1 / 0 / 负数 / 小数 / 字符串都不会被当成阈值；要让「每次进入本步都换」请改用 \`reset: true\`。`,
+            `步骤 \`${s.id}\` 的 \`reset_every\` 必须是 0（关闭该步的按轮重置）或 ≥2 的整数（当前是 ${describeValueKind(re)}）：`
+            + `不写默认每 ${DEFAULT_RESET_EVERY} 次自报未完成就在下一轮投递前换一次干净上下文，写 N 改频率、写 0 关闭。`
+            + `写 1 / 负数 / 小数 / 字符串不会被当成阈值；要让「每次进入本步都换」请改用 \`reset: true\`。`,
           );
         }
       }
@@ -1941,8 +2016,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           check_model: parseModelRef(checkModelRaw),
           // 重置门：只有布尔才带进定义（非布尔已在上面硬错误，走不到这里）
           reset: typeof s.reset === "boolean" ? s.reset : undefined,
-          // reset_every：只有通过上面「≥2 整数」校验的值才带进定义
-          reset_every: typeof s.reset_every === "number" && Number.isInteger(s.reset_every) && s.reset_every >= 2
+          // reset_every：只有通过上面「0 或 ≥2 整数」校验的值才带进定义（`0` = 显式关闭，
+          // `undefined` = 用引擎默认 3）。非法值已在上面硬错误，走不到这里。
+          reset_every: typeof s.reset_every === "number" && Number.isInteger(s.reset_every) && (s.reset_every === 0 || s.reset_every >= 2)
             ? s.reset_every : undefined,
           // 只有通过上面校验的投票步才会走到这里（有 problems 时整份定义已被拒收）；
           // 非法条目里的坏值不带进定义，避免运行期拿到半成品配置。
@@ -2256,15 +2332,16 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   }
 
   /**
-   * 本步的 `reset_every` 计数快照（给 {@link resetCauseOf} 用）；该步没写 `reset_every`
-   * 或值不合法（加载期已硬错误，这里只作防御）→ `undefined`（= 永不因计数触发）。
+   * 本步的按轮计数快照（给 {@link resetCauseOf} 用）。
+   *
+   * 阈值由 {@link resetEveryThresholdOf} 决定：**不写 `reset_every` 也有默认 3**；作者写
+   * `reset_every: 0` 关闭该步的按轮重置 → 这里返回 `undefined`（= 永不因计数触发）。
    */
   function resetEveryCounterOf(
     state: InstanceState,
     step: Pick<StepDef, "id" | "reset_every">,
   ): ResetEveryCounter | undefined {
-    const n = step.reset_every;
-    if (typeof n !== "number" || !Number.isInteger(n) || n < 2) return undefined;
+    if (resetEveryThresholdOf(step) === undefined) return undefined;
     return {
       count: incompleteCountOf(state, step.id),
       applied: state.reset_every_marks?.[step.id] ?? 0,
@@ -3179,13 +3256,18 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           : "子工作流调用点上标了 `reset: true`（进入子工作流 = 首个展开后子步骤的重置）";
       }
       // `reset_every` 的措辞必须说清「为什么是现在」：不是进入本步，而是模型自报未完成攒够了
-      // 一个 N 的整数倍。说成「本步标了 reset」会让作者以为这是每次进入都换。
+      // 一个阈值。说成「本步标了 reset」会让作者以为这是每次进入都换。
+      //
+      // 阈值默认就生效：**作者没写这个键时绝不能说「本步标了 `reset_every`」**（他没标）——
+      // 默认与显式覆盖分开表述。
       case "every": {
-        const n = step?.reset_every;
+        const n = resetEveryThresholdOf(step ?? {});
         const rounds = every?.count ?? 0;
-        return n
-          ? `本步标了 \`reset_every: ${n}\`：模型已自报未完成 ${rounds} 次，第 ${Math.max(1, Math.floor(rounds / n))} 个阈值到了（每 ${n} 次换一次干净上下文）`
-          : "本步标了 `reset_every`：模型自报未完成的次数攒够了一个阈值（每 N 次换一次干净上下文）";
+        if (n === undefined) return "本步的按轮重置门到期了（每 N 次自报未完成换一次干净上下文）";
+        const origin = step?.reset_every === n
+          ? `本步标了 \`reset_every: ${n}\``
+          : `本步按引擎默认（每 ${n} 次自报未完成换一次上下文）`;
+        return `${origin}：模型已自报未完成 ${rounds} 次，第 ${Math.max(1, Math.floor(rounds / n))} 个阈值到了`;
       }
       case "manual": return "用户执行了 `/ralphflow-reset`";
       // 回退是**用户手里的换方向入口**：它不只是换上下文，还会把状态机拨回更早的步骤
@@ -3200,7 +3282,12 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       case "step": return "标了 `reset: true`";
       case "auto": return "工作流级 `auto_reset: true`";
       case "call": return step?.reset_from_call ? `调用点 \`${step.reset_from_call}\` 标了 \`reset: true\`` : "调用点标了 `reset: true`";
-      case "every": return step?.reset_every ? `标了 \`reset_every: ${step.reset_every}\` 且自报未完成已攒够阈值` : "自报未完成已攒够阈值";
+      case "every": {
+        const n = resetEveryThresholdOf(step ?? {});
+        return step?.reset_every === n && n !== undefined
+          ? `标了 \`reset_every: ${n}\` 且自报未完成已攒够阈值`
+          : `自报未完成已攒够 ${n ?? "N"} 次（默认按轮重置）`;
+      }
       case "manual": return "用户执行了 `/ralphflow-reset`";
       case "rewind": return "用户执行了 `/ralphflow-rewind`";
     }
@@ -3335,10 +3422,11 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           }
           : trigger === "every"
             ? {
-              summary: `♻️ 步骤 ${step.id} 按 reset_every 重置上下文（模型已自报未完成 ${every?.count ?? 0} 次）`,
+              summary: `♻️ 步骤 ${step.id} 按轮重置上下文（模型已自报未完成 ${every?.count ?? 0} 次）`,
               // 这条告知必须说清「为什么是现在」：不是进入本步，而是同一轮循环里模型自报
-              // 未完成攒够了 N 次。也绝不能写成「本步标了 reset: true」（作者没标）。
-              text: `[ralphflow] 模型已在本步（\`${step.id}\`）自报未完成 ${every?.count ?? 0} 次（来源：${resetSourceText(trigger, step, every)}）：按 \`reset_every: ${step.reset_every ?? "N"}\` 在下一轮任务书投递前换了一次干净上下文，整段替换为一条交接稿（工作流 / 步骤 / 产出目录 / 交互契约，以及最近 3 轮未完成的原因）。**返工计数与失败预算原样保留**（重置只换干净上下文，不赦免失败）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。`,
+              // 未完成攒够了阈值。也绝不能写成「本步标了 reset: true」（作者没标）。
+              // 「阈值是默认 3 还是作者写的 N」由 resetSourceText 分述 —— 不替作者认领他没写的键。
+              text: `[ralphflow] 模型已在本步（\`${step.id}\`）自报未完成 ${every?.count ?? 0} 次（来源：${resetSourceText(trigger, step, every)}）：在下一轮任务书投递前换了一次干净上下文，整段替换为一条交接稿（工作流 / 步骤 / 产出目录 / 交互契约，以及最近 3 轮未完成的原因）。**返工计数与失败预算原样保留**（重置只换干净上下文，不赦免失败）。本行是给用户看的可见告知——替换节点在 Chat 里不显示，模型上下文里也没有这条告知。`,
             }
             : {
               summary: `♻️ 步骤 ${step.id} 开始前已重置上下文（${resetSourceShort(trigger, step)}）`,
@@ -3421,18 +3509,21 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     const baseDo = doPrompt(instId, wf, state, step, rework, opts?.rewind ?? opts?.rewindNote, lastCheckpointOf(state, step.id) ?? undefined);
     const text = opts?.composeDo ? opts.composeDo(baseDo) : baseDo;
     const sid = state.owner_session;
-    // `reset_every` 的计数快照：只有写了 `reset_every` 的步骤才有（其余步骤 undefined）。
+    // 按轮门的计数快照（默认每 3 次自报未完成换一次；`reset_every: 0` 的步骤为 undefined）。
     const every = resetEveryCounterOf(state, step);
-    const staticCause: ResetTrigger | undefined = opts?.rewind
+    // **唯一判据点**：静态门 + 按轮门一起算。`sameVisit` 说明这次不是「进入本步」（回合收尾
+    // 提醒 / 解除暂停后继续）→ 静态门不重复触发，但按轮门照常生效。手动 / 回退是强制替换，
+    // 来源由命令决定，覆盖判定的 trigger；它们同样会把本次到期的按轮阈值记为已用。
+    const decision = resetCauseOf(wf, step, every, { skipStatic: opts?.sameVisit === true });
+    const trigger: ResetTrigger | undefined = opts?.rewind
       ? "rewind"
       : opts?.manual
         ? "manual"
-        : resetCauseOf(wf, step, every);
-    // **同一轮的再投递**（回合收尾的提醒 / 解除暂停后继续）不是「进入本步」：静态重置门
-    // （`reset` / `auto_reset` / 调用点）在进入本步时已经执行过一次，不能按每次提醒重来 ——
-    // 单步循环（内置 `loop` 就是）配 `reset: true` 会被每次提醒清空上下文，那不是作者要的
-    // 「开始前切一刀」。只有按**轮数**计数的 `reset_every` 属于「轮」的语义，在这里照常生效。
-    const trigger: ResetTrigger | undefined = opts?.sameVisit && staticCause !== "every" ? undefined : staticCause;
+        : decision.trigger;
+    // 本次到期的按轮阈值序号：**只有真要替换时**才记账（不替换就绝不能消耗阈值）。
+    // 静态门 / 手动 / 回退赢的时候它也 > 0 —— 同一次投递最多替换一次，上下文已经干净，
+    // 下一轮不该为同一个阈值再换一次。
+    const everySeq = trigger === undefined ? 0 : decision.everySeq;
     // 载体：本轮提醒走 followup（新回合），其余照旧走 steer（回合内唤醒）。
     // 两条都传 `dedupe:false`（引擎自驱的投递不去重：去重会吞掉真实迁移，见 deliverDirective 端口注释）。
     const send = (s: string, sm: string): void => {
@@ -3453,8 +3544,6 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       return text;
     }
     const req = resetRequestFor(state, instId, wf, step, trigger, opts?.rewind, every);
-    // 本次要记的阈值序号（只有 `every` 用得上）：floor(自报未完成次数 / N)
-    const everySeq = trigger === "every" && every && step.reset_every ? Math.floor(every.count / step.reset_every) : 0;
     // 替换之前先把**挂起的播报**补齐：它们因工具调用在飞而没能立刻 append，若拖到替换之后
     // 才落，就会站在交接稿后面，破坏「替换后表面 = 系统提示 + 交接稿 + DO」（判据 5）。
     // 此刻可见面必须配平（否则替换本身也会被判 unbalanced 放弃），所以这一步几乎总能落成。
@@ -3500,20 +3589,22 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           return;
         }
         if (outcome.ok) {
-          log("info", "reset_surface_applied", { instId, step: step.id, trigger, shadowed: outcome.shadowed, rounds: every?.count });
+          log("info", "reset_surface_applied", { instId, step: step.id, trigger, shadowed: outcome.shadowed, rounds: every?.count, threshold: everySeq });
           logEvent(instId, "info", "reset_surface", {
             step: step.id, trigger, shadowed: outcome.shadowed, handoffSeq: outcome.handoffSeq, noticeSeq: outcome.noticeSeq,
-            // `rounds` 只在 `every` 上有意义（第几次自报未完成触发的）；它让 execution.log 能直接
-            // 复盘「第 3、6 轮各换了一次」，不必再从别的事件反推。
-            ...(trigger === "every" ? { rounds: every?.count, threshold: everySeq } : {}),
+            // `rounds` / `threshold` 只在本次确实消耗了一个按轮阈值时才有意义 —— 包括
+            // **静态门先赢、顺手把到期阈值记为已用**的情况（否则事后看日志会以为下一轮漏换）。
+            // 它让 execution.log 能直接复盘「第 3、6 轮各换了一次」，不必再从别的事件反推。
+            ...(everySeq > 0 ? { rounds: every?.count, threshold: everySeq } : {}),
           });
           // 阈值**换成了**才记账（同一阈值只换一次）；换失败不记 → 下一轮自然重试。
-          if (trigger === "every" && everySeq > 0) markResetEveryApplied(instId, step.id, everySeq);
+          // 任何来源的替换都记：同一次投递最多换一次，上下文已经干净，按轮门不该再为它换一次。
+          if (everySeq > 0) markResetEveryApplied(instId, step.id, everySeq);
           send(text, summary);
           return;
         }
         log("warn", "reset_surface_skipped", { instId, step: step.id, trigger, reason: outcome.reason, detail: outcome.detail, rounds: every?.count });
-        logEvent(instId, "warn", "reset_surface_skipped", { step: step.id, trigger, reason: outcome.reason ?? "unknown", detail: outcome.detail, ...(trigger === "every" ? { rounds: every?.count } : {}) });
+        logEvent(instId, "warn", "reset_surface_skipped", { step: step.id, trigger, reason: outcome.reason ?? "unknown", detail: outcome.detail, ...(everySeq > 0 ? { rounds: every?.count, threshold: everySeq } : {}) });
         send(text, `${summary}（⚠️ ${resetSourceText(trigger, step, every)}，但本次上下文重置未生效：${resetFailureText(outcome)}）`);
       })
       .catch((e) => {
@@ -3716,7 +3807,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     // 措辞按**来源**分述（任务书硬要求）：`auto_reset: true` / 调用点 `reset: true` 时作者
     // **没有**在这一步上标 `reset: true`，说「本步标了 `reset: true`」就是说错话。三支共用
     // 同一段结构性解释。
-    const firstResetCause = resetCauseOf(wf, first);
+    const firstResetCause = resetCauseOf(wf, first).trigger;
     const firstResetStructure = "**工作流首步的初次进入无法做上下文重置**：首步的 DO 是启动工具的返回值，在工具调用内部替换会留下孤儿 tool/result（静默损坏会话）。**重试时会正常重置**（返工走空闲窗口）。";
     const firstStepResetNote = firstResetCause === "step"
       ? `⚠️ 本步标了 \`reset: true\`，但${firstResetStructure}`
@@ -3833,13 +3924,18 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       try { ports.noteAction?.(sessionId, Date.now()); } catch {}
       // 攒够阈值时**只说事实**：真正换上下文发生在下一次 DO 投递（deliverStepDo），这里不投递、
       // 不重置（结构机制只有一处）。说出来的目的是让模型理解下一轮为什么拿到的是交接稿。
-      const every = step.reset_every;
-      const atThreshold = typeof every === "number" && every >= 2 && rounds % every === 0;
+      // 阈值默认就生效：作者没写 `reset_every` 时不能说成「标了 reset_every: N」，
+      // `reset_every: 0`（关闭）时这里什么都不说。
+      const everyN = resetEveryThresholdOf(step);
+      const atThreshold = everyN !== undefined && rounds % everyN === 0;
+      const everyOrigin = everyN === undefined
+        ? ""
+        : (step.reset_every === everyN ? `\`reset_every: ${everyN}\`` : `引擎默认每 ${everyN} 次`);
       return {
         ok: true,
         text: `已记下这轮进度：本步还有 ${remaining.length} 项没完成。\n\n${remaining.map((item) => `- ${item}`).join("\n")}\n\n继续做这些；做完后再交卷。\n需要我决定的事：调用 \`ask_user_question\`。`
           + (atThreshold
-            ? `\n\n本步已第 ${rounds} 次报「没做完」（\`reset_every: ${every}\`）：下一次投递本步任务书前会先换一次干净上下文，未完成清单会随任务书一起交回给你。`
+            ? `\n\n本步已第 ${rounds} 次报「没做完」（${everyOrigin}）：下一次投递本步任务书前会先换一次干净上下文，未完成清单会随任务书一起交回给你。`
             : ""),
       };
     }
@@ -4253,7 +4349,7 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       // 以为「已推进 = 现在开始干下一步」而在没有 DO 的情况下盲干（那部分工作也会被随后的重置遮蔽）。
       const afterGate = nextStepId(wf, step);
       const afterStep = afterGate === "done" ? undefined : stepOf(wf, afterGate);
-      const afterCause = afterStep ? resetCauseOf(wf, afterStep) : undefined;
+      const afterCause = afterStep ? resetCauseOf(wf, afterStep).trigger : undefined;
       const deferredNote = afterCause && afterStep
         ? `\n\n⚠️ 下一步 \`${afterStep.id}\` 会触发上下文重置（${resetSourceShort(afterCause, afterStep)}，重置门）：它的 DO 提示会在**本回合结束后**送达（上下文重置只能在步骤边界的空闲窗口里做）。**本回合请勿开始该步的工作**，简短确认即可。`
         : "";
