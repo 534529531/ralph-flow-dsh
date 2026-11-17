@@ -344,6 +344,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     // 每个调用点都必须显式选一个 —— 端口名就是分类，代码里一眼看得出（见 docs/v2/delivery-classification.md
     // 与 scripts/delivery-classification-test.mjs 的静态审计）。
     deliverDirective,
+    // 新一轮（round）载体：引擎自驱的「下一轮 DO」（回合收尾的提醒）走 followup —— 本回合正常
+    // 收尾，提醒成为下一回合的第一条。与 steer 的差别见 deliverRound 的注释。
+    deliverRound,
     deliverNotice,
     statusChanged,
     /** 把挂起的播报在**安全边界**补齐（reset 门在整段替换前先调一次：让替换把它们一并遮蔽） */
@@ -540,11 +543,14 @@ export function apply(ctx: Context, config: Config = {}): void {
         if (p?.signal?.aborted) return;
         const eng = existingEngineFor(sid);
         if (!eng) return;
-        let verdict: { remind: boolean; message?: string; summary?: string };
+        let verdict: { remind: boolean; message?: string; summary?: string; delivered?: boolean };
         try { verdict = eng.remindToSubmit(sid); } catch (e) {
           log("warn", "turn_stopping_failed", { sessionId: sid, error: e instanceof Error ? e.message : String(e) });
           return;
         }
+        // 引擎已自行投递（`reset_every` / `reset: true` 的步骤必须先换上下文再投任务书 —— 顺序
+        // 只能由引擎在替换完成后掌握）：这里**绝不能再投一次**，否则模型会收到两份任务书。
+        if (verdict.delivered) return;
         // 本包客户端以 notice + summary 匹配播报，再由私有节点绕过普通 context 的过滤
         if (!verdict.message) return;
         if (!verdict.remind) {

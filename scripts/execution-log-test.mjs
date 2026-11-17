@@ -516,11 +516,13 @@ steps:
   const stPath = path.join(ws, RF, "instances", id, "state.json");
   const persisted = JSON.parse(fs.readFileSync(stPath, "utf-8"));
   const keys = Object.keys(persisted).sort();
-  // 039f2f6 基线的 InstanceState 落盘键全集（新增任何键都会在这里报出来）
+  // 039f2f6 基线的 InstanceState 落盘键全集 + `reset_every` 的两个计数器（新增任何键都会在这里报出来）
   const BASELINE_KEYS = ["active", "artifacts_dir_name", "current_step", "delegations", "do_submitted", "fail_counts",
     "history", "last_submit_summary", "owner_session", "pause_reason", "paused", "started_at", "updated_at",
     // 属主租约是原始事实（谁在驱动 + 最后心跳），不是派生相位；没有它就无法跨进程判活。
     "owner_runtime", "owner_heartbeat_at",
+    // `reset_every` 的计数器（原始事实：模型自报未完成次数 / 已换过的阈值序号；跨 pause/resume 存活）。
+    "incomplete_counts", "reset_every_marks",
     "user_task", "verdicts", "workflow_name"].sort();
   const extra = keys.filter((k) => !BASELINE_KEYS.includes(k));
   check("验收6：state.json 没有任何基线之外的键", extra.length === 0, `extra=${JSON.stringify(extra)}`);

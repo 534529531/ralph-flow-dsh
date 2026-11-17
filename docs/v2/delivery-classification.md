@@ -48,19 +48,18 @@ next-step 消息，正在收尾的回合就会被续上；而且收件箱里的�
 `createUserMessage(` 只在 `src/index.ts` 出现（S1d）：Graph 节点消息是直接构造的
 `user` 消息（同一形状），不允许「在别处造消息、再想办法塞进会话」。
 
-## 运行期投递调用点（53 处）
+## 运行期投递调用点（48 处）
 
-端口是 `EnginePorts.deliverDirective` / `EnginePorts.deliverNotice`（[`src/engine.ts`](../../src/engine.ts)），
+端口是 `EnginePorts.deliverDirective` / `EnginePorts.deliverNotice` / `EnginePorts.deliverRound`（[`src/engine.ts`](../../src/engine.ts)），
 `ToolContext.deliverDirective`（[`src/tools.ts`](../../src/tools.ts)），
 `SkillContext.deliverNotice`（[`src/skills.ts`](../../src/skills.ts)）。调用点计数由 S3 钉住。
 
-### 指令（15 处：要模型干活 —— 14 处 `steer` + 1 处 `followup`）
+### 指令（10 处：要模型干活 —— 9 处 `steer` + 1 处 `followup`）
 
 | 文件 | 调用点 | 为什么是指令 |
 |---|---|---|
 | `src/index.ts` | turn-stopping「你还没交卷」提醒 `deliverRound`（`followup`） | 提醒必须**开下一轮**：用 `steer` 会把正在收尾的回合续上，一轮就不再是一个回合（见上文与 `round-turn-test`） |
-| `src/engine.ts` | `deliverStepDo`：下一步 DO / 返工 DO / 重置后 DO（`deliverDirective` ×5：无 reset、无 reset 端口、替换成功、替换失败、宿主异常） | DO 就是「要模型干活」本身；替换失败也绝不吞掉 DO |
-| `src/engine.ts` | `continueInstance` 解除暂停后重投当前步 DO | 让模型继续做这一步 |
+| `src/engine.ts` | `deliverStepDo`：**引擎唯一的 DO 投递漏斗** —— 下一步 DO / 返工 DO / 提醒的下一轮任务书 / 解除暂停后重投 / 重置后 DO（`deliverDirective` ×1；`opts.round` 时改走 `EnginePorts.deliverRound`） | DO 就是「要模型干活」本身；替换失败也绝不吞掉 DO。漏斗同时是**重置判定的唯一落点**（`resetCauseOf` + 计数快照） |
 | `src/tools.ts` | `/ralphflow-reset` 被拒绝 → 让模型转达 | 命令语义 = 触发词，交回模型自然语言回复 |
 | `src/tools.ts` | `/ralphflow-rewind` 参数不完整 → 让模型追问 | 同上 |
 | `src/tools.ts` | `/ralphflow-rewind` 被拒绝 → 让模型转达 | 同上 |

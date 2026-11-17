@@ -220,7 +220,10 @@ console.log("\nS3 运行期投递调用点清单（改了清单就必须来改�
     "src/client/status-source.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
     "src/client/status.tsx": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
     "src/client/viewer.tsx": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
-    "src/engine.ts": { deliverDirective: 6, deliverNotice: 2, deliverRound: 0, notify: 19 },
+    // `deliverStepDo` 是引擎**唯一**的 DO 投递漏斗：内部按 `opts.round` 选载体
+    // （`deliverRound` 端口）或走 `deliverDirective` —— 所以这里只剩 1 处 `deliverDirective`
+    // 调用点（round 走端口名，不计入本清单，载体在 `src/index.ts` 一行）。
+    "src/engine.ts": { deliverDirective: 1, deliverNotice: 2, deliverRound: 0, notify: 19 },
     "src/facade.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
     "src/graph/agent-registry.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },
     "src/graph/asset.ts": { deliverDirective: 0, deliverNotice: 0, deliverRound: 0, notify: 0 },

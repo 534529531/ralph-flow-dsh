@@ -941,18 +941,22 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
       verifyCalls === callsBeforeIdentical && engine.readState(id).current_step === "g" && engine.readState(id).verdicts.length === 0,
       JSON.stringify({ calls: verifyCalls - callsBeforeIdentical }));
 
-    // 零新状态字段：InstanceState 的落盘字段集合与改造前完全相同（宪法 §10.4）
+    // 状态字段清单：InstanceState 的落盘字段集合（宪法 §10.4：只存**原始事实**）
     const PRE_CHANGE_PERSISTED_FIELDS = [
       "active", "artifacts_dir_name", "current_step", "delegations", "do_submitted", "fail_counts", "history",
       "last_submit_summary", "owner_session", "paused", "pause_reason", "started_at", "updated_at", "user_task",
       "verdicts", "workflow_name",
       // 属主租约是**原始事实**（谁在驱动、最后一次心跳），不是派生相位；不存就无法跨进程判活。
       "owner_runtime", "owner_heartbeat_at",
+      // `reset_every` 的两个计数器同样是**原始事实**：模型自报未完成的次数、已换过的阈值序号。
+      // 它们无法从别的字段现算（history 只留 200 条、reset_surface 事件不进 history），
+      // 且必须跨 pause/resume 存活 —— 不落盘就等于「暂停一次计数归零」。
+      "incomplete_counts", "reset_every_marks",
     ];
     const rawKeys = Object.keys(JSON.parse(fs.readFileSync(path.join(engine.instanceDir(id), "state.json"), "utf-8")));
-    check("17b 零新状态字段：落盘键全属改造前集合", rawKeys.every((k) => PRE_CHANGE_PERSISTED_FIELDS.includes(k)), rawKeys.join(","));
-    check("17b 零新状态字段：没有 skipped_steps / 任何 skip 派生字段", !rawKeys.some((k) => /skip/i.test(k)), rawKeys.join(","));
-    check("17b 零新状态字段：改造前的字段一个不少（除未触发的可选 pause_reason）",
+    check("17b 落盘键全属已知集合（原始事实；不含任何派生量）", rawKeys.every((k) => PRE_CHANGE_PERSISTED_FIELDS.includes(k)), rawKeys.join(","));
+    check("17b 没有 skipped_steps / 任何 skip 派生字段", !rawKeys.some((k) => /skip/i.test(k)), rawKeys.join(","));
+    check("17b 已知字段一个不少（除未触发的可选 pause_reason）",
       PRE_CHANGE_PERSISTED_FIELDS.filter((k) => k !== "pause_reason").every((k) => rawKeys.includes(k)), rawKeys.join(","));
 
     // 用户可见的状态提示也必须诚实（不得宣称「会再次验证」）

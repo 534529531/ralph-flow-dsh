@@ -382,7 +382,7 @@ export function createFacade(workspace: string, options: FacadeOptions) {
     graph.restore();
   }
 
-  function remindToSubmit(sessionId: string): { remind: boolean; message?: string; summary?: string } {
+  function remindToSubmit(sessionId: string): { remind: boolean; message?: string; summary?: string; delivered?: boolean } {
     const flowVerdict = flow.remindToSubmit(sessionId);
     if (flowVerdict.remind || flowVerdict.message) return flowVerdict;
     return graph.remindToSubmit(sessionId);

@@ -240,6 +240,7 @@ check_voting 条目 model  >  步骤 check_model  >  全局 adversarial_check.mo
 | 当前步上下文脏了想原地重来 | `/ralphflow-reset` | 不动（停当前步） | **保留**——不赦免，自动刹车仍然真 | 是 | — |
 | 后期发现前面某步方向错了，要回去重做 | `/ralphflow-rewind <步骤> <原因>` | 倒退到当前步之前的步骤 | 清空 + 清暂停 | 是 | **必填**，写进目标步 DO |
 | 进入重步骤前自动切一刀 | 步骤 `reset: true` / 工作流 `auto_reset: true` | 不动 | 保留 | 是 | — |
+| 同一轮里反复报「没做完」 | 步骤 `reset_every: N`（模型每自报未完成 N 次） | 不动 | 保留 | 是（第 N、2N、3N… 轮） | — |
 | 整个推倒重来 | `/ralphflow-cancel` + `/ralphflow-start` | 销毁实例 | — | — | — |
 
 **换上下文的机制**：在步骤边界的空闲窗口（`agent.runMaintenance`，phase ≠ idle 即放弃），把属主会话可见面的 `nodes[1]` 到末尾**整段替换**成一条插件写的「交接稿」，使模型收到的 messages = **系统提示 + 交接稿 + 本步 DO**。节点 0（系统提示）**永不覆盖**；替换前做 `toolPairingBalancedAfter` 自检，面不平衡就放弃本次替换（DO 照常投递并说明原因）。用的是插件自有的消息来源标记，**不冒用压缩检查点、不发任何 `compaction/*` 事件**。

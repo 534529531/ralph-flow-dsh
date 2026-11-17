@@ -527,12 +527,20 @@ console.log("\n1) 真实跑一次（reset: true 的第二步）");
     && noticeEvent.data.source.summary.includes("重置上下文"),
     JSON.stringify(noticeEvent?.data?.source));
 
-  // ── 零新增状态字段 ──
+  // ── 状态字段只有原始事实（`reset_every` 的两个计数器是原始事实，不是「重置过没有」的派生标记）──
   const instDir = path.join(H.ws, ".dsh", "ralph-flow", "instances");
   const instId = fs.readdirSync(instDir)[0];
   const st = JSON.parse(fs.readFileSync(path.join(instDir, instId, "state.json"), "utf-8"));
-  check("实例状态零新增字段（state.json 里没有 reset / handoff 之类的键）",
-    !Object.keys(st).some((k) => /reset|handoff|交接/i.test(k)), Object.keys(st).join(","));
+  const KNOWN_STATE_KEYS = [
+    "active", "artifacts_dir_name", "current_step", "delegations", "do_submitted", "fail_counts",
+    // `reset_every` 的计数器：模型自报未完成次数 / 已换过的阈值序号（原始事实，落盘以跨 pause/resume 存活）
+    "incomplete_counts", "reset_every_marks",
+    "history", "last_submit_summary", "owner_session", "owner_runtime", "owner_heartbeat_at",
+    "pause_reason", "paused", "started_at", "updated_at", "user_task", "verdicts", "workflow_name",
+  ];
+  check("实例状态只有已知原始事实键（没有 handoff / 交接 / 派生标记）",
+    !Object.keys(st).some((k) => /handoff|交接/i.test(k)) && Object.keys(st).every((k) => KNOWN_STATE_KEYS.includes(k)),
+    Object.keys(st).join(","));
   check("推进后 current_step = second（工作流真的走到了带 reset 的那一步）", st.current_step === "second", st.current_step);
 
   cleanupTmp(H.ws);
@@ -1345,6 +1353,308 @@ steps:
   check("执行日志的 reset_surface 事件 trigger = call（可事后复盘来源）",
     /"event":"reset_surface"[^\n]*"trigger":"call"/.test(execLogTextOf(H.ws)), execLogTextOf(H.ws).slice(-400));
   cleanupTmp(H.ws);
+}
+
+// ═══ 19) reset_every：模型自报未完成每 N 轮换一次上下文 ════════════════════════════
+console.log("\n19) reset_every：自报未完成每 N 轮换一次（计数唯一来源 = submit_incomplete）");
+{
+  const WF_EVERY = `description: reset_every 验收
+steps:
+  - id: loop
+    input: 上游产出
+    output: 本步产出
+    desc: 循环步
+    reset_every: 3
+    do: 做循环步的工作
+    check: 循环步是否真的完成
+    on_pass: done
+    on_fail: loop
+    max_fail_count: 8
+`;
+  const H = setup({ rfevery: WF_EVERY }, "rfevery");
+  seedPrior(H.session);
+  await H.turn(async () => {
+    const out = await H.call("ralphflow_start", { workflow: "rfevery", task: "任务书 E" });
+    H.appendToolExchange("call-every-start", "ralphflow_start", out);
+    return out;
+  });
+  const reps = () => replacementEventsOf(H.session).length;
+  const counts = [];
+  const deliveredTexts = [];
+  const handoffText = () => (H.session.deriveMessages().map((m) => textOf(m)).find((t) => t.includes("[ralphflow 交接稿]")) ?? "");
+  let handoffAt3 = "";
+  for (let i = 1; i <= 6; i++) {
+    await H.turn(async () => {
+      const out = await H.call("ralphflow_submit", { summary: `第 ${i} 轮`, unfinished: [`未完成项 ${i}`] });
+      H.appendToolExchange(`call-every-sub-${i}`, "ralphflow_submit", out);
+      return out;
+    });
+    // 回合收尾 = 宿主派发 turn-stopping：引擎在这里投递**下一轮**任务书
+    // （`reset_every` 攒够阈值时先整段替换上下文，再投）。
+    await H.turnStopping();
+    await sleep(30);
+    const got = H.drainInbox();
+    deliveredTexts.push(got.map((m) => textOf(m)).join("\n"));
+    counts.push(reps());
+    if (i === 3) handoffAt3 = handoffText();
+  }
+  check("每轮都投递了本步任务书（提醒 = 下一轮 DO，不是停在那里）",
+    deliveredTexts.every((t, i) => t.includes("## 本步要做什么") && t.includes("做循环步的工作")),
+    JSON.stringify(deliveredTexts.map((t) => t.slice(0, 60))));
+  check("reset_every: 3 —— 第 1、2 次自报未完成之后的投递**不替换**上下文",
+    counts[0] === 0 && counts[1] === 0, JSON.stringify(counts));
+  check("reset_every: 3 —— 第 3 次之后**恰替换一次**", counts[2] === 1, JSON.stringify(counts));
+  check("reset_every: 3 —— 第 4、5 次不再替换（同一阈值只换一次）",
+    counts[3] === 1 && counts[4] === 1, JSON.stringify(counts));
+  check("reset_every: 3 —— 第 6 次之后再替换一次（共 2 次）", counts[5] === 2, JSON.stringify(counts));
+  check("六轮合计替换次数 = 2（精确值，不是「至少」）", reps() === 2, `count=${reps()}`);
+  check("执行日志：两条 reset_surface 的 trigger 都是 every，且记着 rounds=3 / 6",
+    (() => {
+      const lines = execLogTextOf(H.ws).split("\n").filter((l) => l.includes("\"reset_surface\""));
+      const every = lines.map((l) => JSON.parse(l)).filter((e) => e.event === "reset_surface" && e.trigger === "every");
+      return every.length === 2 && every.map((e) => e.rounds).sort((a, b) => a - b).join(",") === "3,6";
+    })(), execLogTextOf(H.ws).slice(-600));
+  // 交接稿必须带上「最近 3 轮未完成的原因」——换干净上下文后不重复试已排除的路
+  {
+    const msgs = H.session.deriveMessages();
+    const texts = msgs.map((m) => textOf(m));
+    const handoff = texts.find((t) => t.includes("[ralphflow 交接稿]")) ?? "";
+    check("替换后 messages = 系统提示 + 交接稿 + DO（3 条）",
+      msgs.length === 3, JSON.stringify(texts.map((t) => t.slice(0, 40))));
+    check("交接稿含「## 本步骤最近 3 轮未完成的原因」段",
+      handoff.includes("## 本步骤最近 3 轮未完成的原因"), handoff.slice(-600));
+    check("第 3 次换上下文时的交接稿列出第 1/2/3 轮的未完成清单（含上一轮）",
+      handoffAt3.includes("未完成 1 项：未完成项 1") && handoffAt3.includes("未完成 1 项：未完成项 2")
+      && handoffAt3.includes("未完成 1 项：未完成项 3"), handoffAt3.slice(-600));
+    check("第 6 次换上下文时只列最近 3 条（4/5/6，第 3 条被挤出）",
+      handoff.includes("未完成项 4") && handoff.includes("未完成项 5") && handoff.includes("未完成项 6")
+      && !handoff.includes("未完成项 3"), handoff.slice(-600));
+    check("交接稿的可见告知按来源分述（点明 reset_every，不说成本步标了 reset: true）",
+      (() => {
+        const last = replacementEventsOf(H.session).at(-1);
+        const notice = allEvents(H.session).find((e) => e.seq === last?.surfaceOp?.endSeq);
+        const text = textOf(notice?.data);
+        return text.includes("reset_every") && text.includes("自报未完成") && !text.includes("本步标了 `reset: true`");
+      })(), textOf(allEvents(H.session).find((e) => e.seq === replacementEventsOf(H.session).at(-1)?.surfaceOp?.endSeq)?.data).slice(0, 300));
+    check("state.json：计数与已换阈值落盘（incomplete_counts.loop = 6, reset_every_marks.loop = 2）",
+      H.instanceState()?.incomplete_counts?.loop === 6 && H.instanceState()?.reset_every_marks?.loop === 2,
+      JSON.stringify({ c: H.instanceState()?.incomplete_counts, m: H.instanceState()?.reset_every_marks }));
+    check("DO 里仍带着本轮清单（换上下文后接着做同一份清单）",
+      texts.at(-1)?.includes("## 本轮清单") && texts.at(-1)?.includes("未完成项 6"),
+      texts.at(-1)?.slice(-300));
+  }
+  cleanupTmp(H.ws);
+}
+
+// ═══ 19b) CHECK 失败不推动 reset_every 计数器（与 fail_counts 两条线互不干扰）══════
+console.log("\n19b) CHECK 失败不计入 reset_every（走 fail_counts，两条线分开）");
+{
+  const WF_EVERY_CHECK = `description: reset_every 与 fail_counts 分开验收
+steps:
+  - id: loop
+    input: 上游产出
+    output: 本步产出
+    desc: 循环步
+    reset_every: 2
+    do: 做循环步的工作
+    check: 循环步是否真的完成
+    on_pass: done
+    on_fail: loop
+    max_fail_count: 8
+`;
+  const H = setup({ rfeverycheck: WF_EVERY_CHECK }, "rfeverycheck");
+  seedPrior(H.session);
+  await H.turn(async () => {
+    const out = await H.call("ralphflow_start", { workflow: "rfeverycheck", task: "任务书 F" });
+    H.appendToolExchange("call-check-start", "ralphflow_start", out);
+    return out;
+  });
+  for (let i = 1; i <= 4; i++) {
+    await H.turn(async () => {
+      const out = await H.call("ralphflow_submit", { summary: `第 ${i} 次交卷`, unfinished: [] });
+      H.appendToolExchange(`call-check-sub-${i}`, "ralphflow_submit", out);
+      return out;
+    });
+    await H.waitVerifier();
+    await H.turn(async () => {
+      H.releaseVerifier(false, `第 ${i} 次 CHECK 未通过`);
+      await sleep(20);
+    });
+    await sleep(20);
+    H.drainInbox();
+  }
+  const st = H.instanceState();
+  check("4 次 CHECK 失败全部记进 fail_counts（原有语义一个字节没动）", st?.fail_counts?.loop === 4,
+    JSON.stringify(st?.fail_counts));
+  check("4 次 CHECK 失败**没有**推动 reset_every 计数（incomplete_counts 保持 0）",
+    (st?.incomplete_counts?.loop ?? 0) === 0, JSON.stringify(st?.incomplete_counts));
+  check("4 次 CHECK 失败**没有**换过一次上下文（阈值 2 未被判定失败触发）",
+    replacementEventsOf(H.session).length === 0, `count=${replacementEventsOf(H.session).length}`);
+  check("同步骤返工也写一条 history（rework），交接稿才有「为什么没过」可写",
+    (st?.history ?? []).filter((h) => h.event === "rework").length === 4,
+    JSON.stringify((st?.history ?? []).map((h) => h.event)));
+  check("实例仍在 DO 阶段、未暂停（4 < max_fail_count: 8）", st?.paused === false && st?.current_step === "loop",
+    JSON.stringify({ paused: st?.paused, step: st?.current_step }));
+  // 自报未完成这时才开始计数：第 1 次不换，第 2 次换一次 —— 与上面的 4 次判定失败互不影响
+  for (let i = 1; i <= 2; i++) {
+    await H.turn(async () => {
+      const out = await H.call("ralphflow_submit", { summary: `进度 ${i}`, unfinished: [`还差 ${i}`] });
+      H.appendToolExchange(`call-check-inc-${i}`, "ralphflow_submit", out);
+      return out;
+    });
+    await H.turnStopping();
+    await sleep(30);
+    H.drainInbox();
+  }
+  check("自报未完成满 2 次才换（恰好 1 次替换）且计数 = 2",
+    replacementEventsOf(H.session).length === 1 && H.instanceState()?.incomplete_counts?.loop === 2,
+    JSON.stringify({ reps: replacementEventsOf(H.session).length, c: H.instanceState()?.incomplete_counts }));
+  check("换过上下文之后 fail_counts 原样保留（重置不赦免失败）",
+    H.instanceState()?.fail_counts?.loop === 4, JSON.stringify(H.instanceState()?.fail_counts));
+  cleanupTmp(H.ws);
+}
+
+// ═══ 19c) 步骤 PASS → 计数清零；再进入从 0 起算 ═══════════════════════════════════
+console.log("\n19c) 步骤 PASS 后计数清零，再进入从 0 起算");
+{
+  const WF_EVERY_PASS = `description: reset_every 通过后清零
+steps:
+  - id: a
+    input: 上游产出
+    output: 本步产出
+    desc: 第一步
+    reset_every: 2
+    do: 做 A 的工作
+    check: A 是否真的完成
+    on_pass: b
+    on_fail: a
+    max_fail_count: 6
+  - id: b
+    input: 上游产出
+    output: 本步产出
+    desc: 第二步
+    do: 做 B 的工作
+    check: B 是否真的完成
+    on_pass: done
+    on_fail: a
+    max_fail_count: 6
+`;
+  const H = setup({ rfeverypass: WF_EVERY_PASS }, "rfeverypass");
+  seedPrior(H.session);
+  await H.turn(async () => {
+    const out = await H.call("ralphflow_start", { workflow: "rfeverypass", task: "任务书 G" });
+    H.appendToolExchange("call-pass-start", "ralphflow_start", out);
+    return out;
+  });
+  // A：两次自报未完成 → 第 2 次触发一次替换
+  for (let i = 1; i <= 2; i++) {
+    await H.turn(async () => {
+      await H.call("ralphflow_submit", { summary: `A 进度 ${i}`, unfinished: [`A 还差 ${i}`] });
+      H.appendToolExchange(`call-pass-inc-${i}`, "ralphflow_submit", "");
+    });
+    await H.turnStopping();
+    await sleep(30);
+    H.drainInbox();
+  }
+  check("A 第 2 次自报未完成后换了一次上下文（marks = 1）",
+    replacementEventsOf(H.session).length === 1 && H.instanceState()?.reset_every_marks?.a === 1,
+    JSON.stringify({ reps: replacementEventsOf(H.session).length, m: H.instanceState()?.reset_every_marks }));
+  // A 真正完成 → 验证通过 → 计数清零并推进到 b
+  await H.turn(async () => {
+    await H.call("ralphflow_submit", { summary: "A 完成", unfinished: [] });
+    H.appendToolExchange("call-pass-done", "ralphflow_submit", "");
+  });
+  await H.waitVerifier();
+  await H.turn(async () => { H.releaseVerifier(true, "A 通过"); await sleep(20); });
+  await H.waitInbox(1); await sleep(20); H.drainInbox();
+  const afterPass = H.instanceState();
+  check("A 验证通过 → 计数清零（incomplete_counts.a = 0、marks.a = 0）",
+    afterPass?.incomplete_counts?.a === 0 && afterPass?.reset_every_marks?.a === 0,
+    JSON.stringify({ c: afterPass?.incomplete_counts, m: afterPass?.reset_every_marks }));
+  check("推进到第二步 b", afterPass?.current_step === "b", afterPass?.current_step);
+  // b 失败 → on_fail 指回 a：重新进入 a 时从 0 起算
+  await H.turn(async () => {
+    await H.call("ralphflow_submit", { summary: "B 完成", unfinished: [] });
+    H.appendToolExchange("call-pass-b", "ralphflow_submit", "");
+  });
+  await H.waitVerifier();
+  await H.turn(async () => { H.releaseVerifier(false, "B 未通过：回到 A"); await sleep(20); });
+  await sleep(30); H.drainInbox();
+  check("b 失败后按 on_fail 回到 a", H.instanceState()?.current_step === "a", H.instanceState()?.current_step);
+  const repsBefore = replacementEventsOf(H.session).length;
+  // 回到 a 之后第 1 次自报未完成：若计数没清零（旧值 2 + 1 = 3），floor(3/2)=1 > marks 0 → 会立刻替换。
+  await H.turn(async () => {
+    await H.call("ralphflow_submit", { summary: "A 再来 1", unfinished: ["A 还差 1"] });
+    H.appendToolExchange("call-pass-again", "ralphflow_submit", "");
+  });
+  await H.turnStopping();
+  await sleep(30); H.drainInbox();
+  check("再进入 a 从 0 起算：第 1 次自报未完成**不替换**（计数从 0 起，不是接着旧值）",
+    replacementEventsOf(H.session).length === repsBefore && H.instanceState()?.incomplete_counts?.a === 1,
+    JSON.stringify({ reps: replacementEventsOf(H.session).length, base: repsBefore, c: H.instanceState()?.incomplete_counts }));
+  await H.turn(async () => {
+    await H.call("ralphflow_submit", { summary: "A 再来 2", unfinished: ["A 还差 2"] });
+    H.appendToolExchange("call-pass-again-2", "ralphflow_submit", "");
+  });
+  await H.turnStopping();
+  await sleep(30); H.drainInbox();
+  check("第 2 次自报未完成 → 再换一次（计数 2，marks 1）",
+    replacementEventsOf(H.session).length === repsBefore + 1 && H.instanceState()?.reset_every_marks?.a === 1,
+    JSON.stringify({ reps: replacementEventsOf(H.session).length, m: H.instanceState()?.reset_every_marks }));
+  cleanupTmp(H.ws);
+}
+
+// ═══ 19d) reset_every 的加载期校验 / 纯函数语义 / doctor 告警 ═════════════════════
+console.log("\n19d) reset_every：加载期校验、纯函数语义、doctor 优先级告警");
+{
+  const ws = mkTmp("reset-every-parse");
+  tmpDirs.push(ws);
+  const wfDir = path.join(ws, ".dsh", "ralph-flow", "workflows");
+  fs.mkdirSync(wfDir, { recursive: true });
+  const mk = (id, extra) => `description: ${id}\nsteps:\n  - id: s\n    desc: 单步\n    input: 上游产出\n    output: 本步产出\n    do: x\n    check: y\n    on_pass: done\n    on_fail: s\n    max_fail_count: 3\n${extra}`;
+  fs.writeFileSync(path.join(wfDir, "ok.yaml"), mk("ok", "    reset_every: 3\n"));
+  fs.writeFileSync(path.join(wfDir, "one.yaml"), mk("one", "    reset_every: 1\n"));
+  fs.writeFileSync(path.join(wfDir, "zero.yaml"), mk("zero", "    reset_every: 0\n"));
+  fs.writeFileSync(path.join(wfDir, "neg.yaml"), mk("neg", "    reset_every: -2\n"));
+  fs.writeFileSync(path.join(wfDir, "frac.yaml"), mk("frac", "    reset_every: 2.5\n"));
+  fs.writeFileSync(path.join(wfDir, "str.yaml"), mk("str", "    reset_every: \"3\"\n"));
+  fs.writeFileSync(path.join(wfDir, "both.yaml"), mk("both", "    reset: true\n    reset_every: 3\n"));
+  fs.writeFileSync(path.join(wfDir, "autoboth.yaml"),
+    "description: autoboth\nauto_reset: true\nsteps:\n  - id: s\n    desc: 单步\n    input: 上游产出\n    output: 本步产出\n    do: x\n    check: y\n    on_pass: done\n    on_fail: s\n    max_fail_count: 3\n    reset_every: 3\n");
+  const eng = createEngine(ws, { ...deliveryPorts(), verify: async () => ({ status: "passed", reason: "stub" }) });
+
+  const ok = eng.loadWorkflow("ok");
+  check("reset_every: 3 透传进定义（≥2 的整数合法）", ok.def?.steps[0]?.reset_every === 3 && ok.problems.length === 0,
+    JSON.stringify({ v: ok.def?.steps[0]?.reset_every, p: ok.problems }));
+  for (const [name, label] of [["one", "1"], ["zero", "0"], ["neg", "负数"], ["frac", "小数"], ["str", "字符串"]]) {
+    const bad = eng.loadWorkflow(name);
+    check(`reset_every: ${label} = 加载期硬错误，且指路 reset: true`,
+      !bad.def && bad.problems.some((p) => p.includes("reset_every") && p.includes("reset: true")),
+      JSON.stringify(bad.problems));
+  }
+  check("同时写 reset: true 与 reset_every → 可加载，但 doctor 告警优先级（reset_every 不生效）",
+    (() => { const r = eng.loadWorkflow("both"); return r.problems.length === 0 && (r.warnings ?? []).some((w) => w.includes("reset_every") && w.includes("不会生效")); })(),
+    JSON.stringify(eng.loadWorkflow("both").warnings));
+  check("工作流级 auto_reset 覆盖 reset_every → doctor 告警指路删掉 auto_reset",
+    (() => { const r = eng.loadWorkflow("autoboth"); return (r.warnings ?? []).some((w) => w.includes("reset_every") && w.includes("auto_reset")); })(),
+    JSON.stringify(eng.loadWorkflow("autoboth").warnings));
+
+  check("纯函数：只有计数攒够一个未换过的阈值才记 every",
+    resetCauseOf({}, { reset_every: 3 }, { count: 2, applied: 0 }) === undefined
+    && resetCauseOf({}, { reset_every: 3 }, { count: 3, applied: 0 }) === "every"
+    && resetCauseOf({}, { reset_every: 3 }, { count: 5, applied: 1 }) === undefined
+    && resetCauseOf({}, { reset_every: 3 }, { count: 6, applied: 1 }) === "every",
+    JSON.stringify([2, 3, 5, 6].map((c) => resetCauseOf({}, { reset_every: 3 }, { count: c, applied: c >= 6 ? 1 : 0 }) ?? null)));
+  check("纯函数：没有计数快照时 reset_every 恒不触发（静态判定不受影响）",
+    resetCauseOf({}, { reset_every: 3 }) === undefined && stepWantsReset({}, { reset_every: 3 }) === false);
+  check("纯函数：优先级 reset > auto_reset > reset_every",
+    resetCauseOf({ auto_reset: true }, { reset: true, reset_every: 3 }, { count: 9, applied: 0 }) === "step"
+    && resetCauseOf({ auto_reset: true }, { reset_every: 3 }, { count: 9, applied: 0 }) === "auto",
+    JSON.stringify([
+      resetCauseOf({ auto_reset: true }, { reset: true, reset_every: 3 }, { count: 9, applied: 0 }),
+      resetCauseOf({ auto_reset: true }, { reset_every: 3 }, { count: 9, applied: 0 }),
+    ]));
+  cleanupTmp(ws);
 }
 
 // ─── 收尾 ────────────────────────────────────────────────────────────────────
