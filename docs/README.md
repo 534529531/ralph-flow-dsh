@@ -19,7 +19,7 @@
 | [人工审查门](custom-workflows.md#manual_step) | ✅ | 先自动验证、通过后停下请你审查 |
 | [检查依据：check 与 check_voting](custom-workflows.md#检查依据决定本步是否被独立验证) | ✅ | 单验证者、多验证者投票、跳过对抗验证 |
 | [对抗性验证配置](custom-workflows.md#adversarial_check) | | 验证模型与优先级链 |
-| [上下文重置门（reset）](custom-workflows.md#上下文重置门reset) | | 步骤级 `reset`、工作流级 `auto_reset`、调用点、按自报未完成轮数（**默认每 3 次**，`reset_every` 改频率 / 关闭）、手动重置 |
+| [上下文重置门（reset）](custom-workflows.md#上下文重置门reset) | | 步骤级 `reset`、工作流级 `auto_reset`、调用点、按自报未完成轮数（**默认固定每 3 次，不可配置**）、手动重置 |
 | [中途回退（rewind）](custom-workflows.md#中途回退rewind) | | 回退到更早的步骤并换方向 |
 | [子工作流与嵌套](custom-workflows.md#子工作流与嵌套) | | 组合可复用工作流组件（加载期静态展开） |
 | [多步骤流程设计](custom-workflows.md#多步骤流程设计) | | 线性 / 分支 / 恢复 / 回环四种模式 |

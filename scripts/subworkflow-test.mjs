@@ -70,8 +70,8 @@ const PRE_CHANGE_PERSISTED_FIELDS = [
   "verdicts", "workflow_name",
   // 属主租约（原始事实，不是派生相位）：谁在驱动实例 + 最后一次心跳。
   "owner_runtime", "owner_heartbeat_at",
-  // `reset_every` 的计数器（原始事实：模型自报未完成次数 / 已换过的阈值序号；必须跨 pause/resume 存活）。
-  "incomplete_counts", "reset_every_marks",
+  // 按轮重置的计数器（原始事实：模型自报未完成次数 / 已换过的阈值序号；必须跨 pause/resume 存活）。
+  "incomplete_counts", "round_reset_marks",
 ];
 
 /** 造一个隔离工作区 + 引擎（脚本化验证端口；记录每笔委派的 step/model 供取证） */

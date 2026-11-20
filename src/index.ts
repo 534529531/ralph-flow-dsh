@@ -602,7 +602,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           log("warn", "turn_stopping_failed", { sessionId: sid, error: e instanceof Error ? e.message : String(e) });
           return;
         }
-        // 引擎已自行投递（`reset_every` / `reset: true` 的步骤必须先换上下文再投任务书 —— 顺序
+        // 引擎已自行投递（按轮门 / `reset: true` 的步骤必须先换上下文再投任务书 —— 顺序
         // 只能由引擎在替换完成后掌握）：这里**绝不能再投一次**，否则模型会收到两份任务书。
         if (verdict.delivered) return;
         // 本包客户端以 notice + summary 匹配播报，再由私有节点绕过普通 context 的过滤

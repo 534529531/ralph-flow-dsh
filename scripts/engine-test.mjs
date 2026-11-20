@@ -948,10 +948,10 @@ const votes = (v, count = LOOP_VOTERS) => Array.from({ length: count }, () => ({
       "verdicts", "workflow_name",
       // 属主租约是**原始事实**（谁在驱动、最后一次心跳），不是派生相位；不存就无法跨进程判活。
       "owner_runtime", "owner_heartbeat_at",
-      // `reset_every` 的两个计数器同样是**原始事实**：模型自报未完成的次数、已换过的阈值序号。
+      // 按轮重置的两个计数器同样是**原始事实**：模型自报未完成的次数、已换过的阈值序号。
       // 它们无法从别的字段现算（history 只留 200 条、reset_surface 事件不进 history），
       // 且必须跨 pause/resume 存活 —— 不落盘就等于「暂停一次计数归零」。
-      "incomplete_counts", "reset_every_marks",
+      "incomplete_counts", "round_reset_marks",
     ];
     const rawKeys = Object.keys(JSON.parse(fs.readFileSync(path.join(engine.instanceDir(id), "state.json"), "utf-8")));
     check("17b 落盘键全属已知集合（原始事实；不含任何派生量）", rawKeys.every((k) => PRE_CHANGE_PERSISTED_FIELDS.includes(k)), rawKeys.join(","));
