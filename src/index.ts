@@ -89,6 +89,32 @@ export function apply(ctx: Context, config: Config = {}): void {
     try { return (ctx.agents as unknown as { get(id: string): unknown }).get(sessionId) as unknown; } catch { return undefined; }
   };
 
+  /**
+   * 回退自己发起的回合中止（`EnginePorts.interrupt`）不是用户按停止：`cancel({kind:"user"})`
+   * 会以 `turn/end { reason: { kind: "aborted", reason: { kind: "user" } } }` 收尾，而下面
+   * 「停止按钮 = 暂停」的监听会把它当成用户停止，把回退刚清掉的 `paused` 立刻写回 ——
+   * 目标步 DO 随即被 `stillLive()` 丢弃。标记只由随后的 user-abort `turn/end` 消费；
+   * `turn/start` 与超时兜底负责清掉没有对应事件的残留，绝不吞掉下一次真正的用户停止。
+   */
+  const rewindInterrupts = new Map<string, number>();
+  const REWIND_INTERRUPT_TTL_MS = 10_000;
+  const noteRewindInterrupt = (sessionId: string): void => {
+    rewindInterrupts.set(sessionId, (rewindInterrupts.get(sessionId) ?? 0) + 1);
+    const timer = setTimeout(() => {
+      const left = (rewindInterrupts.get(sessionId) ?? 0) - 1;
+      if (left > 0) rewindInterrupts.set(sessionId, left);
+      else rewindInterrupts.delete(sessionId);
+    }, REWIND_INTERRUPT_TTL_MS);
+    (timer as unknown as { unref?: () => void }).unref?.();
+  };
+  const consumeRewindInterrupt = (sessionId: string): boolean => {
+    const count = rewindInterrupts.get(sessionId) ?? 0;
+    if (count <= 0) return false;
+    if (count === 1) rewindInterrupts.delete(sessionId);
+    else rewindInterrupts.set(sessionId, count - 1);
+    return true;
+  };
+
   /** 同一段文本的重复投递护栏：命令被连按/重试时只处理一次（窗口内去重） */
   const recentDeliveries = new Map<string, number>();
   const DEDUPE_WINDOW_MS = 5000;
@@ -348,6 +374,26 @@ export function apply(ctx: Context, config: Config = {}): void {
     // 收尾，提醒成为下一回合的第一条。与 steer 的差别见 deliverRound 的注释。
     deliverRound,
     deliverNotice,
+    /**
+     * 中止属主会话当前回合：`/ralphflow-rewind` 的第一件事。与宿主停止按钮同款调用
+     * （`dsh-api-session-controller` 的 cancel：`agent.cancel({ kind: "user" }, { keepInbox: true })`）。
+     * 只登记「有回合可停」的中止标记，避免空闲 no-op 污染下一次真正的用户停止。
+     */
+    interrupt: (sessionId: string) => {
+      const agent = agentOf(sessionId) as {
+        status?: string;
+        cancel?: (cause: unknown, options?: unknown) => void;
+      } | undefined;
+      if (!agent || typeof agent.cancel !== "function") return;
+      if (agent.status !== "running") return;
+      noteRewindInterrupt(sessionId);
+      try {
+        agent.cancel({ kind: "user" }, { keepInbox: true });
+      } catch (e) {
+        consumeRewindInterrupt(sessionId);
+        throw e;
+      }
+    },
     statusChanged,
     /** 把挂起的播报在**安全边界**补齐（reset 门在整段替换前先调一次：让替换把它们一并遮蔽） */
     flushNotices,
@@ -492,11 +538,19 @@ export function apply(ctx: Context, config: Config = {}): void {
         if ((e as { type?: string }).type === "user/message" && (e as { data?: { source?: { uiRef?: unknown } } }).data?.source?.uiRef) statusChanged();
         if (deferredNotices.has(sid)) queueMicrotask(() => { try { flushNotices(sid); } catch {} });
         const ev = e as { type?: unknown; data?: unknown; time?: unknown };
+        // 新回合开始：回退发起的那次中止已经收尾，清掉可能没等到 turn/end 的残留标记。
+        if (ev.type === "turn/start") {
+          rewindInterrupts.delete(sid);
+          return;
+        }
         // 停止按钮 = 暂停：宿主把当前回合 cancel 成 `turn/end { kind:"aborted", reason:{kind:"user"} }`。
         // Flow 与 Graph 同一条路径；**不在观察者里 append/写会话**，交给微任务（同 flushNotices 的纪律）。
         if (ev.type === "turn/end") {
           const reason = (ev.data as { reason?: { kind?: string; reason?: { kind?: string } } } | undefined)?.reason;
           if (reason?.kind === "aborted" && reason.reason?.kind === "user") {
+            // 这次 abort 是 `/ralphflow-rewind` 自己发起的：它不是用户停止，不能暂停实例
+            // （否则回退刚清掉的 paused 会被写回，目标步 DO 被丢弃）。
+            if (consumeRewindInterrupt(sid)) return;
             queueMicrotask(() => {
               try { existingEngineFor(sid)?.pauseForUserStop(sid); } catch (err) {
                 log("warn", "pause_on_stop_failed", { sessionId: sid, error: err instanceof Error ? err.message : String(err) });

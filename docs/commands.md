@@ -12,7 +12,7 @@
 | `/ralphflow-cancel` | `[实例ID] [原因]` | 取消实例（先归档报告；Flow 再销毁实例目录，Graph 保留状态/产物/worktree 供复核） |
 | `/ralphflow-cleanup` | `[实例ID]` | **Graph only**：只删除已记录且干净的节点 worktree；不动 state / artifacts / reports；Flow 没有 worktree |
 | `/ralphflow-reset` | — | **Flow only**：重做当前步（换干净上下文 + 重投 DO，失败计数保留）；Graph 明确拒绝 |
-| `/ralphflow-rewind` | `<步骤> <原因>` | **Flow only**：回退到更早步骤并换方向；Graph 是无环 DAG，明确拒绝 |
+| `/ralphflow-rewind` | `<步骤> <原因>` | **Flow only**：回退到更早步骤并换方向；运行中回退会先中止当前回合，在回合边界换上下文后重投目标步 DO；Graph 是无环 DAG，明确拒绝 |
 | `/ralphflow-doctor` | `[工作流名或工作区路径]` | 诊断全部，或只诊断一个资产（Flow / Graph 各自 schema） |
 
 **命令语义 = 触发词。** `/ralphflow-*` **一律**由模型自然语言回复（含用法错误），**零程序化卡片返回**——参数不全时由模型说明用法并追问，与 opencode / claude 版一致。
@@ -153,7 +153,8 @@
 | `pause` / `resume` | 暂停（`user_stop` / `max_failures` / `check_infra` / `no_submit`）与恢复 |
 | `submit_reminder` / `submit_activity` / `reminder_exhausted` | 回合收尾提醒（空回合 / 有动作）与连续空回合达上限后的暂停 |
 | `manual_reset` / `manual_reset_dropped` | 手动重置生效 / 未生效（绝不静默作废） |
-| `rewind` | 用户回退到更早的步骤（含 `from → to：reason`） |
+| `rewind` | 用户回退到更早的步骤（含 `from → to：reason`）；运行中回退先中止当前回合，再在回合边界换上下文并重投目标步 DO |
+| `rewind_dropped` | 回退的换上下文 / 目标步 DO 未落地（实例已结束、暂停或已推进；绝不静默） |
 | `reset_surface` / `reset_surface_skipped` / `reset_skipped_first_step` | 上下文重置落地 / 放弃 / 首步结构上无法重置 |
 | `adopted` / `interrupted` / `orphan_delegation_recovered` | 接管实例 / 属主心跳失联标中断 / 验证失败后按孤儿兜底重派 |
 | `verifier_prompt` / `verifier_result` | 验证者提示词与判定的原文快照 |

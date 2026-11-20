@@ -1148,6 +1148,18 @@ export interface EnginePorts {
    * 正在收尾的回合不被续上）。要求：**必须**传 `summary`，否则客户端退化成 opaque 注入行。
    */
   deliverNotice: (sessionId: string, text: string, summary?: string, opts?: { dedupe?: boolean; uiRef?: WorkflowUiRef }) => boolean;
+  /**
+   * **中止属主会话当前回合**：`/ralphflow-rewind` 的第一件事 —— 旧回合还在按旧任务书
+   * 干活，不先停掉它，它的 `ralphflow_submit` 就会落到已经回退后的 `current_step` 上。
+   *
+   * 实现就是宿主「停止按钮」的同款调用（见 `src/index.ts`）：
+   * `ctx.agents.get(sessionId)?.cancel({ kind: "user" }, { keepInbox: true })`。
+   * `cancel` 在 `phase.kind === "idle"` 时是 no-op；`keepInbox: true` 保住空闲会话的收件箱。
+   *
+   * **可选且绝不阻断回退**：缺省（宿主没有这个能力）或抛错时，回退照常执行，只记一条
+   * `interrupt_failed` 诊断日志 —— 用户换方向的入口不能因为中止失败而消失。
+   */
+  interrupt?: (sessionId: string) => void;
   /** Observe committed facts only; failures of this observer never affect the engine. */
   statusChanged?: () => void;
   /**
@@ -3309,9 +3321,9 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   }
 
   /**
-   * `/ralphflow-reset` 在空闲窗口复查时发现「实例已不在可重置状态」→ 一句给用户的实话。
+   * 手动重置 / 回退在空闲窗口复查时发现「实例已不在可投递状态」→ 一句给用户的实话。
    *
-   * 为什么必须告知（分配置护栏 ③ 的边界）：手动重置是**异步**落地的（要等空闲窗口），而
+   * 为什么必须告知（分配置护栏 ③ 的边界）：两者都是**异步**落地的（要等空闲窗口），而
    * 命令处理器当场就返回了 `{kind:"success"}`（零程序化卡片）。若被丢弃时静默 return，
    * 用户在最需要这个手动逃生口的时刻（模型在飞、回合以 `ralphflow_submit` 收尾）会
    * 「按了命令、什么都没发生」——命令说受理、结果无声作废（验证者 2/4 实测）。
@@ -3319,18 +3331,38 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * 具体原因**重新读盘**再分述（`stillLive()` 只回一个布尔，说不出是哪一条）：读不到就退回
    * 通用说法，绝不编造。
    */
-  function manualResetDropNote(instId: string, stepId: string): { text: string; summary: string } {
+  function resetDropReason(instId: string, stepId: string): string {
     let why = "实例状态在这段空闲窗口里发生了变化";
     try {
       const cur = readState(instId);
       if (!cur) why = "实例已结束并归档（实例目录已销毁）";
       else if (cur.active !== true) why = "实例已结束或被取消";
       else if (cur.current_step !== stepId) why = `工作流已推进到步骤 \`${cur.current_step}\``;
+      else if (cur.paused === true) why = `实例已暂停（${pauseLabel(cur.pause_reason)}）`;
       else if (cur.do_submitted === true) why = `步骤 \`${stepId}\` 已经交卷（独立验证者正在取证，或已停在审查门）`;
     } catch { /* 读不到就退回通用说法 */ }
+    return why;
+  }
+
+  /** `/ralphflow-reset` 的丢弃告知（与回退同形；措辞必须说得出是哪条命令）。 */
+  function manualResetDropNote(instId: string, stepId: string): { text: string; summary: string } {
+    const why = resetDropReason(instId, stepId);
     return {
       text: `[ralphflow] 你执行了 \`/ralphflow-reset\`，但**这次重置没有生效**：${why}。\n\n重置只换干净上下文（返工计数原样保留），且只能落在**当前步 DO 阶段的空闲窗口**里 —— 否则会打断在飞验证、把已有判定变成孤儿。用 \`/ralphflow-status\` 看进度；等本步返工、或进入下一步的 DO 之后，再执行一次 \`/ralphflow-reset\`。`,
       summary: `⚠️ /ralphflow-reset 未生效：${why}`,
+    };
+  }
+
+  /**
+   * `/ralphflow-rewind` 的丢弃告知：状态机已经拨到目标步，但换上下文 / 目标步 DO 没落地
+   * （实例被取消、被暂停、或已推进到别的步骤）。绝不能静默 —— 用户会以为模型已经拿到
+   * 新任务书，实际它仍在按旧方向跑。
+   */
+  function rewindDropNote(instId: string, stepId: string): { text: string; summary: string } {
+    const why = resetDropReason(instId, stepId);
+    return {
+      text: `[ralphflow] 你执行了 \`/ralphflow-rewind\`，但**这次回退的换上下文与目标步 DO 没有落地**：${why}。\n\n用 \`/ralphflow-status\` 看当前进度；实例仍在运行时，等它回到 DO 阶段后再执行一次 \`/ralphflow-rewind\`；需要恢复暂停用 \`/ralphflow-continue\`。`,
+      summary: `⚠️ /ralphflow-rewind 的换上下文与 DO 重投未落地：${why}`,
     };
   }
 
@@ -3447,6 +3479,15 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
    * （实测：`pause_reason=no_submit`，DO 反而落在已暂停的实例上）。
    */
   const pendingDoDelivery = new Set<string>();
+  /**
+   * 上面那批里**由回退发起**的一段（`trigger === "rewind"`）。
+   *
+   * 只有回退会把 `current_step` 换掉：旧回合手里的任务书指向**上一步**，它在这段窗口里交的
+   * 卷绝不能记到目标步上 —— `onSubmit` 据此拒收。手动重置不在此列：`current_step` 没变，
+   * 同一个步骤的旧交卷仍然算数（交卷赢、异步重置被丢弃并如实告知），这是 reset-surface
+   * 用例 17 钉住的既有语义。
+   */
+  const pendingRewindDelivery = new Set<string>();
 
   /**
    * 投递某一步的 DO。**要重置上下文的步骤先做整段替换、再投递 DO**（顺序不可颠倒：
@@ -3564,8 +3605,13 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     req.canProceed = stillLive; // 载体在 append 之前同步复查一次（关掉「等窗口期间被取消」的竞态）
     // 从这一刻起「本步 DO 还没送达」——期间 turn-stopping 的回合收尾提醒必须闭嘴
     pendingDoDelivery.add(instId);
+    if (trigger === "rewind") pendingRewindDelivery.add(instId);
     publishStatus();
-    const releasePending = () => { pendingDoDelivery.delete(instId); publishStatus(); };
+    const releasePending = () => {
+      pendingDoDelivery.delete(instId);
+      pendingRewindDelivery.delete(instId);
+      publishStatus();
+    };
     void Promise.resolve()
       .then(() => ports.resetSurface!(sid, req))
       .then((outcome) => {
@@ -3584,6 +3630,13 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
           if (trigger === "manual" && !outcome.ok) {
             const note = manualResetDropNote(instId, step.id);
             logEvent(instId, "warn", "manual_reset_dropped", { step: step.id, reason });
+            deliverNotice(state, note.text, note.summary);
+          }
+          // 回退**无论替换成败**都要告知：状态机已经拨到目标步，但模型没收到新任务书。
+          // 静默会让用户以为回退生效（真机缺陷里 `replace` 为 0、用户却只看到命令受理）。
+          if (trigger === "rewind") {
+            const note = rewindDropNote(instId, step.id);
+            logEvent(instId, "warn", "rewind_dropped", { step: step.id, reason });
             deliverNotice(state, note.text, note.summary);
           }
           return;
@@ -3909,6 +3962,18 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
     }
     const step = stepOf(wf, state.current_step);
     if (!step) return { ok: false, text: `实例状态损坏：当前步骤 \`${state.current_step}\` 不在工作流里。用 \`/ralphflow-cancel\` 结束。` };
+
+    // 这条判断回答的是「模型交的是**上一份任务书**的卷」：回退已经把 `current_step` 拨到
+    // 目标步，而旧回合还在按旧任务书干活。它在这段 DO 投递窗口里交的卷收下就会把旧步的
+    // 成果记成目标步的交卷（真机缺陷：回退 c→a 后旧回合的 submit 直接推进到 b）。
+    // 因此拒收本次交卷：不设 do_submitted、不推进、不烧验证；新 DO 到达后按新任务书重做。
+    // 手动重置不在此列（`current_step` 没变，旧交卷仍算数，见 `pendingRewindDelivery`）。
+    if (pendingRewindDelivery.has(instId)) {
+      return {
+        ok: false,
+        text: `步骤 \`${step.id}\` 的 DO 正在投递（回退进行中），本次交卷未受理；**不要重试**，等本步 DO 到达后按新任务书重做。`,
+      };
+    }
 
     // 未完成项非空 = 本轮进度记录，**不是**完成声明：不设 do_submitted、不委派验证者、不占返工预算。
     // 这一条是「没做完就先交卷」的机械闸门：模型自己知道还剩什么，把它的自述变成引擎可执行的判断。
@@ -4449,13 +4514,17 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
   }
 
   /**
-   * 回退（`/ralphflow-rewind <步骤> <原因>`）：**reset 的动作 + 状态机倒退 + 带走原因**。
+   * 回退（`/ralphflow-rewind <步骤> <原因>`）：**先中止旧回合** + reset 的动作 + 状态机倒退 + 带走原因。
    *
-   * 机械动作 = 把 `current_step` 拨到目标步，清 `paused` / `pause_reason` / `fail_counts` /
-   * `do_submitted` / `verdicts` / `delegations`（并中止在飞验证者），记 `rewind` + `step_start`，
-   * 然后走**同一根** `deliverStepDo` 接线：整段替换上下文（强制，无论该步有没有标 `reset`）+
-   * 可见告知 + 重投目标步 DO（DO 里**自成一段**带着用户给出的原因）。
+   * 机械动作 = 中止属主会话当前回合（`ports.interrupt`；这是「旧回合交的是上一份任务书的
+   * 卷」的源头，必须先停）→ 把 `current_step` 拨到目标步，清 `paused` / `pause_reason` /
+   * `fail_counts` / `do_submitted` / `verdicts` / `delegations`（并中止在飞验证者），记
+   * `rewind` + `step_start` → 走**同一根** `deliverStepDo` 接线：整段替换上下文（强制，
+   * 无论该步有没有标 `reset`）+ 可见告知 + 重投目标步 DO（DO 里**自成一段**带着用户给出的原因）。
    * 载体（`src/reset.ts`）一行都不用动 —— 这是策略层的事。
+   *
+   * 中止与投递之间的竞态由 `onSubmit` 的 `pendingDoDelivery` 判据兜底：旧回合若在这段
+   * 窗口里交卷，会被拒收（不设 `do_submitted`、不推进、不烧验证）。
    *
    * **没有第二道门**：引擎对进度的全部认知就是 `current_step`，「已通过 CHECK 的步骤」是现算的
    * 派生量（`verdicts[]` / `history`），不是状态。所以「回退到某步」与「跳到某步」在机械上是
@@ -4545,9 +4614,18 @@ export function createEngine(projectDir: string, ports: EnginePorts) {
       };
     }
 
-    // ── 机械动作：reset 的动作 + 状态机倒退 + 带走原因 ───────────────────────────
+    // ── 机械动作：先中止旧回合，再 reset 的动作 + 状态机倒退 + 带走原因 ─────────────
     const target = wf.steps[tgtIdx]!;
     const from = state.current_step;
+    // ① 旧回合还在按旧任务书干活：先停掉它。否则它随后的 `ralphflow_submit` 会落到
+    //    已经回退后的 `current_step` 上，把旧步的成果记成目标步的交卷（真机缺陷本体）。
+    //    端口缺失/异常**绝不阻断回退**：只记 `interrupt_failed`，机械动作照常。
+    try {
+      if (typeof ports.interrupt === "function") ports.interrupt(sessionId);
+      else log("warn", "interrupt_failed", { instId, reason: "unavailable" });
+    } catch (e) {
+      log("warn", "interrupt_failed", { instId, error: e instanceof Error ? e.message : String(e) });
+    }
     // 在飞验证者一律中止（正常路径下 `do_submitted === false` ⇒ 无在飞委派；这里是硬护栏：
     // 清掉 delegations 而不中止，判定回来时会变成无人认领的孤儿）
     abortInstance(instId);

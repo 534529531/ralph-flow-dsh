@@ -118,6 +118,92 @@ ${step("p1", "call")}  - id: call
     on_pass: done
 `;
 
+// 无 check 的步（交卷即推进）：只验收回退与展开，不烧独立验证。
+const plainStep = (id, onPass) => `  - id: ${id}
+    input: 上游产出
+    output: 本步产出 ${id}
+    desc: 步骤 ${id}
+    do: 做 ${id} 的工作
+    on_pass: ${onPass}
+    on_fail: ${id}
+    max_fail_count: 3
+`;
+
+// C) 父级 pre → 调用点 call(e1→m1→m2→d1) → after
+const WF_CHAIN_SUB = `description: 四步子工作流
+steps:
+${plainStep("e1", "m1")}${plainStep("m1", "m2")}${plainStep("m2", "d1")}${plainStep("d1", "done")}`;
+const WF_CHAIN_PARENT = `description: 父级包住四步子工作流
+steps:
+${plainStep("pre", "call")}  - id: call
+    desc: 调用点
+    input: 上游产出
+    output: 本步产出
+    on_fail: call
+    max_fail_count: 3
+    workflow: rwchain
+    on_pass: after
+${plainStep("after", "done")}`;
+
+// D) 两层嵌套：outcall → midcall → leaf（展开成 outcall/midcall/leaf）
+const WF_LEAF = `description: 叶子工作流
+steps:
+${plainStep("leaf", "done")}`;
+const WF_MID = `description: 中层工作流
+steps:
+  - id: midcall
+    desc: 中层调用点
+    input: 上游产出
+    output: 本步产出
+    on_fail: midcall
+    max_fail_count: 3
+    workflow: rwleaf
+    on_pass: mafter
+${plainStep("mafter", "done")}`;
+const WF_OUTER = `description: 外层工作流
+steps:
+${plainStep("pre", "outcall")}  - id: outcall
+    desc: 外层调用点
+    input: 上游产出
+    output: 本步产出
+    on_fail: outcall
+    max_fail_count: 3
+    workflow: rwmid
+    on_pass: oafter
+${plainStep("oafter", "done")}`;
+
+// E) 两个调用点：call（→ rwchain）与 midcall/mdelegate（→ rwleaf）
+const WF_DELEGATE_MID = `description: 只有一层委托的中层
+steps:
+  - id: mdelegate
+    desc: 内层调用点
+    input: 上游产出
+    output: 本步产出
+    on_fail: mdelegate
+    max_fail_count: 3
+    workflow: rwleaf
+    on_pass: done
+`;
+const WF_CALLS = `description: 两个可回退的前序调用点
+steps:
+  - id: call
+    desc: 外层调用点
+    input: 上游产出
+    output: 本步产出
+    on_fail: call
+    max_fail_count: 3
+    workflow: rwchain
+    on_pass: midcall
+  - id: midcall
+    desc: 内层调用点所在的调用点
+    input: 上游产出
+    output: 本步产出
+    on_fail: midcall
+    max_fail_count: 3
+    workflow: rwdelegatemid
+    on_pass: done
+`;
+
 // ═══ A) 引擎级 ═══════════════════════════════════════════════════════════════
 /** 脚本化引擎：deliver 记账、验证判定排队、resetSurface 记账 */
 function mkEngine(workflows, opts = {}) {
@@ -125,16 +211,23 @@ function mkEngine(workflows, opts = {}) {
   for (const [n, y] of Object.entries(workflows)) writeWf(ws, n, y);
   const delivered = [];      // { text, summary }
   const resets = [];         // ResetRequest
+  const logs = [];           // { level, event, data }
+  const interrupts = [];     // sessionId
   let scripted = [];
   const engine = createEngine(ws, {
     ...deliveryPorts((text, summary) => delivered.push({ text, summary })),
+    ...(opts.noInterrupt ? {} : { interrupt: (sid) => interrupts.push(sid) }),
     verify: async (req) => {
       const v = scripted.shift();
       if (!v) throw new Error("no scripted verdict");
       return { check_index: req.checkIndex, step_id: req.step.id, ts: new Date().toISOString(), ...v };
     },
-    resetSurface: async (_sid, req) => { resets.push(req); return opts.resetOutcome ?? { ok: true, shadowed: 7, handoffSeq: 99, noticeSeq: 98 }; },
-    log: () => {},
+    resetSurface: async (_sid, req) => {
+      resets.push(req);
+      if (opts.resetWait) await opts.resetWait;
+      return opts.resetOutcome ?? { ok: true, shadowed: 7, handoffSeq: 99, noticeSeq: 98 };
+    },
+    log: (level, event, data) => { logs.push({ level, event, data }); },
   });
   engine.ensureLayout();
   const st = (id) => engine.readState(id);
@@ -143,7 +236,7 @@ function mkEngine(workflows, opts = {}) {
     try { return fs.readFileSync(path.join(engine.instancesDir, id, "execution.log"), "utf-8"); } catch { return ""; }
   };
   return {
-    ws, engine, delivered, resets, st, newestId, execLog,
+    ws, engine, delivered, resets, logs, interrupts, st, newestId, execLog,
     queue: (v) => scripted.push(v),
     start: (wf, task, sid) => { engine.start(wf, task, sid); return newestId(); },
     last: () => delivered.at(-1),
@@ -419,6 +512,132 @@ console.log("\nA9) 替换失败也绝不吞掉 DO（原因照旧落地）");
     (E.last()?.summary ?? "").includes("未生效") && (E.last()?.summary ?? "").includes("空闲窗口"), E.last()?.summary);
 }
 
+// ─── C) 退回子工作流内部：after → call/m2，交卷后推进到 call/d1 ───────────────
+console.log("\nC) 退回子工作流内部：after → call/m2 → 交卷推进到 call/d1");
+{
+  const E = mkEngine({ rwchain: WF_CHAIN_SUB, rwchainparent: WF_CHAIN_PARENT });
+  const sid = "session-rw-c";
+  const id = E.start("rwchainparent", "子工作流内部回退任务书", sid);
+  const steps = E.engine.loadWorkflow("rwchainparent").def.steps.map((s) => s.id);
+  check("前置：调用点已静态展开（pre → call/e1…d1 → after）",
+    JSON.stringify(steps) === JSON.stringify(["pre", "call/e1", "call/m1", "call/m2", "call/d1", "after"]), JSON.stringify(steps));
+
+  for (let i = 0; i < 10 && E.st(id).current_step !== "after"; i++) {
+    E.engine.onSubmit(sid, `推进 ${E.st(id).current_step}`);
+    await settle();
+  }
+  check("前置：已走完整段子工作流，停在 after", E.st(id).current_step === "after", E.st(id).current_step);
+
+  const r = E.engine.rewindTo(sid, "call/m2", "子工作流内部也要能换方向");
+  await settle();
+  const s = E.st(id);
+  check("回退到子工作流内部步骤 call/m2 被受理", r.ok === true && s.current_step === "call/m2", r.text);
+  check("回退后强制走了整段替换（该步没标 reset）", E.resets.length === 1, `count=${E.resets.length}`);
+  const doText = E.last()?.text ?? "";
+  check("目标步 DO 带着原因，且写明从 after 回到 call/m2",
+    doText.includes("## 用户回退了这一步")
+    && doText.includes("从 `after` 回到 `call/m2`")
+    && doText.includes("子工作流内部也要能换方向"), doText.slice(0, 500));
+  check("轨迹记下 rewind 的目标是展开后的 call/m2",
+    s.history.some((h) => h.event === "rewind" && h.step === "call/m2" && h.detail.includes("after → call/m2")),
+    JSON.stringify(s.history.slice(-3)));
+
+  const sub = E.engine.onSubmit(sid, "call/m2 换方向后重做完成");
+  await settle();
+  check("交卷后按子工作流内部连线推进到 call/d1",
+    sub.ok === true && E.st(id).current_step === "call/d1", JSON.stringify({ ok: sub.ok, cur: E.st(id).current_step, text: sub.text }));
+}
+
+// ─── D) 两层嵌套：outcall/midcall/leaf 也能回退并继续推进 ─────────────────────
+console.log("\nD) 两层嵌套：从 oafter 退回 outcall/midcall/leaf");
+{
+  const E = mkEngine({ rwleaf: WF_LEAF, rwmid: WF_MID, rwouter: WF_OUTER });
+  const sid = "session-rw-d";
+  const id = E.start("rwouter", "两层嵌套回退任务书", sid);
+  const steps = E.engine.loadWorkflow("rwouter").def.steps.map((s) => s.id);
+  check("前置：两层调用点已展开成 outcall/midcall/leaf",
+    steps.includes("outcall/midcall/leaf") && steps.includes("outcall/mafter"), JSON.stringify(steps));
+  for (let i = 0; i < 10 && E.st(id).current_step !== "oafter"; i++) {
+    E.engine.onSubmit(sid, `推进 ${E.st(id).current_step}`);
+    await settle();
+  }
+  check("前置：已走完两层嵌套，停在 oafter", E.st(id).current_step === "oafter", E.st(id).current_step);
+
+  const r = E.engine.rewindTo(sid, "outcall/midcall/leaf", "两层嵌套内部换方向");
+  await settle();
+  const s = E.st(id);
+  check("回退到两层展开后的叶子步被受理", r.ok === true && s.current_step === "outcall/midcall/leaf", r.text);
+  check("回退后强制走了整段替换", E.resets.length === 1, `count=${E.resets.length}`);
+  const doText = E.last()?.text ?? "";
+  check("目标步 DO 带着原因，且写明从 oafter 回到叶子步",
+    doText.includes("## 用户回退了这一步")
+    && doText.includes("从 `oafter` 回到 `outcall/midcall/leaf`")
+    && doText.includes("两层嵌套内部换方向"), doText.slice(0, 500));
+
+  const sub = E.engine.onSubmit(sid, "两层嵌套叶子步重做完成");
+  await settle();
+  check("交卷后按嵌套连线推进到 outcall/mafter",
+    sub.ok === true && E.st(id).current_step === "outcall/mafter", JSON.stringify({ ok: sub.ok, cur: E.st(id).current_step }));
+}
+
+// ─── E) 调用点仍被拒：call 与 midcall/mdelegate，理由 + 展开 id 清单 ──────────
+console.log("\nE) 调用点仍被拒：理由准确且列出展开后的步骤 id");
+{
+  const E = mkEngine({ rwchain: WF_CHAIN_SUB, rwleaf: WF_LEAF, rwdelegatemid: WF_DELEGATE_MID, rwcalls: WF_CALLS });
+  const sid = "session-rw-e";
+  const id = E.start("rwcalls", "调用点回归任务书", sid);
+  const steps = E.engine.loadWorkflow("rwcalls").def.steps.map((s) => s.id);
+  check("前置：两个调用点都已展开", steps.includes("call/e1") && steps.includes("midcall/mdelegate/leaf"), JSON.stringify(steps));
+  for (let i = 0; i < 10 && E.st(id).current_step !== "midcall/mdelegate/leaf"; i++) {
+    E.engine.onSubmit(sid, `推进 ${E.st(id).current_step}`);
+    await settle();
+  }
+  check("前置：已推进到最后一个展开步", E.st(id).current_step === "midcall/mdelegate/leaf", E.st(id).current_step);
+
+  const rCall = E.engine.rewindTo(sid, "call", "回到外层调用点");
+  check("回退到 call → 拒绝，说清它是子工作流调用点并列出全部展开 id",
+    rCall.ok === false
+    && rCall.text.includes("子工作流调用点")
+    && ["`call/e1`", "`call/m1`", "`call/m2`", "`call/d1`"].every((x) => rCall.text.includes(x))
+    && rCall.text.includes("请用展开后的步骤 id"), rCall.text);
+  const rNested = E.engine.rewindTo(sid, "midcall/mdelegate", "回到内层调用点");
+  check("回退到 midcall/mdelegate → 拒绝，并列出它展开成 midcall/mdelegate/leaf",
+    rNested.ok === false
+    && rNested.text.includes("子工作流调用点")
+    && rNested.text.includes("`midcall/mdelegate/leaf`")
+    && rNested.text.includes("请用展开后的步骤 id"), rNested.text);
+  check("两次调用点拒绝都没有动状态机、没有触发替换、没有中止回合",
+    E.st(id).current_step === "midcall/mdelegate/leaf"
+    && E.resets.length === 0
+    && E.interrupts.length === 0
+    && !E.st(id).history.some((h) => h.event === "rewind"),
+    JSON.stringify({ cur: E.st(id).current_step, resets: E.resets.length, interrupts: E.interrupts.length }));
+}
+
+// ─── G) 宿主没有 interrupt：降级但不降级回退本身 ──────────────────────────────
+console.log("\nG) 宿主没有 interrupt 端口：回退照常受理，DO 照常带原因");
+{
+  const E = mkEngine({ wfrw: WF_RW }, { noInterrupt: true });
+  const sid = "session-rw-g";
+  const id = E.start("wfrw", "缺少 interrupt 的宿主", sid);
+  E.queue({ status: "passed", reason: "ok" });
+  E.engine.onSubmit(sid, "s1 完成"); await settle();
+  check("前置：当前步 = s2", E.st(id).current_step === "s2", E.st(id).current_step);
+  const r = E.engine.rewindTo(sid, "s1", "宿主没有中止端口也要能换方向");
+  await settle();
+  const s = E.st(id);
+  check("回退照常受理：状态机倒退、暂停与失败计数已清",
+    r.ok === true && s.current_step === "s1" && s.paused === false && JSON.stringify(s.fail_counts) === "{}", r.text);
+  check("仍走同一根接线：整段替换恰一次", E.resets.length === 1, `count=${E.resets.length}`);
+  check("没有可用端口时不假装中止过（interrupt 一次都没被调用）", E.interrupts.length === 0, `count=${E.interrupts.length}`);
+  check("记一条 interrupt_failed 诊断（reason=unavailable），不阻断回退",
+    E.logs.some((l) => l.level === "warn" && l.event === "interrupt_failed" && l.data?.reason === "unavailable"),
+    JSON.stringify(E.logs.filter((l) => l.event === "interrupt_failed")));
+  const doText = E.last()?.text ?? "";
+  check("目标步 DO 照常带着原因落地",
+    doText.includes("## 用户回退了这一步") && doText.includes("宿主没有中止端口也要能换方向"), doText.slice(0, 400));
+}
+
 // ═══ B) 真实宿主：真实 Session + 真实插件装配 + 真实命令处理器 ═══════════════
 // 与 reset-surface-test.mjs 同一套「一步一回合、步与步之间有空闲窗口」的时序替身，
 // 这里只保留回退验收需要的那部分。
@@ -441,10 +660,14 @@ function mkRealEnv(workflows, wfName) {
   let phase = "idle";
   const inbox = [];
   const idleWaiters = [];
+  const cancelCalls = [];
   const settleIdle = () => { if (phase !== "idle") return; for (const r of idleWaiters.splice(0)) r(); };
   const agent = {
     id: sid,
     session,
+    // 与真实 dsh Agent 同形：只有回合在飞时 status 才是 running（回退的中止端口据此判断）。
+    get status() { return phase === "turn" ? "running" : "idle"; },
+    cancel(cause, options) { cancelCalls.push({ cause, options }); },
     steer: (m) => { inbox.push(m); },
     followup: (m) => { inbox.push(m); },
     whenIdle: () => (phase === "idle" ? Promise.resolve() : new Promise((r) => idleWaiters.push(r))),
@@ -488,6 +711,10 @@ ctx.provide("agents", { get: (id) => agents.get(id) });
     try { const out = await fn(); await sleep(10); return out; }
     finally { phase = "idle"; settleIdle(); }
   };
+  /** 模拟宿主生命周期：回退发起的中止 / 用户按停止都会以 aborted/user 收尾。 */
+  const emitTurnEnd = (reason = { kind: "aborted", reason: { kind: "user" } }) => {
+    ctx.emit("session/event", { id: sid }, { type: "turn/end", data: { turn: 1, reason }, time: Date.now() });
+  };
   const appendToolExchange = (callId, name, resultText) => {
     session.append("assistant/message", {
       turn: 1, step: 1,
@@ -524,7 +751,7 @@ ctx.provide("agents", { get: (id) => agents.get(id) });
     try { names = fs.readdirSync(root); } catch { return ""; }
     return names.map((n) => { try { return fs.readFileSync(path.join(root, n, "execution.log"), "utf-8"); } catch { return ""; } }).join("\n");
   };
-  return { ws, sid, session, inbox, registered, agents, turn, cmdAs, callAs, appendToolExchange, drainInbox, instanceState, execLogText, wfName };
+  return { ws, sid, session, inbox, registered, agents, agent, cancelCalls, turn, cmdAs, callAs, appendToolExchange, drainInbox, instanceState, execLogText, emitTurnEnd, wfName };
 }
 
 function seedPrior(session) {
@@ -659,6 +886,100 @@ function seedPrior(session) {
   });
   await waitFor(() => stNow()?.current_step === "s2");
   check("B9 回退后能继续跑：交卷 → 独立验证通过 → 再次推进到 s2", stNow()?.current_step === "s2", stNow()?.current_step);
+}
+
+// ═══ 回归 A) 真实宿主：运行中回退（旧回合还在按旧任务书干活）═════════════════
+// 缺陷本体：用户在工作流回合进行中执行 /ralphflow-rewind，旧回合随后的 ralphflow_submit
+// 落到已经回退后的 current_step 上 → 旧步成果被记成目标步交卷，直接推进。修复是两道：
+// ① 回退第一件事 cancel 旧回合；② DO 投递窗口内的旧交卷一律拒收（中止生效前的竞态兜底）。
+console.log("\nA) 真实宿主运行中回退：先中止旧回合，旧交卷不得落到目标步");
+{
+  const H = mkRealEnv({ wfrw: WF_RW }, "wfrw");
+  seedPrior(H.session);
+  const stNow = () => H.instanceState();
+
+  await H.turn(async () => {
+    const out = await H.callAs(H.sid, "ralphflow_start", { workflow: "wfrw", task: "运行中回退任务书" });
+    H.appendToolExchange("c-run-start", "ralphflow_start", out);
+    return out;
+  });
+  await H.turn(async () => {
+    const out = await H.callAs(H.sid, "ralphflow_submit", { summary: "s1 完成", unfinished: [] });
+    H.appendToolExchange("c-run-sub1", "ralphflow_submit", out);
+    return out;
+  });
+  await waitFor(() => stNow()?.current_step === "s2");
+  H.drainInbox();
+  check("A1 前置：真实跑到 s2，旧回合的 DO 已投递", stNow()?.current_step === "s2", stNow()?.current_step);
+  check("A1 前置：宿主空闲时 status 不是 running", H.agent.status === "idle", H.agent.status);
+  const doSubmittedBefore = (H.execLogText().match(/"event":"do_submitted"/g) ?? []).length;
+
+  let rew;
+  await H.turn(async () => {
+    check("A2 运行中：宿主 status = running", H.agent.status === "running", H.agent.status);
+    rew = await H.cmdAs(H.sid, "ralphflow-rewind", "s1 旧方向作废：运行中换方向");
+    check("A2 运行中回退被命令处理器受理（零程序化卡片）", rew.kind === "success" && !rew.text, JSON.stringify(rew));
+    check("A2 回退第一件事就是中止属主会话当前回合（与停止按钮同款调用）",
+      H.cancelCalls.length === 1
+      && JSON.stringify(H.cancelCalls[0]?.cause) === JSON.stringify({ kind: "user" })
+      && JSON.stringify(H.cancelCalls[0]?.options) === JSON.stringify({ keepInbox: true }),
+      JSON.stringify(H.cancelCalls));
+
+    // 宿主把这次 cancel 收尾成 aborted/user；它不是用户按停止，不能把刚清掉的 paused 写回。
+    H.emitTurnEnd();
+    await sleep(20);
+    check("A3 回退自己发起的中止不触发「停止 = 暂停」",
+      stNow()?.paused === false, JSON.stringify({ paused: stNow()?.paused, why: stNow()?.pause_reason }));
+    check("A3 状态机已先拨到目标步 s1（旧回合仍停在旧任务书上）",
+      stNow()?.current_step === "s1", stNow()?.current_step);
+
+    // 旧回合在取消生效前仍可能把最后一笔工具调用交出去 —— 这笔交卷必须被拒收。
+    const oldSubmit = await H.callAs(H.sid, "ralphflow_submit", { summary: "s2 旧回合交卷（不得落到 s1）", unfinished: [] });
+    check("A4 旧回合在 DO 投递窗口里的交卷被拒收（不重试、等新任务书）",
+      oldSubmit.includes("DO 正在投递") && oldSubmit.includes("本次交卷未受理"), oldSubmit);
+    const raced = stNow();
+    check("A4 拒收的交卷没有设 do_submitted、没有作废/推进状态机",
+      raced?.current_step === "s1" && raced?.do_submitted === false
+      && raced?.verdicts.length === 0 && raced?.delegations.length === 0,
+      JSON.stringify({ cur: raced?.current_step, sub: raced?.do_submitted, v: raced?.verdicts.length, d: raced?.delegations.length }));
+    return rew;
+  });
+
+  await waitFor(() => stNow()?.current_step === "s1" && H.inbox.length > 0 && H.session.surface.nodes.length >= 2);
+  const st = stNow();
+  check("A5 回合边界后仍停在目标步 s1，且没有被那次中止暂停",
+    st?.current_step === "s1" && st?.paused === false,
+    JSON.stringify({ cur: st?.current_step, paused: st?.paused, why: st?.pause_reason }));
+
+  const drained = H.drainInbox();
+  const msgs = H.session.deriveMessages();
+  const texts = msgs.map((m) => textOf(m));
+  check("A5 旧上下文整段移出模型上下文（种子与旧步原文都不在了）",
+    !texts.some((t) => t.includes(PRIOR_TEXT) || t.includes("旧回复") || t.includes("旧追问") || t.includes("s2 旧回合交卷")),
+    JSON.stringify(texts.map((t) => t.slice(0, 24))));
+  check("A5 上下文 = 系统提示 + 交接稿 + 目标步 DO（3 条）",
+    msgs.length === 3, JSON.stringify(texts.map((t) => t.slice(0, 30))));
+  check("A5 第 1 条交接稿指向目标步 s1", texts[1]?.includes("[ralphflow 交接稿]") && texts[1]?.includes("`s1`"), texts[1]?.slice(0, 120));
+  check("A5 DO 在替换之后才进收件箱，且带着原因",
+    drained.length >= 1 && textOf(drained.at(-1)).includes("## 用户回退了这一步")
+    && textOf(drained.at(-1)).includes("旧方向作废：运行中换方向"),
+    drained.map((m) => textOf(m).slice(0, 500)).join("\n---\n"));
+  check("A6 旧回合的交卷没有产生新的 do_submitted（没有烧验证）",
+    (H.execLogText().match(/"event":"do_submitted"/g) ?? []).length === doSubmittedBefore,
+    `before=${doSubmittedBefore} after=${(H.execLogText().match(/"event":"do_submitted"/g) ?? []).length}`);
+  check("A6 没有出现 rewind_dropped（目标步 DO 没有被丢弃）",
+    !H.execLogText().includes('"event":"rewind_dropped"'),
+    H.execLogText().split("\n").filter((l) => l.includes("rewind")).join("\n"));
+
+  // 新回合按新任务书交卷 → 正常推进到 s2（真实验证链路）
+  await H.turn(async () => {
+    const out = await H.callAs(H.sid, "ralphflow_submit", { summary: "s1 按新方向重做完成", unfinished: [] });
+    H.appendToolExchange("c-run-sub2", "ralphflow_submit", out);
+    return out;
+  });
+  await waitFor(() => stNow()?.current_step === "s2");
+  check("A7 新 DO 到达后交卷能正常推进到 s2（回退后的目标步可继续跑）",
+    stNow()?.current_step === "s2", stNow()?.current_step);
 }
 
 // ─── 收尾 ────────────────────────────────────────────────────────────────────
